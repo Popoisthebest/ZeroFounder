@@ -15,6 +15,37 @@ from agents.schemas import (
 )
 
 
+def apply_validated_action(
+    root: Path,
+    action_path: Path,
+    preflight_path: Path,
+    *,
+    applied_at: datetime | None = None,
+) -> tuple[ActionEnvelope, bool]:
+    action = ActionEnvelope.model_validate_json(action_path.read_text())
+    if action.action_type == ActionType.NO_OP:
+        return action, False
+    executor = ActionExecutor(root)
+    action = executor.prepare(action)
+    action_path.write_text(action.model_dump_json(indent=2, by_alias=True) + "\n")
+    executor.apply_files(action)
+    material = bool(action.files or action.state_transition)
+    if action.state_transition:
+        state_path = root / "company/state.json"
+        state = CompanyState.model_validate_json(state_path.read_text())
+        state.lifecycle_stage = action.state_transition.to_stage
+        state.last_agent_run = applied_at or datetime.now(UTC)
+        state_path.write_text(state.model_dump_json(indent=2) + "\n")
+    if material:
+        checkpoint_path = root / "company/checkpoints.json"
+        checkpoint = RepositoryCheckpoint.model_validate_json(checkpoint_path.read_text())
+        decision = PreflightDecision.model_validate_json(preflight_path.read_text())
+        updated = checkpoint_after_material_work(checkpoint, decision)
+        updated.updated_at = applied_at or datetime.now(UTC)
+        checkpoint_path.write_text(updated.model_dump_json(indent=2) + "\n")
+    return action, material
+
+
 def write_output(name: str, value: str) -> None:
     import os
 
@@ -31,29 +62,7 @@ def main() -> int:
     parser.add_argument("--preflight", type=Path, required=True)
     args = parser.parse_args()
     root = args.root.resolve()
-    action = ActionEnvelope.model_validate_json(args.action.read_text())
-    if action.action_type == ActionType.NO_OP:
-        write_output("changed", "false")
-        write_output("action_type", action.action_type.value)
-        return 0
-    executor = ActionExecutor(root)
-    action = executor.prepare(action)
-    args.action.write_text(action.model_dump_json(indent=2) + "\n")
-    executor.apply_files(action)
-    material = bool(action.files or action.state_transition)
-    if action.state_transition:
-        state_path = root / "company/state.json"
-        state = CompanyState.model_validate_json(state_path.read_text())
-        state.lifecycle_stage = action.state_transition.to_stage
-        state.last_agent_run = datetime.now(UTC)
-        state_path.write_text(state.model_dump_json(indent=2) + "\n")
-    if material:
-        checkpoint_path = root / "company/checkpoints.json"
-        checkpoint = RepositoryCheckpoint.model_validate_json(checkpoint_path.read_text())
-        decision = PreflightDecision.model_validate_json(args.preflight.read_text())
-        updated = checkpoint_after_material_work(checkpoint, decision)
-        updated.updated_at = datetime.now(UTC)
-        checkpoint_path.write_text(updated.model_dump_json(indent=2) + "\n")
+    action, material = apply_validated_action(root, args.action, args.preflight)
     write_output("changed", str(material).lower())
     write_output("action_type", action.action_type.value)
     return 0

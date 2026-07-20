@@ -302,6 +302,10 @@ jobs:
         with:
           name: validated-action
           path: runtime
+      - name: Create local agent branch
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python -m scripts.create_agent_branch --action runtime/action.json --run-id "$GITHUB_RUN_ID"
       - id: apply
         run: python -m scripts.apply_agent_action --action runtime/action.json --preflight runtime/preflight.json
       - if: steps.apply.outputs.changed == 'true'

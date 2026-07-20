@@ -9,6 +9,12 @@ from pathlib import Path
 from agents.schemas import ActionEnvelope
 
 
+def agent_branch_name(action: ActionEnvelope, run_id: str) -> str:
+    if not re.fullmatch(r"[0-9]{1,30}", run_id):
+        raise ValueError("invalid run id")
+    return f"agent/{run_id}-{action.action_type.value.replace('_', '-')}"
+
+
 def run(command: list[str], root: Path, *, capture: bool = False) -> str:
     result = subprocess.run(command, cwd=root, text=True, capture_output=capture, check=False)
     if result.returncode:
@@ -28,17 +34,20 @@ def main() -> int:
     parser.add_argument("--action", type=Path, required=True)
     parser.add_argument("--run-id", required=True)
     args = parser.parse_args()
-    if not re.fullmatch(r"[0-9]{1,30}", args.run_id):
-        raise SystemExit("invalid run id")
     root = args.root.resolve()
     action = ActionEnvelope.model_validate_json(args.action.read_text())
-    branch = f"agent/{args.run_id}-{action.action_type.value.replace('_', '-')}"
+    try:
+        branch = agent_branch_name(action, args.run_id)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     run(["git", "config", "user.name", "github-actions[bot]"], root)
     run(
         ["git", "config", "user.email", "41898282+github-actions[bot]@users.noreply.github.com"],
         root,
     )
-    run(["git", "checkout", "-b", branch], root)
+    current_branch = run(["git", "branch", "--show-current"], root, capture=True)
+    if current_branch != branch:
+        raise SystemExit("agent changes must be committed from the prepared agent branch")
     paths = [change.path for change in action.files]
     if action.state_transition:
         paths.append("company/state.json")

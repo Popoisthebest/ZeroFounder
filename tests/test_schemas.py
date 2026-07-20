@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from agents.bootstrap import initial_company_state
 from agents.safety import (
     SafetyViolation,
     validate_action_files,
@@ -19,8 +20,6 @@ from agents.schemas import (
     ModelActionDiagnostic,
     ModelInferenceDiagnostic,
 )
-
-ROOT = Path(__file__).parents[1]
 
 
 def valid_action(**overrides):
@@ -62,10 +61,18 @@ def discovery_problem(**overrides):
     return payload
 
 
-def test_initial_state_is_discovery():
-    state = CompanyState.model_validate_json((ROOT / "company/state.json").read_text())
+def test_bootstrap_initial_state_is_discovery():
+    state = initial_company_state()
     assert state.lifecycle_stage == LifecycleStage.DISCOVERY
     assert state.selected_venture is None
+
+
+@pytest.mark.parametrize("stage", list(LifecycleStage))
+def test_runtime_state_accepts_every_supported_lifecycle_stage(stage: LifecycleStage):
+    state = CompanyState.model_validate(
+        {**initial_company_state().model_dump(mode="json"), "lifecycle_stage": stage}
+    )
+    assert state.lifecycle_stage == stage
 
 
 def test_extra_fields_and_unknown_actions_are_rejected():
