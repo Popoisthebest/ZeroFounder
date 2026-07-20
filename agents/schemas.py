@@ -121,6 +121,8 @@ class ActionRejectionCode(StrEnum):
     TRUNCATED_MODEL_RESPONSE = "truncated_model_response"
     MODEL_CONTENT_FILTERED = "model_content_filtered"
     MODEL_REFUSAL = "model_refusal"
+    REQUEST_TOO_LARGE = "request_too_large"
+    INPUT_BUDGET_EXCEEDED = "input_budget_exceeded"
 
 
 class RiskLevel(StrEnum):
@@ -196,6 +198,84 @@ class ActionEnvelope(StrictModel):
         return self
 
 
+class DiscoveryFileChange(StrictModel):
+    path: str = Field(min_length=1, max_length=240)
+    content: str = Field(max_length=30_000)
+
+
+class DiscoveryStateTransition(StrictModel):
+    from_stage: Literal[LifecycleStage.DISCOVERY] = Field(alias="from")
+    to_stage: Literal[
+        LifecycleStage.DISCOVERY,
+        LifecycleStage.EVIDENCE_VALIDATION,
+    ] = Field(alias="to")
+
+
+class DiscoveryActionEnvelope(StrictModel):
+    role: AgentRole
+    action_type: Literal[
+        ActionType.COLLECT_SIGNALS,
+        ActionType.CREATE_PROBLEM_CANDIDATE,
+        ActionType.VALIDATE_EVIDENCE,
+        ActionType.WRITE_REPORT,
+        ActionType.NO_OP,
+    ]
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=1600)
+    rationale: str = Field(min_length=1, max_length=1600)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=20)
+    state_transition: DiscoveryStateTransition | None = None
+    files: list[DiscoveryFileChange] = Field(default_factory=list, max_length=4)
+
+    @model_validator(mode="after")
+    def enforce_discovery_shape(self) -> DiscoveryActionEnvelope:
+        if self.action_type == ActionType.NO_OP and (self.files or self.state_transition):
+            raise ValueError("no_op cannot mutate files or state")
+        if self.action_type in {
+            ActionType.CREATE_PROBLEM_CANDIDATE,
+            ActionType.VALIDATE_EVIDENCE,
+        } and (not self.evidence_ids or not self.files):
+            raise ValueError("discovery analysis requires evidence_ids and files")
+        return self
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json", by_alias=True))
+
+
+class CompactDiscoveryActionEnvelope(StrictModel):
+    role: AgentRole
+    action_type: Literal[
+        ActionType.COLLECT_SIGNALS,
+        ActionType.CREATE_PROBLEM_CANDIDATE,
+        ActionType.VALIDATE_EVIDENCE,
+        ActionType.WRITE_REPORT,
+        ActionType.NO_OP,
+    ]
+    title: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=800)
+    rationale: str = Field(min_length=1, max_length=800)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=12)
+    files: list[DiscoveryFileChange] = Field(default_factory=list, max_length=2)
+
+    @model_validator(mode="after")
+    def enforce_compact_discovery_shape(self) -> CompactDiscoveryActionEnvelope:
+        if self.action_type == ActionType.NO_OP and self.files:
+            raise ValueError("no_op cannot mutate files")
+        if self.action_type in {
+            ActionType.CREATE_PROBLEM_CANDIDATE,
+            ActionType.VALIDATE_EVIDENCE,
+        } and (not self.evidence_ids or not self.files):
+            raise ValueError("discovery analysis requires evidence_ids and files")
+        return self
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json", by_alias=True))
+
+
 class ModelInferenceDiagnostic(StrictModel):
     selected_model: str | None = Field(default=None, max_length=200)
     request_mode: ModelRequestMode | None = None
@@ -211,11 +291,24 @@ class ModelInferenceDiagnostic(StrictModel):
     completed_inference_calls: int = Field(default=0, ge=0, le=2)
     reserved_inference_calls: int = Field(default=0, ge=0, le=2)
     failed_after_request_calls: int = Field(default=0, ge=0, le=2)
+    request_body_bytes: int = Field(default=0, ge=0)
+    system_prompt_chars: int = Field(default=0, ge=0)
+    user_prompt_chars: int = Field(default=0, ge=0)
+    schema_chars: int = Field(default=0, ge=0)
+    context_chars: int = Field(default=0, ge=0)
+    estimated_input_tokens: int = Field(default=0, ge=0)
+    selected_model_max_input_tokens: int = Field(default=0, ge=0)
+    applied_input_budget: int = Field(default=0, ge=0)
+    included_signal_count: int = Field(default=0, ge=0)
+    excluded_signal_count: int = Field(default=0, ge=0)
+    compact_retry_attempted: bool = False
 
 
 class ModelSelection(StrictModel):
     selected_model: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.:-]+$", max_length=200)
     request_mode: ModelRequestMode
+    max_input_tokens: int = Field(ge=1)
+    applied_input_budget: int = Field(ge=1)
 
 
 class ModelCallResult(StrictModel):

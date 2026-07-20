@@ -105,7 +105,8 @@ def test_recent_signals_are_in_model_context(tmp_path: Path):
     _write_strategy(tmp_path)
     ids = _write_signals(tmp_path)
     context = json.loads(build_context(tmp_path))
-    assert ids[-1] in context["recent_market_signals"]
+    included = {item["signal_id"] for item in context["representative_signals"]}
+    assert included == set(ids)
 
 
 def test_disallowed_discovery_action_becomes_diagnostic_no_op(tmp_path: Path):
@@ -163,6 +164,16 @@ def test_job_summary_masks_tokens_and_omits_model_text():
         "finish_reason",
         "fallback_attempted",
         "retry_attempted",
+        "request_body_bytes",
+        "system_prompt_chars",
+        "user_prompt_chars",
+        "schema_chars",
+        "context_chars",
+        "estimated_input_tokens",
+        "selected_model_max_input_tokens",
+        "applied_input_budget",
+        "included_signal_count",
+        "excluded_signal_count",
         "failure_stage",
         "rejection_code",
         "pydantic_validation_error_paths",

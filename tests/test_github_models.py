@@ -7,12 +7,16 @@ from pydantic import ValidationError
 from agents.github_models import (
     CHAT_URL,
     GitHubModelsClient,
+    PromptVariant,
     extract_known_action_type,
+    model_input_budget,
     parse_action_response,
 )
 from agents.schemas import (
     ActionRejectionCode,
     ActionType,
+    CompactDiscoveryActionEnvelope,
+    DiscoveryActionEnvelope,
     FailureStage,
     MessageContentType,
     ModelRequestMode,
@@ -141,6 +145,33 @@ def test_known_structured_output_capability_selects_json_schema(monkeypatch):
     )
     assert selection is not None
     assert selection.request_mode == ModelRequestMode.JSON_SCHEMA
+
+
+def test_model_selection_uses_catalog_input_limit_and_excludes_small_models(monkeypatch):
+    monkeypatch.delenv("GITHUB_MODEL", raising=False)
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "vendor/small,vendor/large")
+    client = _client(_single_response([]))
+    selection = client.select_chat_model(
+        [
+            {
+                "id": "vendor/small",
+                "supported_input_modalities": ["text"],
+                "supported_output_modalities": ["text"],
+                "limits": {"max_input_tokens": 2000},
+            },
+            {
+                "id": "vendor/large",
+                "supported_input_modalities": ["text"],
+                "supported_output_modalities": ["text"],
+                "limits": {"max_input_tokens": 16000},
+            },
+        ],
+        required_input_tokens=3000,
+    )
+    assert selection is not None
+    assert selection.selected_model == "vendor/large"
+    assert selection.max_input_tokens == 16000
+    assert selection.applied_input_budget == model_input_budget(16000)
 
 
 def test_non_chat_endpoint_is_not_selected(monkeypatch):
@@ -334,6 +365,8 @@ def test_diagnostic_mode_builds_small_exact_response_request():
     assert captured["max_tokens"] == 500
     assert any("Pipeline diagnostic mode" in item["content"] for item in captured["messages"])
     assert result.diagnostic.completed_inference_calls == 1
+    assert result.diagnostic.request_body_bytes > 0
+    assert result.diagnostic.estimated_input_tokens < result.diagnostic.applied_input_budget
 
 
 def test_diagnostic_mode_never_sends_a_fallback_request():
@@ -352,6 +385,91 @@ def test_diagnostic_mode_never_sends_a_fallback_request():
     assert calls == 1
     assert result.diagnostic.completed_inference_calls == 1
     assert not result.diagnostic.fallback_attempted
+
+
+def test_input_budget_blocks_before_http_request():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_completion())
+
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[{"role": "user", "content": "x" * 4000}],
+        applied_input_budget=100,
+        model_max_input_tokens=1000,
+    )
+    assert calls == 0
+    assert result.rejection_code == ActionRejectionCode.INPUT_BUDGET_EXCEEDED
+    assert result.diagnostic.completed_inference_calls == 0
+    assert result.diagnostic.failure_stage == FailureStage.REQUEST_BUILD
+
+
+def test_http_413_retries_once_with_compact_payload_and_succeeds():
+    bodies: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(len(request.content))
+        if len(bodies) == 1:
+            return httpx.Response(413, json={"message": "too large"})
+        return httpx.Response(200, json=_completion())
+
+    client = _client(handler)
+    compact = PromptVariant(
+        messages=[{"role": "user", "content": "compact"}],
+        response_model=CompactDiscoveryActionEnvelope,
+        context_chars=7,
+        included_signal_count=6,
+        excluded_signal_count=44,
+    )
+    result = client.chat_action(
+        model="vendor/text",
+        messages=[{"role": "user", "content": "standard " * 200}],
+        response_model=DiscoveryActionEnvelope,
+        compact_variant=compact,
+        context_chars=1800,
+        included_signal_count=12,
+        excluded_signal_count=38,
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+    assert result.rejection_code is None
+    assert len(bodies) == 2
+    assert bodies[1] < bodies[0]
+    assert result.diagnostic.compact_retry_attempted
+    assert result.diagnostic.included_signal_count == 6
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.failed_after_request_calls == 1
+
+
+def test_second_http_413_finishes_as_request_too_large():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(413, json={"message": "too large"})
+
+    client = _client(handler)
+    result = client.chat_action(
+        model="vendor/text",
+        messages=[{"role": "user", "content": "standard"}],
+        response_model=DiscoveryActionEnvelope,
+        compact_variant=PromptVariant(
+            messages=[{"role": "user", "content": "compact"}],
+            response_model=CompactDiscoveryActionEnvelope,
+        ),
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+    assert calls == 2
+    assert result.rejection_code == ActionRejectionCode.REQUEST_TOO_LARGE
+    assert result.rejection_reason == "request_too_large"
+    assert result.diagnostic.http_status == 413
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.failed_after_request_calls == 2
 
 
 def test_unexpected_workflow_exception_releases_reservation():

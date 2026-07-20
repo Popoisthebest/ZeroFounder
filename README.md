@@ -91,6 +91,8 @@ workflow 최상위 권한은 `contents: read`입니다. 모델, Issue, 브랜치
 | `MAX_FILES_PER_ACTION` | `12` | 한 행동의 최대 파일 수 |
 | `MAX_FILE_CHARS` | `20000` | 파일당 생성 문자 수 |
 | `MAX_TOTAL_OUTPUT_CHARS` | `60000` | 실행당 총 출력 문자 수 |
+| `MAX_MODEL_INPUT_TOKENS` | `6000` | 카탈로그 한도와 함께 적용되는 입력 token 상한 |
+| `MAX_INPUT_CHARS` | `24000` | token 환산 전 컨텍스트 문자 상한 |
 | `MIN_UNIQUE_SIGNALS` | `12` | 기본 탐색 신호 수 |
 | `MIN_SOURCE_TYPES` | `3` | 탐색 source type 수 |
 | `MIN_EVIDENCE_PER_PROBLEM` | `3` | 최종 문제 독립 근거 수 |
@@ -105,6 +107,8 @@ workflow 최상위 권한은 `contents: read`입니다. 모델, Issue, 브랜치
 같은 값은 `company/strategy.json`에서도 관리하며 Repository Variable이 우선합니다.
 
 채팅 모델은 매 실행에서 카탈로그 ID와 text 입출력·chat endpoint 적합성을 확인합니다. 카탈로그가 structured output 지원을 명확히 표시하지 않으면 JSON-only 모드로 시작합니다. `MODEL_DIAGNOSTIC_MODE=true`는 제품 산출물을 만들지 않고 작은 `no_op` 응답의 HTTP·content·JSON·Pydantic 처리 단계만 점검하며 필요한 호출 수를 1회로 계산합니다. 모델 원문과 인증 헤더는 Actions summary에 기록하지 않습니다.
+
+입력 예산은 모델 카탈로그의 `limits.max_input_tokens` 60%, `MAX_MODEL_INPUT_TOKENS`, 무료 inference 보수 한도 6,000 tokens, `MAX_INPUT_CHARS` 환산값 중 최솟값입니다. 카탈로그 한도가 없으면 8,192 tokens를 안전한 기본값으로 사용합니다. DISCOVERY는 raw 신호 전문 대신 대표 신호 12개와 문제 cluster 8개만 보내며 HTTP 413이면 6개/4개 compact payload로 한 번만 재시도합니다.
 
 일일 한도에는 Actions의 `Confirm inference call 1/2` 단계가 성공한 실제 HTTP 요청만 포함됩니다. preflight, skip된 model job, 모델 선택 실패와 호환 모델 부재는 포함하지 않습니다. 한도 판정은 `completed calls + active reservations + required calls <= daily limit`이며 Actions summary에서 계산식을 확인할 수 있습니다. 잘못된 과거 상한이나 만료된 예약은 다음 명령으로 확인하고 정리합니다.
 

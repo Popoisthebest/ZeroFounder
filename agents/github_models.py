@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from agents.schemas import (
     ActionEnvelope,
@@ -52,6 +54,10 @@ CHAT_ENDPOINT_NAMES = {
     "chat/completions",
     "inference/chat/completions",
 }
+DEFAULT_MODEL_MAX_INPUT_TOKENS = 8192
+DEFAULT_MAX_MODEL_INPUT_TOKENS = 6000
+CONSERVATIVE_FREE_INPUT_TOKENS = 6000
+DEFAULT_MAX_INPUT_CHARS = 24_000
 DIAGNOSTIC_ACTION = {
     "role": "auditor",
     "action_type": "no_op",
@@ -65,6 +71,39 @@ DIAGNOSTIC_ACTION = {
     "files": [],
     "dependency_proposal": None,
 }
+
+
+@dataclass(frozen=True)
+class PromptVariant:
+    messages: list[dict[str, str]]
+    response_model: type[BaseModel] = ActionEnvelope
+    context_chars: int = 0
+    included_signal_count: int = 0
+    excluded_signal_count: int = 0
+
+
+def estimate_input_tokens(messages: list[dict[str, str]], schema_text: str, *,
+                          schema_in_messages: bool) -> int:
+    message_bytes = sum(len(item.get("content", "").encode("utf-8")) for item in messages)
+    schema_bytes = 0 if schema_in_messages else len(schema_text.encode("utf-8"))
+    return math.ceil((message_bytes + schema_bytes) / 3) + 32
+
+
+def model_input_budget(max_input_tokens: int) -> int:
+    configured_tokens = int(
+        os.getenv("MAX_MODEL_INPUT_TOKENS", str(DEFAULT_MAX_MODEL_INPUT_TOKENS))
+    )
+    max_input_chars = int(os.getenv("MAX_INPUT_CHARS", str(DEFAULT_MAX_INPUT_CHARS)))
+    chars_as_tokens = max(1, math.ceil(max_input_chars / 3))
+    return max(
+        1,
+        min(
+            max(1, math.floor(max_input_tokens * 0.6)),
+            configured_tokens,
+            CONSERVATIVE_FREE_INPUT_TOKENS,
+            chars_as_tokens,
+        ),
+    )
 
 
 def mask_secrets(value: str) -> str:
@@ -280,7 +319,22 @@ class GitHubModelsClient:
         capabilities = {str(item).lower() for item in model.get("capabilities", [])}
         return bool(capabilities.intersection(STRUCTURED_OUTPUT_CAPABILITIES))
 
-    def select_chat_model(self, catalog: list[dict[str, Any]]) -> ModelSelection | None:
+    @staticmethod
+    def _max_input_tokens(model: dict[str, Any]) -> int:
+        limits = model.get("limits")
+        value = limits.get("max_input_tokens") if isinstance(limits, dict) else None
+        if value is None:
+            value = model.get("max_input_tokens")
+        if isinstance(value, int) and value > 0:
+            return value
+        return DEFAULT_MODEL_MAX_INPUT_TOKENS
+
+    def select_chat_model(
+        self,
+        catalog: list[dict[str, Any]],
+        *,
+        required_input_tokens: int = 0,
+    ) -> ModelSelection | None:
         available = {model["id"]: model for model in catalog if self._is_text_model(model)}
         configured = os.getenv("GITHUB_MODEL")
         fallbacks = [
@@ -293,12 +347,21 @@ class GitHubModelsClient:
         candidates = ([configured] if configured else []) + fallbacks + sorted(available)
         for candidate in candidates:
             if candidate in available:
+                max_input_tokens = self._max_input_tokens(available[candidate])
+                input_budget = model_input_budget(max_input_tokens)
+                if required_input_tokens > input_budget:
+                    continue
                 mode = (
                     ModelRequestMode.JSON_SCHEMA
                     if self._supports_structured_output(available[candidate])
                     else ModelRequestMode.JSON_ONLY
                 )
-                return ModelSelection(selected_model=candidate, request_mode=mode)
+                return ModelSelection(
+                    selected_model=candidate,
+                    request_mode=mode,
+                    max_input_tokens=max_input_tokens,
+                    applied_input_budget=input_budget,
+                )
         return None
 
     def select_embedding_model(self, catalog: list[dict[str, Any]]) -> str | None:
@@ -316,18 +379,31 @@ class GitHubModelsClient:
         request_mode: ModelRequestMode = ModelRequestMode.JSON_ONLY,
         diagnostic_mode: bool = False,
         max_output_chars: int | None = None,
+        response_model: type[BaseModel] = ActionEnvelope,
+        compact_variant: PromptVariant | None = None,
+        context_chars: int = 0,
+        included_signal_count: int = 0,
+        excluded_signal_count: int = 0,
+        model_max_input_tokens: int | None = None,
+        applied_input_budget: int | None = None,
     ) -> ModelCallResult:
         max_output_chars = max_output_chars or int(os.getenv("MAX_TOTAL_OUTPUT_CHARS", "60000"))
-        base_payload: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "temperature": 0,
-            "max_tokens": 500 if diagnostic_mode else 6000,
-            "stream": False,
-        }
+        model_max_input_tokens = model_max_input_tokens or DEFAULT_MODEL_MAX_INPUT_TOKENS
+        applied_input_budget = applied_input_budget or model_input_budget(model_max_input_tokens)
+        standard_variant = PromptVariant(
+            messages=messages,
+            response_model=response_model,
+            context_chars=context_chars,
+            included_signal_count=included_signal_count,
+            excluded_signal_count=excluded_signal_count,
+        )
+        active_variant = standard_variant
+        using_compact = False
         diagnostic = ModelInferenceDiagnostic(
             selected_model=model,
             request_mode=request_mode,
+            selected_model_max_input_tokens=model_max_input_tokens,
+            applied_input_budget=applied_input_budget,
         )
         current_mode = request_mode
         calls = 0
@@ -348,15 +424,43 @@ class GitHubModelsClient:
             diagnostic.failure_stage = None
             diagnostic.pydantic_validation_error_paths = []
             try:
+                base_payload: dict[str, Any] = {
+                    "model": model,
+                    "messages": active_variant.messages,
+                    "temperature": 0,
+                    "max_tokens": 500 if diagnostic_mode else 6000,
+                    "stream": False,
+                }
                 payload = self._build_chat_payload(
                     base_payload,
                     current_mode,
                     diagnostic_mode=diagnostic_mode,
+                    response_model=active_variant.response_model,
                 )
             except (TypeError, ValueError):
                 last_error = ModelPipelineError(
                     FailureStage.REQUEST_BUILD,
                     "model request payload could not be built",
+                )
+                self.limiter.record_failure()
+                break
+            schema_text = self._schema_text(active_variant.response_model)
+            self._update_request_diagnostic(
+                diagnostic,
+                payload,
+                schema_text=schema_text,
+                schema_in_messages=current_mode == ModelRequestMode.JSON_ONLY,
+                variant=active_variant,
+            )
+            if diagnostic.estimated_input_tokens > applied_input_budget:
+                if compact_variant is not None and not using_compact:
+                    active_variant = compact_variant
+                    using_compact = True
+                    continue
+                last_error = ModelPipelineError(
+                    FailureStage.REQUEST_BUILD,
+                    "model request exceeded the applied input budget before HTTP transport",
+                    code=ActionRejectionCode.INPUT_BUDGET_EXCEEDED,
                 )
                 self.limiter.record_failure()
                 break
@@ -406,6 +510,22 @@ class GitHubModelsClient:
                     )
                     reservation_id = None
             diagnostic.http_status = response.status_code
+            if response.status_code == 413:
+                if request_id is not None:
+                    self.limiter.mark_request_failed(request_id)
+                self.limiter.record_failure()
+                if compact_variant is not None and not using_compact and calls < call_limit:
+                    diagnostic.compact_retry_attempted = True
+                    diagnostic.retry_attempted = True
+                    active_variant = compact_variant
+                    using_compact = True
+                    continue
+                last_error = ModelPipelineError(
+                    FailureStage.HTTP_REQUEST,
+                    "request_too_large",
+                    code=ActionRejectionCode.REQUEST_TOO_LARGE,
+                )
+                break
             if response.status_code in {400, 422} and current_mode == ModelRequestMode.JSON_SCHEMA:
                 if request_id is not None:
                     self.limiter.mark_request_failed(request_id)
@@ -466,6 +586,7 @@ class GitHubModelsClient:
                     data,
                     diagnostic,
                     max_output_chars=max_output_chars,
+                    response_model=active_variant.response_model,
                 )
             except ModelPipelineError as exc:
                 if request_id is not None:
@@ -502,6 +623,47 @@ class GitHubModelsClient:
             rejection_reason=last_error.reason,
         )
 
+    @staticmethod
+    def _schema_text(response_model: type[BaseModel]) -> str:
+        return json.dumps(
+            response_model.model_json_schema(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+
+    @staticmethod
+    def _update_request_diagnostic(
+        diagnostic: ModelInferenceDiagnostic,
+        payload: dict[str, Any],
+        *,
+        schema_text: str,
+        schema_in_messages: bool,
+        variant: PromptVariant,
+    ) -> None:
+        messages = payload.get("messages", [])
+        diagnostic.request_body_bytes = len(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        diagnostic.system_prompt_chars = sum(
+            len(item.get("content", ""))
+            for item in messages
+            if item.get("role") == "system"
+        )
+        diagnostic.user_prompt_chars = sum(
+            len(item.get("content", ""))
+            for item in messages
+            if item.get("role") == "user"
+        )
+        diagnostic.schema_chars = len(schema_text)
+        diagnostic.context_chars = variant.context_chars
+        diagnostic.estimated_input_tokens = estimate_input_tokens(
+            messages,
+            schema_text,
+            schema_in_messages=schema_in_messages,
+        )
+        diagnostic.included_signal_count = variant.included_signal_count
+        diagnostic.excluded_signal_count = variant.excluded_signal_count
+
     def _update_usage_diagnostic(self, diagnostic: ModelInferenceDiagnostic) -> None:
         usage = self.limiter.run_usage()
         diagnostic.completed_inference_calls = usage["completed_inference_calls"]
@@ -514,6 +676,7 @@ class GitHubModelsClient:
         request_mode: ModelRequestMode,
         *,
         diagnostic_mode: bool,
+        response_model: type[BaseModel] = ActionEnvelope,
     ) -> dict[str, Any]:
         payload = dict(base_payload)
         messages = list(base_payload["messages"])
@@ -533,7 +696,7 @@ class GitHubModelsClient:
                 "json_schema": {
                     "name": "zerofounder_action",
                     "strict": True,
-                    "schema": ActionEnvelope.model_json_schema(),
+                    "schema": response_model.model_json_schema(),
                 },
             }
         else:
@@ -545,7 +708,7 @@ class GitHubModelsClient:
                         "Return exactly one JSON object and no Markdown. Validate it against "
                         "this JSON Schema: "
                         + json.dumps(
-                            ActionEnvelope.model_json_schema(),
+                            response_model.model_json_schema(),
                             ensure_ascii=False,
                             separators=(",", ":"),
                         )
@@ -579,6 +742,7 @@ class GitHubModelsClient:
         diagnostic: ModelInferenceDiagnostic,
         *,
         max_output_chars: int,
+        response_model: type[BaseModel] = ActionEnvelope,
     ) -> tuple[ActionEnvelope, ActionType | None]:
         if not isinstance(data, dict):
             raise ModelPipelineError(
@@ -656,7 +820,15 @@ class GitHubModelsClient:
             )
         parsed, original_action_type = _extract_json_object(content)
         try:
-            action = ActionEnvelope.model_validate(parsed)
+            validated = response_model.model_validate(parsed)
+            if isinstance(validated, ActionEnvelope):
+                action = validated
+            elif hasattr(validated, "to_action_envelope"):
+                action = validated.to_action_envelope()
+            else:
+                action = ActionEnvelope.model_validate(
+                    validated.model_dump(mode="json", by_alias=True)
+                )
         except ValidationError as exc:
             raise ModelPipelineError(
                 FailureStage.SCHEMA_VALIDATION,

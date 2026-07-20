@@ -31,6 +31,8 @@ def test_workflow_yaml_and_permissions():
     assert "Mark inference run skipped" in {step.get("name") for step in model_steps}
     model_env = next(step["env"] for step in model_steps if "env" in step)
     assert "MODEL_DIAGNOSTIC_MODE" in model_env
+    assert "MAX_MODEL_INPUT_TOKENS" in model_env
+    assert "MAX_INPUT_CHARS" in model_env
     preflight_steps = agent["jobs"]["preflight"]["steps"]
     preflight_commands = "\n".join(str(step.get("run", "")) for step in preflight_steps)
     assert "scripts.write_preflight_summary" in preflight_commands

@@ -7,9 +7,14 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from agents.context_builder import build_context
+from agents.context_builder import build_context_bundle
 from agents.github_client import GitHubClient
-from agents.github_models import GitHubModelsClient, safe_no_op
+from agents.github_models import (
+    GitHubModelsClient,
+    PromptVariant,
+    estimate_input_tokens,
+    safe_no_op,
+)
 from agents.lifecycle import (
     action_allowed,
     allowed_actions,
@@ -21,7 +26,9 @@ from agents.schemas import (
     ActionEnvelope,
     ActionRejectionCode,
     ActionType,
+    CompactDiscoveryActionEnvelope,
     CompanyState,
+    DiscoveryActionEnvelope,
     FailureStage,
     MarketSignal,
     ModelActionDiagnostic,
@@ -168,6 +175,8 @@ def build_model_instruction(
     root: Path,
     state: CompanyState,
     decision: PreflightDecision | None,
+    *,
+    compact: bool = False,
 ) -> str:
     permitted = allowed_actions(state.lifecycle_stage)
     preferred = list(permitted)
@@ -241,7 +250,12 @@ def build_model_instruction(
             "allowed_action_types": [item.value for item in permitted],
             "preferred_action_types": [item.value for item in preferred],
             "trigger_reasons": [item.value for item in reasons],
-            "new_signal_ids": decision.new_signal_ids if decision else [],
+            "new_signal_count": len(decision.new_signal_ids) if decision else 0,
+            "new_signal_ids": (
+                []
+                if state.lifecycle_stage.value == "DISCOVERY"
+                else (decision.new_signal_ids[: (6 if compact else 20)] if decision else [])
+            ),
             "repository_counts": counts,
             "guidance": guidance,
             "state_transition_policy": transition_policy,
@@ -378,14 +392,6 @@ def run_model(
             reason="GitHub Models catalog is unavailable",
             failure_stage=FailureStage.MODEL_SELECTION,
         )
-    selection = client.select_chat_model(catalog)
-    if not selection:
-        return _rejected_outcome(
-            state,
-            code=ActionRejectionCode.NO_COMPATIBLE_MODEL,
-            reason="no compatible text model is available",
-            failure_stage=FailureStage.MODEL_SELECTION,
-        )
     if diagnostic_mode:
         messages = [
             {
@@ -393,20 +399,94 @@ def run_model(
                 "content": "Verify the response pipeline with the exact diagnostic JSON.",
             }
         ]
+        response_model = ActionEnvelope
+        compact_variant = None
+        context_chars = 0
+        included_signal_count = 0
+        excluded_signal_count = 0
+        required_input_tokens = estimate_input_tokens(
+            messages,
+            json.dumps(response_model.model_json_schema(), separators=(",", ":")),
+            schema_in_messages=False,
+        )
     else:
         prompt = (root / "agents/prompts/core.md").read_text()
-        context = build_context(root)
+        max_context_chars = int(os.getenv("MAX_INPUT_CHARS", "24000"))
+        context = build_context_bundle(
+            root,
+            lifecycle_stage=state.lifecycle_stage,
+            compact=False,
+            max_chars=max_context_chars,
+        )
+        compact_context = build_context_bundle(
+            root,
+            lifecycle_stage=state.lifecycle_stage,
+            compact=True,
+            max_chars=max(1000, max_context_chars // 2),
+        )
         instruction = build_model_instruction(root, state, decision)
+        compact_instruction = build_model_instruction(
+            root, state, decision, compact=True
+        )
         messages = [
             {"role": "system", "content": prompt},
             {"role": "system", "content": instruction},
-            {"role": "user", "content": context},
+            {"role": "user", "content": context.content},
         ]
+        compact_messages = [
+            {"role": "system", "content": prompt},
+            {"role": "system", "content": compact_instruction},
+            {"role": "user", "content": compact_context.content},
+        ]
+        if state.lifecycle_stage.value == "DISCOVERY":
+            response_model = DiscoveryActionEnvelope
+            compact_response_model = CompactDiscoveryActionEnvelope
+        else:
+            response_model = ActionEnvelope
+            compact_response_model = ActionEnvelope
+        compact_variant = PromptVariant(
+            messages=compact_messages,
+            response_model=compact_response_model,
+            context_chars=len(compact_context.content),
+            included_signal_count=compact_context.included_signal_count,
+            excluded_signal_count=compact_context.excluded_signal_count,
+        )
+        context_chars = len(context.content)
+        included_signal_count = context.included_signal_count
+        excluded_signal_count = context.excluded_signal_count
+        compact_schema = json.dumps(
+            compact_response_model.model_json_schema(),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        required_input_tokens = estimate_input_tokens(
+            compact_messages,
+            compact_schema,
+            schema_in_messages=False,
+        )
+    selection = client.select_chat_model(
+        catalog,
+        required_input_tokens=required_input_tokens,
+    )
+    if not selection:
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.NO_COMPATIBLE_MODEL,
+            reason="no compatible text model satisfies the required input budget",
+            failure_stage=FailureStage.MODEL_SELECTION,
+        )
     call = client.chat_action(
         model=selection.selected_model,
         request_mode=selection.request_mode,
         diagnostic_mode=diagnostic_mode,
         messages=messages,
+        response_model=response_model,
+        compact_variant=compact_variant,
+        context_chars=context_chars,
+        included_signal_count=included_signal_count,
+        excluded_signal_count=excluded_signal_count,
+        model_max_input_tokens=selection.max_input_tokens,
+        applied_input_budget=selection.applied_input_budget,
     )
     if call.rejection_code is not None:
         return _rejected_outcome(

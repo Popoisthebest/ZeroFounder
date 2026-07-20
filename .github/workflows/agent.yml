@@ -89,6 +89,8 @@ jobs:
           DAILY_MODEL_CALL_LIMIT: ${{ vars.DAILY_MODEL_CALL_LIMIT || '8' }}
           MAX_FILES_PER_ACTION: ${{ vars.MAX_FILES_PER_ACTION || '12' }}
           MAX_TOTAL_OUTPUT_CHARS: ${{ vars.MAX_TOTAL_OUTPUT_CHARS || '60000' }}
+          MAX_MODEL_INPUT_TOKENS: ${{ vars.MAX_MODEL_INPUT_TOKENS || '6000' }}
+          MAX_INPUT_CHARS: ${{ vars.MAX_INPUT_CHARS || '24000' }}
         run: |
           python -m agents.orchestrator model \
             --preflight runtime/preflight.json \
