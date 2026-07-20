@@ -1,5 +1,5 @@
 {
-  "as_of": null,
+  "as_of": "2026-07-20T10:43:57.943989+00:00",
   "product_features": 0,
   "open_issues": 0,
   "bug_reports": 0,
@@ -15,6 +15,10 @@
   "experiments": 0,
   "successful_experiments": 0,
   "recent_product_changes": 0,
-  "feedback_sentiment": {"positive": 0, "negative": 0, "unknown": 0},
+  "feedback_sentiment": {
+    "positive": 0,
+    "negative": 0,
+    "unknown": 0
+  },
   "visitor_count": null
 }

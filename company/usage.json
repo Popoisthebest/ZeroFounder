@@ -1,2 +1,13 @@
-{"days": []}
-
+{
+  "days": [
+    {
+      "date": "2026-07-20",
+      "chat_calls": 0,
+      "embedding_calls": 0,
+      "catalog_calls": 0,
+      "failures": 0,
+      "inference_call_upper_bound": 0,
+      "request_fingerprints": []
+    }
+  ]
+}
