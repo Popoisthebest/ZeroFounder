@@ -3,6 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from agents.language import choose_product_ui_language
 from agents.schemas import InfrastructureProvider
 
 
@@ -13,6 +14,7 @@ class ProductInfrastructureRequirements:
     anonymous_feedback_storage: bool = False
     server_api: bool = False
     structured_persistent_data: bool = False
+    target_languages: tuple[str, ...] = ("en",)
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class ProviderPlan:
     implemented: bool
     requires_human_approval: bool
     rationale: str
+    product_ui_language: str
     required_human_actions: tuple[str, ...] = ()
 
 
@@ -47,9 +50,12 @@ class GitHubPagesAdapter(InfrastructureAdapter):
             implemented=True,
             requires_human_approval=not suitable,
             rationale=(
-                "The MVP is fully static and works in the browser."
+                "MVP가 완전한 정적 제품이며 브라우저에서 동작합니다."
                 if suitable
-                else "The MVP requires server-side capabilities GitHub Pages cannot provide."
+                else "MVP에 GitHub Pages가 제공하지 않는 서버 기능이 필요합니다."
+            ),
+            product_ui_language=choose_product_ui_language(
+                list(requirements.target_languages)
             ),
         )
 
@@ -63,11 +69,14 @@ class CloudflarePagesAdapter(InfrastructureAdapter):
             implemented=False,
             requires_human_approval=True,
             rationale=(
-                "Cloudflare account connection and deployment are intentionally not automated."
+                "Cloudflare 계정 연결과 배포는 의도적으로 자동화하지 않습니다."
+            ),
+            product_ui_language=choose_product_ui_language(
+                list(requirements.target_languages)
             ),
             required_human_actions=(
-                "Create or select a Cloudflare account and Pages project.",
-                "Approve repository connection and configure secrets without committing values.",
+                "Cloudflare 계정과 Pages 프로젝트를 생성하거나 선택합니다.",
+                "저장소 연결을 승인하고 비밀값을 commit하지 않고 설정합니다.",
             ),
         )
 
@@ -88,14 +97,17 @@ class CloudflareWorkersD1Adapter(InfrastructureAdapter):
             implemented=False,
             requires_human_approval=True,
             rationale=(
-                "A minimal API or structured persistence is an explicit MVP requirement."
+                "최소 API 또는 구조화된 영속 저장소가 명시적인 MVP 요구사항입니다."
                 if needed
-                else "Workers and D1 are unnecessary for this static MVP."
+                else "이 정적 MVP에는 Workers와 D1이 필요하지 않습니다."
+            ),
+            product_ui_language=choose_product_ui_language(
+                list(requirements.target_languages)
             ),
             required_human_actions=(
-                "Approve the expanded infrastructure and data-handling scope.",
-                "Create the Worker, D1 database, and bindings manually.",
-                "Add approved Cloudflare secrets in repository settings.",
+                "확장된 인프라와 데이터 처리 범위를 승인합니다.",
+                "Worker, D1 데이터베이스와 binding을 수동 생성합니다.",
+                "승인된 Cloudflare 비밀값을 저장소 설정에 추가합니다.",
             ),
         )
 

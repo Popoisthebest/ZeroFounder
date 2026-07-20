@@ -527,6 +527,30 @@ class MarketSignal(StrictModel):
     collected_at: datetime
     published_at: datetime | None = None
     content_hash: str
+    original_language: str = Field(default="und", min_length=2, max_length=20)
+    original_title: str | None = Field(default=None, max_length=300)
+    original_summary: str | None = Field(default=None, max_length=500)
+    korean_title: str | None = Field(default=None, max_length=300)
+    korean_summary: str | None = Field(default=None, max_length=2000)
+    source_url: str | None = None
+    market_region: list[str] = Field(default_factory=lambda: ["global"], min_length=1)
+    translation_confidence: float = Field(default=0.0, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def preserve_source_identity(self) -> MarketSignal:
+        if self.source_url is None:
+            self.source_url = self.url
+        if self.source_url != self.url:
+            raise ValueError("source_url must match the canonical source URL")
+        if self.original_title is None:
+            self.original_title = self.title
+        if self.original_summary is None:
+            self.original_summary = self.summary[:500]
+        if self.korean_title is None:
+            self.korean_title = self.title
+        if self.korean_summary is None:
+            self.korean_summary = self.summary
+        return self
 
 
 class ProblemEvidenceReference(StrictModel):
@@ -563,6 +587,12 @@ class IdeaCandidate(StrictModel):
     problem_id: StrictId
     evidence_ids: list[StrictId] = Field(min_length=1, max_length=20)
     target_users: list[str] = Field(min_length=1, max_length=8)
+    target_regions: list[str] = Field(min_length=1, max_length=20)
+    target_languages: list[str] = Field(min_length=1, max_length=20)
+    market_scope: Literal["global", "multi_region", "regional", "local"]
+    localization_requirements: list[str] = Field(default_factory=list, max_length=20)
+    founder_accessibility: str = Field(min_length=5, max_length=1000)
+    evidence_languages: list[str] = Field(min_length=1, max_length=20)
     existing_solutions: list[str] = Field(min_length=1, max_length=10)
     core_features: list[str] = Field(min_length=1, max_length=3)
     competitors: list[str] = Field(default_factory=list, max_length=10)

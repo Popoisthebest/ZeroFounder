@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from agents.github_client import GitHubClient
+from agents.operating_output import render_agent_pull_request
 from agents.schemas import ActionEnvelope
 
 
@@ -17,20 +18,14 @@ def main() -> int:
     action = ActionEnvelope.model_validate_json(Path(args.action).read_text(encoding="utf-8"))
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
     default_branch = str(client.repository_info().get("default_branch") or "main")
-    body = (
-        f"{action.summary}\n\n"
-        f"Rationale: {action.rationale}\n\n"
-        f"Validated commit: `{args.sha}`\n\n"
-        "<!-- zerofounder-ci-status -->\n"
-        "CI state: `ci_not_started`\n\n"
-        "This pull request is never merged automatically."
-    )
+    title, body = render_agent_pull_request(action, args.sha)
     pull = client.create_pull_request(
-        title=f"[ZeroFounder] {action.title}",
+        title=title,
         body=body,
         head=args.branch,
         base=default_branch,
     )
+    client.add_labels(int(pull["number"]), ["agent-generated"])
     output = os.environ["GITHUB_OUTPUT"]
     with open(output, "a", encoding="utf-8") as handle:
         handle.write(f"pr_number={int(pull['number'])}\n")

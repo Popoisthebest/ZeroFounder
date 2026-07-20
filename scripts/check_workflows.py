@@ -26,7 +26,7 @@ def main() -> int:
             write_scopes = {scope for scope, value in permissions.items() if value == "write"}
             if len(write_scopes) > 2:
                 raise SystemExit(f"excessive job permissions: {path.name}:{name}")
-    if actions_writers != [("agent.yml", "dispatch-quality-check")]:
+    if actions_writers:
         raise SystemExit(f"unexpected actions:write jobs: {actions_writers}")
     if agent_document is None:
         raise SystemExit("agent workflow is missing")
@@ -39,9 +39,7 @@ def main() -> int:
         checkout = step_index(
             lambda step: str(step.get("uses", "")).startswith("actions/checkout@")
         )
-        branch = step_index(
-            lambda step: step.get("name") == "Create local agent branch"
-        )
+        branch = step_index(lambda step: step.get("id") == "prepare_branch")
         apply = step_index(lambda step: step.get("id") == "apply")
         tests = step_index(lambda step: step.get("run") == "python -m pytest")
         commit = step_index(lambda step: step.get("id") == "commit")
@@ -51,6 +49,20 @@ def main() -> int:
         raise SystemExit("create-branch must branch, apply, test, then commit/push")
     if steps[tests].get("continue-on-error"):
         raise SystemExit("create-branch Pytest failures must stop before push")
+    agent_text = (workflows / "agent.yml").read_text()
+    if "dispatch-quality-check" in agent_text or "quality-dispatch-result" in agent_text:
+        raise SystemExit("agent workflow must not dispatch or download cross-run quality artifacts")
+    quality = yaml.safe_load((workflows / "quality-check.yml").read_text())
+    triggers = quality.get(True, {})
+    if "workflow_call" not in triggers or "workflow_dispatch" not in triggers:
+        raise SystemExit("quality-check must support workflow_call and workflow_dispatch")
+    call_outputs = triggers["workflow_call"].get("outputs", {})
+    required_outputs = {"validation_status", "verified_sha", "failed_check", "quality_run_url"}
+    if not required_outputs.issubset(call_outputs):
+        raise SystemExit("quality-check reusable outputs are incomplete")
+    record = agent_document["jobs"].get("record-quality-status", {})
+    if "always()" not in str(record.get("if", "")):
+        raise SystemExit("quality result recording must run after failures")
     print("workflow syntax and permissions passed")
     return 0
 

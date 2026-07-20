@@ -20,6 +20,12 @@ def idea(
             "problem_id": f"problem-{index:03}",
             "evidence_ids": ["evidence-001", "evidence-002", "evidence-003"],
             "target_users": [f"group-{index}"],
+            "target_regions": ["North America", "Europe", "Global"],
+            "target_languages": ["en"],
+            "market_scope": "global",
+            "localization_requirements": ["English-first product UI"],
+            "founder_accessibility": "The founder can reach a named global community",
+            "evidence_languages": ["en", "ja"],
             "existing_solutions": ["spreadsheet and group chat"],
             "core_features": ["working feature"],
             "competitors": [],
@@ -116,6 +122,9 @@ def test_selection_gate_and_choice():
     item = idea(1)
     passed, reasons = eligible_for_selection(item, evaluation(item), evidence_index())
     assert passed, reasons
+    assert item.market_scope == "global"
+    assert item.target_regions == ["North America", "Europe", "Global"]
+    assert item.target_languages == ["en"]
     assert choose_eligible_idea([(item, evaluation(item))], evidence_index()) == item
 
 

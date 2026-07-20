@@ -52,7 +52,10 @@ def main() -> int:
         root,
     )
     run(["git", "add", "company/state.json", "company/checkpoints.json"], root)
-    message = f"chore(agent): approval-{payload['command']} [run:{os.environ['GITHUB_RUN_ID']}]"
+    message = (
+        f"chore(agent): 창업자 {payload['command']} 명령 반영 "
+        f"[run:{os.environ['GITHUB_RUN_ID']}]"
+    )
     run(["git", "commit", "-m", message], root)
     run(["git", "push", "origin", "HEAD"], root)
     return 0

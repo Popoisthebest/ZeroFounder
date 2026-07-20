@@ -53,7 +53,8 @@ def main() -> int:
     Path("runtime/approval-command.json").write_text(json.dumps(payload) + "\n")
     if valid:
         client.comment(
-            int(issue["number"]), f"ZeroFounder accepted `/{command}` for rule-based processing."
+            int(issue["number"]),
+            f"ZeroFounder가 `/{command}` 명령을 확인했으며 규칙 기반으로 처리합니다.",
         )
     output = os.environ.get("GITHUB_OUTPUT")
     if output:

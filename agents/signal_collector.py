@@ -14,6 +14,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import feedparser
 import httpx
 
+from agents.language import localized_signal_fields
 from agents.schemas import MarketSignal, SignalPack, SignalSource, SignalSourceConfig
 
 USER_AGENT = "ZeroFounder/1.0 (+https://github.com/)"
@@ -132,6 +133,7 @@ class SignalCollector:
         clean_url = canonical_url(url)
         clean_title = normalize_text(title)[:300]
         clean_summary = normalize_text(summary)
+        localized = localized_signal_fields(clean_title, clean_summary or clean_title)
         return MarketSignal(
             signal_id=signal_id(clean_url, clean_title),
             source_pack=pack_id,
@@ -142,6 +144,8 @@ class SignalCollector:
             collected_at=datetime.now(UTC),
             published_at=published_at,
             content_hash=hashlib.sha256(f"{clean_title}\n{clean_summary}".encode()).hexdigest(),
+            source_url=clean_url,
+            **localized,
         )
 
     def _from_github_items(

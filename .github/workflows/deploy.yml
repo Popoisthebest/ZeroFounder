@@ -1,4 +1,4 @@
-name: Deploy Venture to GitHub Pages
+name: ZeroFounder 제품 배포
 
 on:
   push:
@@ -21,6 +21,7 @@ concurrency:
 
 jobs:
   build:
+    name: 제품 검증 및 Pages artifact 생성
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -55,6 +56,7 @@ jobs:
           path: dist
 
   deploy:
+    name: GitHub Pages 배포
     needs: build
     permissions:
       contents: read
@@ -69,6 +71,7 @@ jobs:
         uses: actions/deploy-pages@v4
 
   report-failure:
+    name: 배포 실패 보고
     needs: [build, deploy]
     if: failure()
     permissions:

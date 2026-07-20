@@ -252,8 +252,10 @@ def build_discovery_signal_context(
         {
             "signal_id": item.signal.signal_id,
             "title_or_summary": _one_sentence(
-                item.signal.title or item.signal.summary, summary_limit
+                item.signal.korean_title or item.signal.title, summary_limit
             ),
+            "original_language": item.signal.original_language,
+            "original_title": item.signal.original_title,
             "source_type": item.signal.source_type,
             "quality_score": item.quality,
             "published_at": (
@@ -272,8 +274,14 @@ def build_discovery_signal_context(
             {
                 "cluster_id": f"cluster-{cluster_hash}",
                 "problem_description": _one_sentence(
-                    items[0].signal.summary or items[0].signal.title,
+                    items[0].signal.korean_summary or items[0].signal.summary,
                     summary_limit,
+                ),
+                "evidence_languages": sorted(
+                    {item.signal.original_language for item in items}
+                ),
+                "market_regions": sorted(
+                    {region for item in items for region in item.signal.market_region}
                 ),
                 "signal_ids": member_ids[: (8 if compact else 16)],
                 "unique_source_count": len({item.signal.url for item in items}),

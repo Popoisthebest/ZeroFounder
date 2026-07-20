@@ -11,6 +11,10 @@ API_VERSION = "2022-11-28"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 BRANCH = re.compile(r"^(?:agent|dependency)/[A-Za-z0-9._/-]{1,180}$")
 WRITE_PERMISSIONS = {"admin", "maintain", "write"}
+MODEL_JOB_DISPLAY_NAMES = {"model", "AI 의사결정 실행"}
+CONFIRM_MARKER = re.compile(r"\[inference-confirm-(\d+)\]$")
+HTTP_FAILURE_MARKER = re.compile(r"\[inference-http-failed-(\d+)\]$")
+VALIDATION_FAILURE_MARKER = re.compile(r"\[inference-validation-failed-(\d+)\]$")
 
 
 class GitHubAPIError(RuntimeError):
@@ -55,6 +59,14 @@ class GitHubClient:
             raise ValueError("invalid issue number")
         return self._request("GET", f"/repos/{self.repository}/issues/{number}")
 
+    def open_issues_and_pulls(self) -> list[dict[str, Any]]:
+        result = self._request(
+            "GET",
+            f"/repos/{self.repository}/issues",
+            params={"state": "open", "per_page": 100},
+        )
+        return result if isinstance(result, list) else []
+
     def collaborator_permission(self, login: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login):
             return "none"
@@ -78,6 +90,20 @@ class GitHubClient:
             json={"body": body[:60_000]},
         )
 
+    def update_issue(self, number: int, *, title: str, body: str) -> dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/repos/{self.repository}/issues/{number}",
+            json={"title": title[:200], "body": body[:60_000]},
+        )
+
+    def add_labels(self, number: int, labels: list[str]) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/repos/{self.repository}/issues/{number}/labels",
+            json={"labels": labels},
+        )
+
     def create_pull_request(self, *, title: str, body: str, head: str, base: str) -> dict[str, Any]:
         if not BRANCH.fullmatch(head):
             raise ValueError("invalid agent branch")
@@ -99,24 +125,11 @@ class GitHubClient:
             "PATCH", f"/repos/{self.repository}/pulls/{number}", json={"body": body[:60_000]}
         )
 
-    def dispatch_quality_check(
-        self, *, pr_number: int, agent_branch: str, commit_sha: str, ref: str
-    ) -> None:
-        if pr_number <= 0 or not BRANCH.fullmatch(agent_branch) or not SHA.fullmatch(commit_sha):
-            raise ValueError("invalid quality dispatch inputs")
-        if not re.fullmatch(r"[A-Za-z0-9._/-]{1,180}", ref):
-            raise ValueError("invalid workflow ref")
-        self._request(
-            "POST",
-            f"/repos/{self.repository}/actions/workflows/quality-check.yml/dispatches",
-            json={
-                "ref": ref,
-                "inputs": {
-                    "pr_number": str(pr_number),
-                    "agent_branch": agent_branch,
-                    "commit_sha": commit_sha,
-                },
-            },
+    def update_pull_request(self, number: int, *, title: str, body: str) -> dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/repos/{self.repository}/pulls/{number}",
+            json={"title": title[:200], "body": body[:60_000]},
         )
 
     def verify_pull_head(self, *, pr_number: int, branch: str, commit_sha: str) -> bool:
@@ -163,7 +176,7 @@ class GitHubClient:
                 params={"per_page": 100},
             ).get("jobs", [])
             for job in jobs:
-                if job.get("name") != "model":
+                if job.get("name") not in MODEL_JOB_DISPLAY_NAMES:
                     continue
                 if job.get("conclusion") == "skipped":
                     skipped_runs += 1
@@ -178,13 +191,22 @@ class GitHubClient:
                     name = str(step.get("name", ""))
                     if name.startswith("Confirm inference call "):
                         confirmed_slots.add(name.rsplit(" ", 1)[-1])
+                    elif match := CONFIRM_MARKER.search(name):
+                        confirmed_slots.add(match.group(1))
                     elif name.startswith("Reserve inference call "):
                         reserved_slots.add(name.rsplit(" ", 1)[-1])
-                    elif name.startswith("Mark HTTP failed inference call "):
+                    elif name.startswith(
+                        "Mark HTTP failed inference call "
+                    ) or HTTP_FAILURE_MARKER.search(name):
                         http_failed_calls += 1
-                    elif name.startswith("Mark response validation failed inference call "):
+                    elif name.startswith(
+                        "Mark response validation failed inference call "
+                    ) or VALIDATION_FAILURE_MARKER.search(name):
                         response_validation_failed_calls += 1
-                    elif name == "Mark inference run skipped":
+                    elif name in {
+                        "Mark inference run skipped",
+                        "모델 호출 없는 실행 기록 [inference-skipped]",
+                    }:
                         skipped_runs += 1
                 completed_calls += len(confirmed_slots)
                 if job.get("status") == "in_progress":

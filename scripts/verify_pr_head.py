@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import os
 
-from agents.github_client import GitHubClient
+from agents.github_client import GitHubAPIError, GitHubClient
+from agents.quality import classify_pull_target
 
 
 def main() -> int:
@@ -13,12 +14,23 @@ def main() -> int:
     parser.add_argument("--sha", required=True)
     args = parser.parse_args()
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
-    if not client.verify_pull_head(pr_number=args.pr, branch=args.branch, commit_sha=args.sha):
-        raise SystemExit("PR head SHA or branch does not match dispatched input")
+    try:
+        pull = client.pull_request(args.pr)
+    except (GitHubAPIError, ValueError):
+        status, verified_sha = "invalid_pr", ""
+    else:
+        status, verified_sha = classify_pull_target(
+            pull,
+            repository=client.repository,
+            branch=args.branch,
+            commit_sha=args.sha,
+        )
     output = os.getenv("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:
-            handle.write(f"sha={args.sha}\n")
+            handle.write(f"validation_status={status}\n")
+            handle.write(f"sha={verified_sha}\n")
+    print(f"PR 검증 결과: {status}")
     return 0
 
 

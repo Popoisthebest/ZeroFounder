@@ -1,18 +1,46 @@
-name: Quality Check
+name: ZeroFounder 품질 검사
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      pr_number:
-        description: Pull request number
+      pull_request_number:
         required: true
         type: string
       agent_branch:
-        description: Validated agent branch
         required: true
         type: string
       commit_sha:
-        description: Exact commit to verify
+        required: true
+        type: string
+      called_by_agent:
+        required: false
+        type: boolean
+        default: false
+    outputs:
+      validation_status:
+        description: passed, failed, sha_mismatch, invalid_pr, quality_check_not_started
+        value: ${{ jobs.finalize.outputs.validation_status }}
+      verified_sha:
+        description: 실제 검증한 SHA
+        value: ${{ jobs.finalize.outputs.verified_sha }}
+      failed_check:
+        description: 실패한 검사 이름
+        value: ${{ jobs.finalize.outputs.failed_check }}
+      quality_run_url:
+        description: 품질검사 실행 URL
+        value: ${{ jobs.finalize.outputs.quality_run_url }}
+  workflow_dispatch:
+    inputs:
+      pull_request_number:
+        description: 검증할 Pull Request 번호
+        required: true
+        type: string
+      agent_branch:
+        description: 검증할 에이전트 브랜치
+        required: true
+        type: string
+      commit_sha:
+        description: 검증할 정확한 commit SHA
         required: true
         type: string
 
@@ -21,11 +49,13 @@ permissions:
 
 jobs:
   verify-head:
+    name: PR 브랜치와 SHA 검증
     permissions:
       contents: read
       pull-requests: read
     runs-on: ubuntu-latest
     outputs:
+      validation_status: ${{ steps.verify.outputs.validation_status }}
       verified_sha: ${{ steps.verify.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
@@ -37,16 +67,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
           AGENT_BRANCH: ${{ inputs.agent_branch }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
         run: python -m scripts.verify_pr_head --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA"
 
   quality:
+    name: 정확한 commit 품질 검사
     needs: verify-head
+    if: needs.verify-head.outputs.validation_status == 'verified'
     permissions:
       contents: read
     runs-on: ubuntu-latest
+    outputs:
+      validation_status: ${{ steps.summarize.outputs.validation_status }}
+      failed_check: ${{ steps.summarize.outputs.failed_check }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -59,31 +94,92 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+          cache-dependency-path: package-lock.json
       - run: python -m pip install -r requirements.txt
-      - run: npm ci
-        if: hashFiles('package-lock.json') != ''
-      - run: python -m pytest
-      - run: ruff check agents tests scripts
-      - run: python -m scripts.check_workflows
-      - run: npm run lint
-        if: hashFiles('package-lock.json') != ''
-      - run: npm run typecheck
-        if: hashFiles('package-lock.json') != ''
-      - run: npm test -- --run
-        if: hashFiles('package-lock.json') != ''
-      - run: npm run build
-        if: hashFiles('package-lock.json') != ''
-      - run: python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
-      - run: npm audit --audit-level=high
-        if: hashFiles('package-lock.json') != ''
-      - run: python -m scripts.security_check
+      - id: pytest
+        continue-on-error: true
+        run: python -m pytest
+      - id: ruff
+        continue-on-error: true
+        run: python -m ruff check agents tests scripts
+      - id: workflow
+        continue-on-error: true
+        run: python -m scripts.check_workflows
+      - id: npm_ci
+        continue-on-error: true
+        run: npm ci
+      - id: eslint
+        continue-on-error: true
+        run: npm run lint
+      - id: typecheck
+        continue-on-error: true
+        run: npm run typecheck
+      - id: vitest
+        continue-on-error: true
+        run: npm test -- --run
+      - id: build
+        continue-on-error: true
+        run: npm run build
+      - id: pip_audit
+        continue-on-error: true
+        run: python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
+      - id: npm_audit
+        continue-on-error: true
+        run: npm audit --audit-level=high
+      - id: security
+        continue-on-error: true
+        run: python -m scripts.security_check
+      - id: summarize
+        if: always()
+        env:
+          PYTEST_RESULT: ${{ steps.pytest.outcome }}
+          RUFF_RESULT: ${{ steps.ruff.outcome }}
+          WORKFLOW_RESULT: ${{ steps.workflow.outcome }}
+          NPM_CI_RESULT: ${{ steps.npm_ci.outcome }}
+          ESLINT_RESULT: ${{ steps.eslint.outcome }}
+          TYPECHECK_RESULT: ${{ steps.typecheck.outcome }}
+          VITEST_RESULT: ${{ steps.vitest.outcome }}
+          BUILD_RESULT: ${{ steps.build.outcome }}
+          PIP_AUDIT_RESULT: ${{ steps.pip_audit.outcome }}
+          NPM_AUDIT_RESULT: ${{ steps.npm_audit.outcome }}
+          SECURITY_RESULT: ${{ steps.security.outcome }}
+        run: python -m scripts.summarize_quality_checks
 
-  record-success:
+  finalize:
+    name: 품질검사 결과 확정
     needs: [verify-head, quality]
-    if: success()
+    if: always()
     permissions:
       contents: read
-      pull-requests: write
+    runs-on: ubuntu-latest
+    outputs:
+      validation_status: ${{ steps.result.outputs.validation_status }}
+      verified_sha: ${{ steps.result.outputs.verified_sha }}
+      failed_check: ${{ steps.result.outputs.failed_check }}
+      quality_run_url: ${{ steps.result.outputs.quality_run_url }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - id: result
+        env:
+          VERIFICATION_STATUS: ${{ needs.verify-head.outputs.validation_status }}
+          VERIFIED_SHA: ${{ needs.verify-head.outputs.verified_sha }}
+          QUALITY_JOB_RESULT: ${{ needs.quality.result }}
+          QUALITY_STATUS: ${{ needs.quality.outputs.validation_status }}
+          FAILED_CHECK: ${{ needs.quality.outputs.failed_check }}
+          QUALITY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          QUALITY_RESULT_PATH: runtime/quality-result.json
+        run: python -m scripts.finalize_quality_result
+
+  manual-result:
+    name: 수동 진단 결과 저장
+    needs: finalize
+    if: always() && inputs.called_by_agent != true
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -92,26 +188,17 @@ jobs:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
       - env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: python -m scripts.update_pr_status --pr "$PR_NUMBER" --status ready_for_human_review
-
-  record-failure:
-    needs: [verify-head, quality]
-    if: failure()
-    permissions:
-      contents: read
-      pull-requests: write
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
+          VALIDATION_STATUS: ${{ needs.finalize.outputs.validation_status }}
+          VERIFIED_SHA: ${{ needs.finalize.outputs.verified_sha }}
+          FAILED_CHECK: ${{ needs.finalize.outputs.failed_check }}
+          QUALITY_RUN_URL: ${{ needs.finalize.outputs.quality_run_url }}
+          QUALITY_RESULT_PATH: runtime/quality-result.json
+        run: python -m scripts.write_quality_result
       - env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-        run: python -m scripts.update_pr_status --pr "$PR_NUMBER" --status ci_failed
+          QUALITY_RESULT_PATH: runtime/quality-result.json
+        run: python -m scripts.write_quality_summary
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quality-check-manual-result
+          path: runtime/quality-result.json
+          retention-days: 7

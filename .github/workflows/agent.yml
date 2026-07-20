@@ -1,4 +1,4 @@
-name: ZeroFounder Agent
+name: ZeroFounder 에이전트
 
 on:
   schedule:
@@ -6,9 +6,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Run mode
+        description: 실행 모드
         type: choice
-        options: [agent, setup-labels]
+        options: [agent, setup-labels, migrate-language-dry-run, migrate-language-apply]
         default: agent
   issues:
     types: [opened, labeled]
@@ -24,6 +24,7 @@ concurrency:
 
 jobs:
   preflight:
+    name: 모델 호출 사전 점검
     if: github.event_name != 'workflow_dispatch' || inputs.mode == 'agent'
     permissions:
       actions: read
@@ -52,7 +53,7 @@ jobs:
         run: |
           python -m agents.orchestrator preflight --output runtime/preflight.json
           python -c "import json,os; d=json.load(open('runtime/preflight.json')); open(os.environ['GITHUB_OUTPUT'],'a').write('should_call_model='+str(d['should_call_model']).lower()+'\n')"
-      - name: Summarize model usage preflight
+      - name: 모델 사용량 사전 점검 요약
         if: always()
         run: python -m scripts.write_preflight_summary --preflight runtime/preflight.json
       - uses: actions/upload-artifact@v4
@@ -62,6 +63,7 @@ jobs:
           retention-days: 1
 
   model:
+    name: AI 의사결정 실행
     needs: preflight
     if: needs.preflight.outputs.should_call_model == 'true'
     permissions:
@@ -86,6 +88,7 @@ jobs:
           GITHUB_FALLBACK_MODELS: ${{ vars.GITHUB_FALLBACK_MODELS }}
           GITHUB_EMBEDDING_MODEL: ${{ vars.GITHUB_EMBEDDING_MODEL }}
           MODEL_DIAGNOSTIC_MODE: ${{ vars.MODEL_DIAGNOSTIC_MODE || 'false' }}
+          OPERATING_LANGUAGE: ${{ vars.OPERATING_LANGUAGE || 'ko' }}
           DAILY_MODEL_CALL_LIMIT: ${{ vars.DAILY_MODEL_CALL_LIMIT || '8' }}
           MAX_FILES_PER_ACTION: ${{ vars.MAX_FILES_PER_ACTION || '12' }}
           MAX_TOTAL_OUTPUT_CHARS: ${{ vars.MAX_TOTAL_OUTPUT_CHARS || '60000' }}
@@ -96,28 +99,28 @@ jobs:
             --preflight runtime/preflight.json \
             --output runtime/action.json \
             --diagnostics runtime/model-diagnostic.json
-      - name: Confirm inference call 1
+      - name: 모델 호출 1 확인 [inference-confirm-1]
         if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') >= 1 }}
         run: "true"
-      - name: Confirm inference call 2
+      - name: 모델 호출 2 확인 [inference-confirm-2]
         if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') >= 2 }}
         run: "true"
-      - name: Mark HTTP failed inference call 1
+      - name: HTTP 실패 호출 1 기록 [inference-http-failed-1]
         if: ${{ always() && fromJSON(steps.model_run.outputs.http_failed_calls || '0') >= 1 }}
         run: "true"
-      - name: Mark HTTP failed inference call 2
+      - name: HTTP 실패 호출 2 기록 [inference-http-failed-2]
         if: ${{ always() && fromJSON(steps.model_run.outputs.http_failed_calls || '0') >= 2 }}
         run: "true"
-      - name: Mark response validation failed inference call 1
+      - name: 응답 검증 실패 호출 1 기록 [inference-validation-failed-1]
         if: ${{ always() && fromJSON(steps.model_run.outputs.response_validation_failed_calls || '0') >= 1 }}
         run: "true"
-      - name: Mark response validation failed inference call 2
+      - name: 응답 검증 실패 호출 2 기록 [inference-validation-failed-2]
         if: ${{ always() && fromJSON(steps.model_run.outputs.response_validation_failed_calls || '0') >= 2 }}
         run: "true"
-      - name: Mark inference run skipped
+      - name: 모델 호출 없는 실행 기록 [inference-skipped]
         if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') == 0 }}
         run: "true"
-      - name: Summarize model action validation
+      - name: 모델 행동 검증 결과 요약
         if: always()
         run: python -m scripts.write_model_summary --diagnostic runtime/model-diagnostic.json
       - uses: actions/upload-artifact@v4
@@ -129,6 +132,7 @@ jobs:
           retention-days: 1
 
   dependency-request:
+    name: 의존성 승인 요청 생성
     needs: model
     if: needs.model.result == 'success'
     permissions:
@@ -151,6 +155,7 @@ jobs:
         run: python -m scripts.create_dependency_issue --action runtime/action.json
 
   issue-command:
+    name: Issue 승인 명령 검증
     if: github.event_name == 'issue_comment'
     permissions:
       contents: read
@@ -178,6 +183,7 @@ jobs:
           retention-days: 1
 
   apply-issue-command:
+    name: 승인 명령 반영
     needs: issue-command
     if: needs.issue-command.outputs.valid == 'true' && needs.issue-command.outputs.kind == 'lifecycle'
     permissions:
@@ -198,6 +204,7 @@ jobs:
         run: python -m scripts.apply_approval_command --input runtime/approval-command.json
 
   dependency-branch:
+    name: 승인된 의존성 브랜치 생성
     needs: issue-command
     if: needs.issue-command.outputs.valid == 'true' && needs.issue-command.outputs.kind == 'dependency'
     permissions:
@@ -232,6 +239,7 @@ jobs:
         run: python -m scripts.apply_dependency_branch --input runtime/approval-command.json --run-id "$GITHUB_RUN_ID"
 
   create-dependency-pr:
+    name: 의존성 변경 PR 생성
     needs: dependency-branch
     if: needs.dependency-branch.result == 'success'
     permissions:
@@ -254,6 +262,7 @@ jobs:
         run: python -m scripts.create_dependency_pr --branch '${{ needs.dependency-branch.outputs.branch }}' --sha '${{ needs.dependency-branch.outputs.sha }}' --proposal '${{ needs.dependency-branch.outputs.proposal_id }}' --package '${{ needs.dependency-branch.outputs.package }}'
 
   setup-labels:
+    name: 저장소 라벨 초기화
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'setup-labels'
     permissions:
       contents: read
@@ -270,7 +279,33 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python -m scripts.setup_labels
 
+  migrate-language:
+    name: 기존 에이전트 산출물 언어 마이그레이션
+    if: github.event_name == 'workflow_dispatch' && (inputs.mode == 'migrate-language-dry-run' || inputs.mode == 'migrate-language-apply')
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - if: inputs.mode == 'migrate-language-dry-run'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python -m scripts.migrate_operating_language
+      - if: inputs.mode == 'migrate-language-apply'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python -m scripts.migrate_operating_language --apply
+
   create-branch:
+    name: 에이전트 변경 브랜치 생성
     needs: [preflight, model]
     if: needs.model.result == 'success'
     permissions:
@@ -302,7 +337,8 @@ jobs:
         with:
           name: validated-action
           path: runtime
-      - name: Create local agent branch
+      - name: 로컬 에이전트 브랜치 생성
+        id: prepare_branch
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
         run: python -m scripts.create_agent_branch --action runtime/action.json --run-id "$GITHUB_RUN_ID"
@@ -329,6 +365,7 @@ jobs:
         run: python -m scripts.commit_agent_changes --action runtime/action.json --run-id "$GITHUB_RUN_ID"
 
   create-pr:
+    name: 에이전트 변경 PR 생성
     needs: create-branch
     if: needs.create-branch.outputs.changed == 'true'
     permissions:
@@ -354,36 +391,24 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python -m scripts.create_agent_pr --action runtime/action.json --branch '${{ needs.create-branch.outputs.branch }}' --sha '${{ needs.create-branch.outputs.sha }}'
 
-  dispatch-quality-check:
+  quality-check:
+    name: 변경사항 품질 검사
     needs: [create-branch, create-pr, dependency-branch, create-dependency-pr]
     if: always() && (needs.create-pr.result == 'success' || needs.create-dependency-pr.result == 'success')
+    uses: ./.github/workflows/quality-check.yml
+    with:
+      pull_request_number: ${{ needs.create-pr.outputs.pr_number || needs.create-dependency-pr.outputs.pr_number }}
+      agent_branch: ${{ needs.create-branch.outputs.branch || needs.dependency-branch.outputs.branch }}
+      commit_sha: ${{ needs.create-branch.outputs.sha || needs.dependency-branch.outputs.sha }}
+      called_by_agent: true
     permissions:
-      actions: write
       contents: read
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
-      - env:
-          GITHUB_TOKEN: ${{ github.token }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          PR_NUMBER: ${{ needs.create-pr.outputs.pr_number || needs.create-dependency-pr.outputs.pr_number }}
-          AGENT_BRANCH: ${{ needs.create-branch.outputs.branch || needs.dependency-branch.outputs.branch }}
-          COMMIT_SHA: ${{ needs.create-branch.outputs.sha || needs.dependency-branch.outputs.sha }}
-          DEFAULT_BRANCH: ${{ needs.create-pr.outputs.default_branch || needs.create-dependency-pr.outputs.default_branch }}
-        continue-on-error: true
-        run: python -m scripts.dispatch_quality --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA" --ref "$DEFAULT_BRANCH" --result runtime/dispatch.json
-      - uses: actions/upload-artifact@v4
-        with:
-          name: quality-dispatch-result
-          path: runtime/dispatch.json
-          retention-days: 1
+      pull-requests: read
+      actions: read
 
-  record-dispatch-status:
-    needs: [create-pr, create-dependency-pr, dispatch-quality-check]
+  record-quality-status:
+    name: PR 품질 상태 기록
+    needs: [create-pr, create-dependency-pr, quality-check]
     if: always() && (needs.create-pr.result == 'success' || needs.create-dependency-pr.result == 'success')
     permissions:
       contents: read
@@ -395,12 +420,30 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
-        with:
-          name: quality-dispatch-result
-          path: runtime
-      - env:
+      - id: record
+        env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ needs.create-pr.outputs.pr_number || needs.create-dependency-pr.outputs.pr_number }}
-        run: python -m scripts.update_pr_from_result --pr "$PR_NUMBER" --result runtime/dispatch.json
+          VALIDATION_STATUS: ${{ needs.quality-check.outputs.validation_status || 'quality_check_not_started' }}
+          VERIFIED_SHA: ${{ needs.quality-check.outputs.verified_sha }}
+          FAILED_CHECK: ${{ needs.quality-check.outputs.failed_check }}
+          QUALITY_RUN_URL: ${{ needs.quality-check.outputs.quality_run_url }}
+        run: python -m scripts.record_quality_status --pr "$PR_NUMBER"
+
+  quality-gate:
+    name: 품질검사 최종 gate
+    needs: [create-pr, create-dependency-pr, quality-check, record-quality-status]
+    if: always() && (needs.create-pr.result == 'success' || needs.create-dependency-pr.result == 'success')
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - env:
+          VALIDATION_STATUS: ${{ needs.quality-check.outputs.validation_status || 'quality_check_not_started' }}
+          RECORD_RESULT: ${{ needs.record-quality-status.result }}
+        run: python -m scripts.quality_gate

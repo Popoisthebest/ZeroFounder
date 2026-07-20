@@ -1,34 +1,41 @@
 import httpx
-import pytest
 
 from agents.github_client import GitHubClient
+from agents.quality import classify_pull_target
 
 
-def test_dispatch_payload_and_head_verification():
-    requests = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        if request.method == "POST":
-            return httpx.Response(204)
-        return httpx.Response(200, json={"head": {"ref": "agent/1-test", "sha": "a" * 40}})
-
-    client = GitHubClient("fake", "owner/repo", transport=httpx.MockTransport(handler))
-    client.dispatch_quality_check(
-        pr_number=1, agent_branch="agent/1-test", commit_sha="a" * 40, ref="main"
+def test_pull_request_target_verification_uses_exact_repository_branch_and_sha():
+    pull = {
+        "number": 1,
+        "head": {
+            "ref": "agent/1-test",
+            "sha": "a" * 40,
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"repo": {"full_name": "owner/repo"}},
+    }
+    status, verified_sha = classify_pull_target(
+        pull, repository="owner/repo", branch="agent/1-test", commit_sha="a" * 40
     )
-    assert requests[0].url.path.endswith("/quality-check.yml/dispatches")
-    assert client.verify_pull_head(pr_number=1, branch="agent/1-test", commit_sha="a" * 40)
+    assert status == "verified"
+    assert verified_sha == "a" * 40
 
 
-def test_dispatch_rejects_untrusted_inputs():
-    client = GitHubClient(
-        "fake", "owner/repo", transport=httpx.MockTransport(lambda request: httpx.Response(204))
+def test_pull_request_target_rejects_branch_mismatch():
+    pull = {
+        "number": 1,
+        "head": {
+            "ref": "agent/other",
+            "sha": "a" * 40,
+            "repo": {"full_name": "owner/repo"},
+        },
+        "base": {"repo": {"full_name": "owner/repo"}},
+    }
+    status, verified_sha = classify_pull_target(
+        pull, repository="owner/repo", branch="agent/1-test", commit_sha="a" * 40
     )
-    with pytest.raises(ValueError):
-        client.dispatch_quality_check(
-            pr_number=1, agent_branch="$(evil)", commit_sha="bad", ref="main"
-        )
+    assert status == "sha_mismatch"
+    assert verified_sha == "a" * 40
 
 
 def test_model_usage_counts_only_successful_inference_markers():
@@ -41,14 +48,23 @@ def test_model_usage_counts_only_successful_inference_markers():
                 json={
                     "jobs": [
                         {
-                            "name": "model",
+                            "name": "AI 의사결정 실행",
                             "status": "completed",
                             "conclusion": "success",
                             "steps": [
-                                {"name": "Confirm inference call 1", "conclusion": "success"},
-                                {"name": "Confirm inference call 2", "conclusion": "skipped"},
+                                {
+                                    "name": "모델 호출 1 확인 [inference-confirm-1]",
+                                    "conclusion": "success",
+                                },
+                                {
+                                    "name": "모델 호출 2 확인 [inference-confirm-2]",
+                                    "conclusion": "skipped",
+                                },
                                     {
-                                        "name": "Mark response validation failed inference call 1",
+                                        "name": (
+                                            "응답 검증 실패 호출 1 기록 "
+                                            "[inference-validation-failed-1]"
+                                        ),
                                         "conclusion": "success",
                                     },
                             ],

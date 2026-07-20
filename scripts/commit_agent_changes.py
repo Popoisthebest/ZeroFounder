@@ -6,6 +6,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from agents.operating_output import action_commit_message
 from agents.schemas import ActionEnvelope
 
 
@@ -57,7 +58,7 @@ def main() -> int:
     if staged.returncode == 0:
         output("changed", "false")
         return 0
-    message = f"chore(agent): {action.action_type.value} [run:{args.run_id}]"
+    message = action_commit_message(action, args.run_id)
     run(["git", "commit", "-m", message], root)
     run(["git", "push", "--set-upstream", "origin", branch], root)
     sha = run(["git", "rev-parse", "HEAD"], root, capture=True)

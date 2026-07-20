@@ -79,7 +79,12 @@ def main() -> int:
     )
     run(["git", "add", "--", *files], root)
     run(
-        ["git", "commit", "-m", f"chore(deps): approve {proposal.proposal_id} [run:{args.run_id}]"],
+        [
+            "git",
+            "commit",
+            "-m",
+            f"chore(deps): 승인된 {proposal.proposal_id} 의존성 반영 [run:{args.run_id}]",
+        ],
         root,
     )
     run(["git", "push", "--set-upstream", "origin", branch], root)

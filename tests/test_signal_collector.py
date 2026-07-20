@@ -63,6 +63,12 @@ def test_source_failure_does_not_abort_other_sources(tmp_path: Path):
     signals = collector.collect(tmp_path)
     assert len(signals) == 1
     assert collector.errors[0]["source_id"] == "bad"
+    signal = signals[0]
+    assert signal.original_language == "en"
+    assert signal.original_title == "Manual workaround"
+    assert signal.korean_title
+    assert signal.source_url == "https://github.com/o/r/issues/1"
+    assert signal.market_region == ["global"]
 
 
 def test_append_deduplicates_between_runs(tmp_path: Path):

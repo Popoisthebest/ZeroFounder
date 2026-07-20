@@ -1,4 +1,4 @@
-name: Collect Market Signals
+name: ZeroFounder 시장 신호 수집
 
 on:
   schedule:
@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   collect:
+    name: 공개 시장 신호 및 운영 지표 수집
     permissions:
       actions: read
       contents: write
@@ -38,5 +39,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add signals/raw company/metrics.json company/usage.json reports
-          git commit -m "chore(agent): collect-signals [run:${GITHUB_RUN_ID}]"
+          git commit -m "chore(agent): 시장 신호 및 일일 운영 지표 갱신 [run:${GITHUB_RUN_ID}]"
           git push origin HEAD

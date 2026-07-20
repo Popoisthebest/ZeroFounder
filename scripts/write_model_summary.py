@@ -95,9 +95,9 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
     ]
     table = "\n".join(f"| {_safe_cell(name)} | {_safe_cell(value)} |" for name, value in rows)
     return (
-        "## ZeroFounder model action validation\n\n"
-        "Only validated action metadata is shown; model text and credentials are omitted.\n\n"
-        "| Field | Value |\n| --- | --- |\n"
+        "## ZeroFounder 모델 행동 검증\n\n"
+        "검증된 행동 메타데이터만 표시하며 모델 원문과 인증 정보는 제외합니다.\n\n"
+        "| 항목 | 값 |\n| --- | --- |\n"
         f"{table}\n"
     )
 
@@ -114,8 +114,8 @@ def main() -> int:
         summary = render_summary(diagnostic)
     else:
         summary = (
-            "## ZeroFounder model action validation\n\n"
-            "Diagnostic metadata was not produced; no model content or credentials were logged.\n"
+            "## ZeroFounder 모델 행동 검증\n\n"
+            "진단 메타데이터가 생성되지 않았으며 모델 원문과 인증 정보는 기록하지 않았습니다.\n"
         )
     with Path(summary_path).open("a", encoding="utf-8") as handle:
         handle.write(summary)

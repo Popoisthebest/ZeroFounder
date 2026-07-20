@@ -15,23 +15,23 @@ def _safe(value: object) -> str:
 def render_summary(decision: PreflightDecision) -> str:
     rows = [
         ("should_call_model", str(decision.should_call_model).lower()),
-        ("completed calls today", decision.completed_calls_today),
-        ("active reservations", decision.active_reservations),
-        ("required calls for this run", decision.required_calls),
-        ("daily limit", decision.daily_limit),
-        ("manual diagnostic allowance", decision.manual_diagnostic_allowance),
-        ("effective daily limit", decision.effective_daily_limit),
-        ("allowed", str(decision.usage_allowed).lower()),
-        ("limit calculation", decision.usage_calculation),
-        ("failed after request calls today", decision.failed_after_request_calls_today),
-        ("skipped runs today", decision.skipped_runs_today),
+        ("오늘 완료된 호출", decision.completed_calls_today),
+        ("활성 예약", decision.active_reservations),
+        ("이번 실행 필요 호출", decision.required_calls),
+        ("일일 한도", decision.daily_limit),
+        ("수동 진단 추가 한도", decision.manual_diagnostic_allowance),
+        ("적용 일일 한도", decision.effective_daily_limit),
+        ("호출 허용", str(decision.usage_allowed).lower()),
+        ("한도 계산식", decision.usage_calculation),
+        ("오늘 요청 후 실패", decision.failed_after_request_calls_today),
+        ("오늘 건너뛴 실행", decision.skipped_runs_today),
         ("blocked_reason", decision.blocked_reason or "none"),
     ]
     table = "\n".join(f"| {_safe(key)} | {_safe(value)} |" for key, value in rows)
     return (
-        "## ZeroFounder model usage preflight\n\n"
-        "Only confirmed inference markers count toward the daily limit.\n\n"
-        "| Field | Value |\n| --- | --- |\n"
+        "## ZeroFounder 모델 사용량 사전 점검\n\n"
+        "실제 inference 요청이 확인된 호출만 일일 한도에 포함합니다.\n\n"
+        "| 항목 | 값 |\n| --- | --- |\n"
         f"{table}\n"
     )
 

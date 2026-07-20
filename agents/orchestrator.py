@@ -15,6 +15,7 @@ from agents.github_models import (
     estimate_input_tokens,
     safe_no_op,
 )
+from agents.language import GLOBAL_MARKET_POLICY, operating_language
 from agents.lifecycle import (
     action_allowed,
     allowed_actions,
@@ -246,6 +247,8 @@ def build_model_instruction(
         }
     payload = {
         "orchestration_policy": {
+            "operating_language": operating_language(),
+            "market_policy": GLOBAL_MARKET_POLICY,
             "lifecycle_stage": state.lifecycle_stage.value,
             "allowed_action_types": [item.value for item in permitted],
             "preferred_action_types": [item.value for item in preferred],

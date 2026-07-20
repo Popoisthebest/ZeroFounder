@@ -85,11 +85,11 @@ def test_usage_summary_contains_required_limit_fields():
     decision.usage_calculation = "6 + 0 + 2 <= 8"
     summary = render_summary(decision)
     for field in {
-        "completed calls today",
-        "active reservations",
-        "required calls for this run",
-        "daily limit",
-        "allowed",
-        "limit calculation",
+        "오늘 완료된 호출",
+        "활성 예약",
+        "이번 실행 필요 호출",
+        "일일 한도",
+        "호출 허용",
+        "한도 계산식",
     }:
         assert f"| {field} |" in summary

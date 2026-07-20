@@ -180,7 +180,7 @@ def test_create_branch_job_applies_then_tests_before_commit_and_push():
         return next(index for index, step in enumerate(steps) if predicate(step))
 
     checkout = step_index(lambda step: step.get("uses", "").startswith("actions/checkout@"))
-    branch = step_index(lambda step: step.get("name") == "Create local agent branch")
+    branch = step_index(lambda step: step.get("id") == "prepare_branch")
     apply = step_index(lambda step: step.get("id") == "apply")
     pytest_step = step_index(lambda step: step.get("run") == "python -m pytest")
     commit = step_index(lambda step: step.get("id") == "commit")
