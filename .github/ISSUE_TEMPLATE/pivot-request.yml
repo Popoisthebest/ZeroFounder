@@ -1,0 +1,11 @@
+name: 피벗 요청
+description: 검증 전제조건을 확인한 뒤 피벗 검토를 요청합니다
+labels: [pivot-review, requires-approval]
+body:
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 검증 기간, 노출, 사용자 신호, 피드백, 실험 근거
+    validations:
+      required: true
+

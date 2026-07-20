@@ -1,0 +1,17 @@
+name: 사업 아이템 제안
+description: 근거가 있는 사업 아이템을 제안합니다
+labels: [idea, market-signal]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 문제와 독립 근거
+    validations:
+      required: true
+  - type: textarea
+    id: mechanism
+    attributes:
+      label: 기존 방식과 구조적으로 다른 해결 원리
+    validations:
+      required: true
+

@@ -1,0 +1,17 @@
+name: 시장 문제 제보
+description: 반복되는 실제 문제와 근거를 알려주세요
+labels: [market-signal]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 반복되는 문제
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 공개 근거 URL과 현재 해결 방식
+    validations:
+      required: true
+

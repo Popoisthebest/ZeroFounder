@@ -1,0 +1,14 @@
+name: 창업자 승인 요청
+description: ZeroFounder의 구조화된 승인 요청에 사용합니다
+labels: [founder-approval, requires-approval]
+body:
+  - type: markdown
+    attributes:
+      value: 권한 있는 창업자가 독립된 한 줄로 `/approve`, `/reject`, `/revise`, `/pause`, `/resume`, `/pivot` 중 하나를 댓글로 남깁니다.
+  - type: textarea
+    id: decision
+    attributes:
+      label: 검토 대상과 근거
+    validations:
+      required: true
+

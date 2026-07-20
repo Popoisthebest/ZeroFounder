@@ -1,0 +1,11 @@
+name: 개선 제안
+description: 제품이나 운영 방식의 개선점을 제안합니다
+labels: [feedback]
+body:
+  - type: textarea
+    id: improvement
+    attributes:
+      label: 개선 내용
+    validations:
+      required: true
+

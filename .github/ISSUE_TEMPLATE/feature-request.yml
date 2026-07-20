@@ -1,0 +1,11 @@
+name: 제품 기능 요청
+description: 운영 중인 제품의 기능을 제안합니다
+labels: [feature-request, feedback]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: 해결하려는 작업
+    validations:
+      required: true
+
