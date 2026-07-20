@@ -47,10 +47,10 @@ def test_model_usage_counts_only_successful_inference_markers():
                             "steps": [
                                 {"name": "Confirm inference call 1", "conclusion": "success"},
                                 {"name": "Confirm inference call 2", "conclusion": "skipped"},
-                                {
-                                    "name": "Mark failed inference call 1",
-                                    "conclusion": "success",
-                                },
+                                    {
+                                        "name": "Mark response validation failed inference call 1",
+                                        "conclusion": "success",
+                                    },
                             ],
                         }
                     ]
@@ -75,5 +75,7 @@ def test_model_usage_counts_only_successful_inference_markers():
         "completed_inference_calls": 1,
         "reserved_inference_calls": 0,
         "failed_after_request_calls": 1,
+        "http_failed_calls": 0,
+        "response_validation_failed_calls": 1,
         "skipped_runs": 1,
     }

@@ -19,6 +19,25 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
     rejection_reason = diagnostic.rejection_reason or "none"
     allowed = ", ".join(item.value for item in diagnostic.allowed_action_types)
     validation_paths = ", ".join(inference.pydantic_validation_error_paths) or "none"
+    validation_errors = "; ".join(
+        f"{item.path}: {item.error_type}"
+        for item in inference.pydantic_validation_errors
+    ) or "none"
+    missing_fields = ", ".join(
+        item.missing_field
+        for item in inference.pydantic_validation_errors
+        if item.missing_field
+    ) or "none"
+    extra_fields = ", ".join(
+        item.extra_field
+        for item in inference.pydantic_validation_errors
+        if item.extra_field
+    ) or "none"
+    expected_types = "; ".join(
+        f"{item.path}: {item.expected_type}"
+        for item in inference.pydantic_validation_errors
+        if item.expected_type
+    ) or "none"
     rows = [
         ("lifecycle_stage", diagnostic.lifecycle_stage.value),
         ("allowed_action_types", allowed),
@@ -41,7 +60,11 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("retry_attempted", str(inference.retry_attempted).lower()),
         ("completed_inference_calls_this_run", inference.completed_inference_calls),
         ("reserved_inference_calls", inference.reserved_inference_calls),
-        ("failed_after_request_calls_this_run", inference.failed_after_request_calls),
+        ("http_failed_calls_this_run", inference.http_failed_calls),
+        (
+            "response_validation_failed_calls_this_run",
+            inference.response_validation_failed_calls,
+        ),
         ("request_body_bytes", inference.request_body_bytes),
         ("system_prompt_chars", inference.system_prompt_chars),
         ("user_prompt_chars", inference.user_prompt_chars),
@@ -56,10 +79,19 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("included_signal_count", inference.included_signal_count),
         ("excluded_signal_count", inference.excluded_signal_count),
         ("compact_retry_attempted", str(inference.compact_retry_attempted).lower()),
+        (
+            "validation_correction_attempted",
+            str(inference.validation_correction_attempted).lower(),
+        ),
         ("failure_stage", inference.failure_stage or "none"),
         ("rejection_code", rejection_code),
         ("rejection_reason", rejection_reason),
         ("pydantic_validation_error_paths", validation_paths),
+        ("pydantic_validation_errors", validation_errors),
+        ("pydantic_validation_error_count", inference.pydantic_validation_error_count),
+        ("missing_fields", missing_fields),
+        ("extra_fields", extra_fields),
+        ("expected_types", expected_types),
     ]
     table = "\n".join(f"| {_safe_cell(name)} | {_safe_cell(value)} |" for name, value in rows)
     return (

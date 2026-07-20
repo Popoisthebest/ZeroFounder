@@ -14,6 +14,7 @@ from agents.schemas import (
     ActionEnvelope,
     ActionType,
     CompanyState,
+    DiscoveryActionEnvelope,
     LifecycleStage,
     ModelActionDiagnostic,
     ModelInferenceDiagnostic,
@@ -38,6 +39,29 @@ def valid_action(**overrides):
     return ActionEnvelope.model_validate(payload)
 
 
+def discovery_problem(**overrides):
+    payload = {
+        "role": "researcher",
+        "action_type": "create_problem_candidate",
+        "title": "Problem candidate",
+        "summary": "Create an evidence-backed problem candidate.",
+        "rationale": "Stored signals show the same manual workaround.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": ["signal-001"],
+        "problem_candidate": {
+            "problem_id": "problem-001",
+            "title": "Repeated manual coordination",
+            "target_users": ["small teams"],
+            "description": "Small teams repeatedly reconcile coordination details manually.",
+            "current_workaround": "They combine spreadsheets and message threads.",
+        },
+        "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
+    }
+    payload.update(overrides)
+    return payload
+
+
 def test_initial_state_is_discovery():
     state = CompanyState.model_validate_json((ROOT / "company/state.json").read_text())
     assert state.lifecycle_stage == LifecycleStage.DISCOVERY
@@ -49,6 +73,43 @@ def test_extra_fields_and_unknown_actions_are_rejected():
         valid_action(untrusted_shell="rm -rf .")
     with pytest.raises(ValidationError):
         valid_action(action_type="run_shell")
+
+
+def test_discovery_problem_candidate_contract_accepts_valid_payload():
+    action = DiscoveryActionEnvelope.model_validate(discovery_problem()).to_action_envelope()
+    assert action.problem_candidate is not None
+    assert action.files == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_path"),
+    [
+        ({"problem_candidate": None}, "problem_candidate"),
+        ({"evidence_ids": []}, "evidence_ids"),
+        ({"state_transition": {"from": "DISCOVERY", "to": "MVP_BUILDING"}}, "to"),
+    ],
+)
+def test_discovery_problem_candidate_rejects_missing_or_invalid_fields(
+    mutation: dict, expected_path: str
+):
+    with pytest.raises(ValidationError) as captured:
+        DiscoveryActionEnvelope.model_validate(discovery_problem(**mutation))
+    paths = [".".join(str(item) for item in error["loc"]) for error in captured.value.errors()]
+    assert any(expected_path in path for path in paths)
+
+
+def test_discovery_problem_candidate_rejects_extra_fields_and_wrong_types():
+    extra = discovery_problem()
+    extra["files"] = [{"path": "research/problems/invented.json", "content": "{}"}]
+    with pytest.raises(ValidationError) as captured:
+        DiscoveryActionEnvelope.model_validate(extra)
+    assert any(error["type"] == "extra_forbidden" for error in captured.value.errors())
+
+    wrong_type = discovery_problem()
+    wrong_type["problem_candidate"]["title"] = 42
+    with pytest.raises(ValidationError) as captured:
+        DiscoveryActionEnvelope.model_validate(wrong_type)
+    assert any(error["type"] == "string_type" for error in captured.value.errors())
 
 
 @pytest.mark.parametrize(

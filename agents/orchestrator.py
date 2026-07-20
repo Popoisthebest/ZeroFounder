@@ -531,6 +531,11 @@ def main() -> int:
                     "failed_after_request_calls="
                     f"{inference.failed_after_request_calls}\n"
                 )
+                handle.write(f"http_failed_calls={inference.http_failed_calls}\n")
+                handle.write(
+                    "response_validation_failed_calls="
+                    f"{inference.response_validation_failed_calls}\n"
+                )
         if args.diagnostics:
             args.diagnostics.parent.mkdir(parents=True, exist_ok=True)
             args.diagnostics.write_text(

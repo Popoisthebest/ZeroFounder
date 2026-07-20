@@ -11,7 +11,7 @@ def main() -> int:
         [sys.executable, "-m", "pip", "install", "-r", "requirements.txt"],
         ["npm", "ci"],
         [sys.executable, "-m", "pytest"],
-        ["ruff", "check", "agents", "tests", "scripts"],
+        [sys.executable, "-m", "ruff", "check", "agents", "tests", "scripts"],
         [sys.executable, "-m", "scripts.check_workflows"],
         ["npm", "run", "lint"],
         ["npm", "run", "typecheck"],

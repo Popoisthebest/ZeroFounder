@@ -149,7 +149,8 @@ class GitHubClient:
             params={"created": f">={today}", "per_page": 100},
         ).get("workflow_runs", [])
         completed_calls = 0
-        failed_after_request_calls = 0
+        http_failed_calls = 0
+        response_validation_failed_calls = 0
         active_reservations = 0
         skipped_runs = 0
         for run in runs:
@@ -179,8 +180,10 @@ class GitHubClient:
                         confirmed_slots.add(name.rsplit(" ", 1)[-1])
                     elif name.startswith("Reserve inference call "):
                         reserved_slots.add(name.rsplit(" ", 1)[-1])
-                    elif name.startswith("Mark failed inference call "):
-                        failed_after_request_calls += 1
+                    elif name.startswith("Mark HTTP failed inference call "):
+                        http_failed_calls += 1
+                    elif name.startswith("Mark response validation failed inference call "):
+                        response_validation_failed_calls += 1
                     elif name == "Mark inference run skipped":
                         skipped_runs += 1
                 completed_calls += len(confirmed_slots)
@@ -190,7 +193,12 @@ class GitHubClient:
             "completed_inference_calls": completed_calls,
             "reserved_inference_calls": active_reservations,
             "failed_after_request_calls": min(
-                failed_after_request_calls, completed_calls
+                http_failed_calls + response_validation_failed_calls,
+                completed_calls,
+            ),
+            "http_failed_calls": min(http_failed_calls, completed_calls),
+            "response_validation_failed_calls": min(
+                response_validation_failed_calls, completed_calls
             ),
             "skipped_runs": skipped_runs,
         }

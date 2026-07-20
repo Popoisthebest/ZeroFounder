@@ -18,10 +18,13 @@ from agents.schemas import (
     CompactDiscoveryActionEnvelope,
     DiscoveryActionEnvelope,
     FailureStage,
+    LifecycleStage,
     MessageContentType,
+    ModelActionDiagnostic,
     ModelRequestMode,
 )
 from agents.usage_limiter import UsageLimiter
+from scripts.write_model_summary import render_summary
 
 VALID = {
     "role": "auditor",
@@ -44,13 +47,17 @@ VALID_PROBLEM = {
     "risk_level": "low",
     "requires_approval": False,
     "evidence_ids": ["signal-001"],
-    "files": [
-        {
-            "path": "research/problems/problem-001.json",
-            "content": '{"problem_id":"problem-001"}',
-        }
-    ],
+    "problem_candidate": {
+        "problem_id": "problem-001",
+        "title": "Repeated manual coordination work",
+        "target_users": ["small teams"],
+        "description": "Small teams repeatedly reconcile the same coordination details by hand.",
+        "current_workaround": "They combine spreadsheets, messages, and screenshots.",
+    },
+    "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
 }
+
+DISCOVERY_NO_OP = {key: value for key, value in VALID.items() if key != "files"}
 
 
 def _completion(
@@ -296,7 +303,7 @@ def test_json_schema_failure_falls_back_to_json_only_and_preserves_model_id(
                 unsupported_status,
                 json={"message": "unsupported response_format"},
             )
-        return httpx.Response(200, json=_completion())
+        return httpx.Response(200, json=_completion(json.dumps(DISCOVERY_NO_OP)))
 
     result = _run(
         _client(handler),
@@ -351,6 +358,70 @@ def test_normal_create_problem_candidate_response():
     assert result.action.action_type == ActionType.CREATE_PROBLEM_CANDIDATE
     assert result.original_action_type == ActionType.CREATE_PROBLEM_CANDIDATE
     assert result.rejection_code is None
+
+
+def test_schema_failure_correction_retry_succeeds_without_replaying_model_text():
+    requests: list[dict] = []
+    invalid = {key: value for key, value in VALID_PROBLEM.items() if key != "problem_candidate"}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else VALID_PROBLEM
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    result = _run(
+        _client(handler),
+        response_model=DiscoveryActionEnvelope,
+    )
+    assert result.rejection_code is None
+    assert result.action.action_type == ActionType.CREATE_PROBLEM_CANDIDATE
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.retry_attempted
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.response_validation_failed_calls == 1
+    correction = requests[1]["messages"][-1]["content"]
+    assert "problem_candidate" in correction
+    assert json.dumps(invalid) not in correction
+
+
+def test_second_schema_failure_returns_safe_no_op_with_diagnostics():
+    invalid = {key: value for key, value in VALID_PROBLEM.items() if key != "problem_candidate"}
+    client = _client(_single_response(_completion(json.dumps(invalid))))
+    result = _run(client, response_model=DiscoveryActionEnvelope)
+    assert result.action.action_type == ActionType.NO_OP
+    assert result.rejection_code == ActionRejectionCode.MODEL_RESPONSE_REJECTED
+    assert result.diagnostic.failure_stage == FailureStage.SCHEMA_VALIDATION
+    assert result.diagnostic.pydantic_validation_error_count >= 1
+    assert any(
+        error.missing_field == "problem_candidate"
+        for error in result.diagnostic.pydantic_validation_errors
+    )
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.http_failed_calls == 0
+    assert result.diagnostic.response_validation_failed_calls == 2
+
+
+def test_actions_summary_lists_safe_pydantic_error_details():
+    invalid = {key: value for key, value in VALID_PROBLEM.items() if key != "problem_candidate"}
+    result = _run(
+        _client(_single_response(_completion(json.dumps(invalid)))),
+        response_model=DiscoveryActionEnvelope,
+    )
+    diagnostic = ModelActionDiagnostic(
+        lifecycle_stage=LifecycleStage.DISCOVERY,
+        allowed_action_types=[ActionType.CREATE_PROBLEM_CANDIDATE, ActionType.NO_OP],
+        original_action_type=result.original_action_type,
+        validated_action_type=ActionType.NO_OP,
+        accepted=False,
+        rejection_code=result.rejection_code,
+        rejection_reason=result.rejection_reason,
+        inference=result.diagnostic,
+    )
+    summary = render_summary(diagnostic)
+    assert "problem_candidate" in summary
+    assert "missing" in summary
+    assert "pydantic_validation_error_count" in summary
+    assert json.dumps(invalid) not in summary
 
 
 def test_diagnostic_mode_builds_small_exact_response_request():
@@ -414,7 +485,7 @@ def test_http_413_retries_once_with_compact_payload_and_succeeds():
         bodies.append(len(request.content))
         if len(bodies) == 1:
             return httpx.Response(413, json={"message": "too large"})
-        return httpx.Response(200, json=_completion())
+        return httpx.Response(200, json=_completion(json.dumps(DISCOVERY_NO_OP)))
 
     client = _client(handler)
     compact = PromptVariant(

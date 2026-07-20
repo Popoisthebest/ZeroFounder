@@ -23,6 +23,7 @@ from agents.schemas import (
     ModelInferenceDiagnostic,
     ModelRequestMode,
     ModelSelection,
+    PydanticErrorDiagnostic,
     RiskLevel,
 )
 from agents.usage_limiter import UsageLimiter, UsageLimitReached, request_fingerprint
@@ -70,6 +71,24 @@ DIAGNOSTIC_ACTION = {
     "state_transition": None,
     "files": [],
     "dependency_proposal": None,
+}
+DISCOVERY_CORRECTION_EXAMPLE = {
+    "role": "researcher",
+    "action_type": "create_problem_candidate",
+    "title": "Problem candidate",
+    "summary": "One evidence-backed problem candidate.",
+    "rationale": "Stored signals describe the same concrete workaround.",
+    "risk_level": "low",
+    "requires_approval": False,
+    "evidence_ids": ["signal-existing-id"],
+    "problem_candidate": {
+        "problem_id": "problem-example",
+        "title": "Concrete recurring problem",
+        "target_users": ["specific user group"],
+        "description": "A specific recurring problem supported by stored evidence.",
+        "current_workaround": "Users currently combine manual steps and existing tools.",
+    },
+    "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
 }
 
 
@@ -166,6 +185,7 @@ class ModelPipelineError(RuntimeError):
         retryable: bool = False,
         fallback_eligible: bool = False,
         validation_paths: list[str] | None = None,
+        validation_errors: list[PydanticErrorDiagnostic] | None = None,
         original_action_type: ActionType | None = None,
     ) -> None:
         super().__init__(reason)
@@ -175,17 +195,46 @@ class ModelPipelineError(RuntimeError):
         self.retryable = retryable
         self.fallback_eligible = fallback_eligible
         self.validation_paths = validation_paths or []
+        self.validation_errors = validation_errors or []
         self.original_action_type = original_action_type
 
 
-def _validation_error_paths(exc: ValidationError) -> list[str]:
-    paths: list[str] = []
+def _expected_type(error_type: str) -> str | None:
+    if error_type == "missing":
+        return "required field"
+    if error_type == "extra_forbidden":
+        return "field must be omitted"
+    if error_type == "literal_error":
+        return "allowed literal"
+    mappings = {
+        "string_type": "string",
+        "list_type": "array",
+        "dict_type": "object",
+        "int_type": "integer",
+        "float_type": "number",
+        "bool_type": "boolean",
+    }
+    return mappings.get(error_type)
+
+
+def _validation_error_details(exc: ValidationError) -> list[PydanticErrorDiagnostic]:
+    details: list[PydanticErrorDiagnostic] = []
     for error in exc.errors(include_url=False, include_context=False, include_input=False):
         location = error.get("loc", ())
         path = ".".join(str(item) for item in location) or "<root>"
-        if path not in paths:
-            paths.append(path[:200])
-    return paths[:50]
+        error_type = str(error.get("type") or "validation_error")[:100]
+        leaf = str(location[-1])[:200] if location else None
+        details.append(
+            PydanticErrorDiagnostic(
+                path=path[:300],
+                error_type=error_type,
+                message=str(error.get("msg") or "validation failed")[:300],
+                missing_field=leaf if error_type == "missing" else None,
+                extra_field=leaf if error_type == "extra_forbidden" else None,
+                expected_type=_expected_type(error_type),
+            )
+        )
+    return details[:50]
 
 
 def _extract_json_object(value: str) -> tuple[dict[str, Any], ActionType | None]:
@@ -422,7 +471,6 @@ class GitHubModelsClient:
             diagnostic.response_char_count = 0
             diagnostic.finish_reason = None
             diagnostic.failure_stage = None
-            diagnostic.pydantic_validation_error_paths = []
             try:
                 base_payload: dict[str, Any] = {
                     "model": model,
@@ -512,7 +560,7 @@ class GitHubModelsClient:
             diagnostic.http_status = response.status_code
             if response.status_code == 413:
                 if request_id is not None:
-                    self.limiter.mark_request_failed(request_id)
+                    self.limiter.mark_http_failed(request_id)
                 self.limiter.record_failure()
                 if compact_variant is not None and not using_compact and calls < call_limit:
                     diagnostic.compact_retry_attempted = True
@@ -528,7 +576,7 @@ class GitHubModelsClient:
                 break
             if response.status_code in {400, 422} and current_mode == ModelRequestMode.JSON_SCHEMA:
                 if request_id is not None:
-                    self.limiter.mark_request_failed(request_id)
+                    self.limiter.mark_http_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     "json_schema request was not supported by the selected model",
@@ -542,7 +590,7 @@ class GitHubModelsClient:
                 break
             if response.status_code == 429 or response.status_code >= 500:
                 if request_id is not None:
-                    self.limiter.mark_request_failed(request_id)
+                    self.limiter.mark_http_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     f"GitHub Models returned HTTP {response.status_code}",
@@ -556,7 +604,7 @@ class GitHubModelsClient:
                 break
             if not 200 <= response.status_code < 300:
                 if request_id is not None:
-                    self.limiter.mark_request_failed(request_id)
+                    self.limiter.mark_http_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     f"GitHub Models returned HTTP {response.status_code}",
@@ -567,7 +615,7 @@ class GitHubModelsClient:
                 data = response.json()
             except (json.JSONDecodeError, ValueError):
                 if request_id is not None:
-                    self.limiter.mark_request_failed(request_id)
+                    self.limiter.mark_response_validation_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.RESPONSE_DECODE,
                     "GitHub Models returned a non-JSON response body",
@@ -590,10 +638,28 @@ class GitHubModelsClient:
                 )
             except ModelPipelineError as exc:
                 if request_id is not None:
-                    self.limiter.mark_request_failed(request_id)
+                    self.limiter.mark_response_validation_failed(request_id)
                 last_error = exc
                 original_action_type = exc.original_action_type or original_action_type
                 self.limiter.record_failure()
+                if exc.stage == FailureStage.SCHEMA_VALIDATION:
+                    diagnostic.pydantic_validation_error_paths = exc.validation_paths
+                    diagnostic.pydantic_validation_errors = exc.validation_errors
+                    diagnostic.pydantic_validation_error_count = len(exc.validation_errors)
+                    if calls < call_limit:
+                        diagnostic.validation_correction_attempted = True
+                        diagnostic.retry_attempted = True
+                        if current_mode == ModelRequestMode.JSON_SCHEMA:
+                            diagnostic.fallback_attempted = True
+                            current_mode = ModelRequestMode.JSON_ONLY
+                        correction_base = compact_variant or active_variant
+                        if compact_variant is not None:
+                            using_compact = True
+                        active_variant = self._validation_correction_variant(
+                            correction_base, exc
+                        )
+                        continue
+                    break
                 if self._continue_after_failure(
                     exc, diagnostic, current_mode, calls, call_limit
                 ):
@@ -604,7 +670,6 @@ class GitHubModelsClient:
                     continue
                 break
             diagnostic.failure_stage = None
-            diagnostic.pydantic_validation_error_paths = []
             self._update_usage_diagnostic(diagnostic)
             return ModelCallResult(
                 action=action,
@@ -612,7 +677,10 @@ class GitHubModelsClient:
                 diagnostic=diagnostic,
             )
         diagnostic.failure_stage = last_error.stage
-        diagnostic.pydantic_validation_error_paths = last_error.validation_paths
+        if last_error.validation_errors:
+            diagnostic.pydantic_validation_error_paths = last_error.validation_paths
+            diagnostic.pydantic_validation_errors = last_error.validation_errors
+            diagnostic.pydantic_validation_error_count = len(last_error.validation_errors)
         self.limiter.release_run_reservations()
         self._update_usage_diagnostic(diagnostic)
         return ModelCallResult(
@@ -669,6 +737,46 @@ class GitHubModelsClient:
         diagnostic.completed_inference_calls = usage["completed_inference_calls"]
         diagnostic.reserved_inference_calls = usage["reserved_inference_calls"]
         diagnostic.failed_after_request_calls = usage["failed_after_request_calls"]
+        diagnostic.http_failed_calls = usage["http_failed_calls"]
+        diagnostic.response_validation_failed_calls = usage[
+            "response_validation_failed_calls"
+        ]
+
+    @staticmethod
+    def _validation_correction_variant(
+        variant: PromptVariant,
+        error: ModelPipelineError,
+    ) -> PromptVariant:
+        safe_errors = [
+            {
+                "path": item.path,
+                "type": item.error_type,
+                "missing_field": item.missing_field,
+                "extra_field": item.extra_field,
+                "expected_type": item.expected_type,
+            }
+            for item in error.validation_errors
+        ]
+        correction = (
+            "Your previous JSON failed schema validation. Do not repeat or quote the "
+            "previous response. Return one corrected JSON object only. Allowed DISCOVERY "
+            "action_type values are collect_signals, create_problem_candidate, "
+            "validate_evidence, write_report, and no_op. Validation diagnostics: "
+            + json.dumps(safe_errors, ensure_ascii=False, separators=(",", ":"))
+            + ". Correct create_problem_candidate example: "
+            + json.dumps(
+                DISCOVERY_CORRECTION_EXAMPLE,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+        return PromptVariant(
+            messages=[*variant.messages, {"role": "system", "content": correction}],
+            response_model=variant.response_model,
+            context_chars=variant.context_chars,
+            included_signal_count=variant.included_signal_count,
+            excluded_signal_count=variant.excluded_signal_count,
+        )
 
     @staticmethod
     def _build_chat_payload(
@@ -830,12 +938,14 @@ class GitHubModelsClient:
                     validated.model_dump(mode="json", by_alias=True)
                 )
         except ValidationError as exc:
+            validation_errors = _validation_error_details(exc)
             raise ModelPipelineError(
                 FailureStage.SCHEMA_VALIDATION,
                 "model JSON did not satisfy the action schema",
                 retryable=True,
                 fallback_eligible=True,
-                validation_paths=_validation_error_paths(exc),
+                validation_paths=[item.path for item in validation_errors],
+                validation_errors=validation_errors,
                 original_action_type=original_action_type,
             ) from exc
         return action, original_action_type

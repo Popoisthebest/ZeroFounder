@@ -130,12 +130,13 @@ def test_allowed_discovery_evidence_action_is_preserved(tmp_path: Path):
         _action(
             "create_problem_candidate",
             evidence_ids=ids,
-            files=[
-                {
-                    "path": "research/problems/problem-001.json",
-                    "content": json.dumps({"evidence_ids": ids}),
-                }
-            ],
+            problem_candidate={
+                "problem_id": "problem-001",
+                "title": "Repeated manual coordination",
+                "target_users": ["small teams"],
+                "description": "Small teams repeatedly reconcile coordination details manually.",
+                "current_workaround": "They use spreadsheets and message threads.",
+            },
             state_transition={"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
         ),
     )

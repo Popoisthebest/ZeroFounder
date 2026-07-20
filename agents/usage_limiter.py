@@ -55,6 +55,8 @@ class UsageLimiter:
         self.run_id = (run_id or os.getenv("GITHUB_RUN_ID") or "local")[:128]
         self.run_calls = 0
         self.run_failed_after_request_calls = 0
+        self.run_http_failed_calls = 0
+        self.run_response_validation_failed_calls = 0
         self._run_reservations: set[str] = set()
         self.cleanup_stale_reservations()
 
@@ -142,6 +144,7 @@ class UsageLimiter:
             day.embedding_calls += 1
         day.completed_inference_calls += 1
         day.failed_after_request_calls += int(failed_after_request)
+        day.http_failed_calls += int(failed_after_request)
         if reservation.fingerprint not in day.request_fingerprints:
             day.request_fingerprints.append(reservation.fingerprint)
         request_id = reservation_id.replace("res-", "req-", 1)
@@ -152,26 +155,60 @@ class UsageLimiter:
                 fingerprint=reservation.fingerprint,
                 requested_at=self._now(),
                 failed_after_request=failed_after_request,
+                http_failed=failed_after_request,
             )
         )
         self.run_calls += 1
         self.run_failed_after_request_calls += int(failed_after_request)
+        self.run_http_failed_calls += int(failed_after_request)
         self._publish_run_usage()
         return request_id
 
-    def mark_request_failed(self, request_id: str) -> bool:
-        """Mark a finalized request as failed without incrementing the call count again."""
+    def mark_http_failed(self, request_id: str) -> bool:
+        """Classify a finalized inference as an HTTP/transport failure."""
         for day in self.ledger.days:
             record = next(
                 (item for item in day.call_records if item.request_id == request_id), None
             )
-            if record is None or record.failed_after_request:
+            if record is None or record.http_failed:
                 continue
-            record.failed_after_request = True
-            day.failed_after_request_calls += 1
-            self.run_failed_after_request_calls += 1
+            if record.response_validation_failed:
+                return False
+            record.http_failed = True
+            day.http_failed_calls += 1
+            self.run_http_failed_calls += 1
+            if not record.failed_after_request:
+                record.failed_after_request = True
+                day.failed_after_request_calls += 1
+                self.run_failed_after_request_calls += 1
+            self._publish_run_usage()
             return True
         return False
+
+    def mark_response_validation_failed(self, request_id: str) -> bool:
+        """Classify an HTTP-completed inference whose response could not be validated."""
+        for day in self.ledger.days:
+            record = next(
+                (item for item in day.call_records if item.request_id == request_id), None
+            )
+            if record is None or record.response_validation_failed:
+                continue
+            if record.http_failed:
+                return False
+            record.response_validation_failed = True
+            day.response_validation_failed_calls += 1
+            self.run_response_validation_failed_calls += 1
+            if not record.failed_after_request:
+                record.failed_after_request = True
+                day.failed_after_request_calls += 1
+                self.run_failed_after_request_calls += 1
+            self._publish_run_usage()
+            return True
+        return False
+
+    def mark_request_failed(self, request_id: str) -> bool:
+        """Backward-compatible alias for an HTTP failure classification."""
+        return self.mark_http_failed(request_id)
 
     def release(self, reservation_id: str) -> bool:
         """Return unused capacity without creating a completed call record."""
@@ -207,6 +244,8 @@ class UsageLimiter:
             "completed_inference_calls": self.run_calls,
             "reserved_inference_calls": len(self._run_reservations),
             "failed_after_request_calls": self.run_failed_after_request_calls,
+            "http_failed_calls": self.run_http_failed_calls,
+            "response_validation_failed_calls": self.run_response_validation_failed_calls,
         }
 
     def _publish_run_usage(self) -> None:

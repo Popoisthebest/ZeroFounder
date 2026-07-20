@@ -6,12 +6,13 @@ import subprocess
 from pathlib import Path
 
 from agents.lifecycle import validate_transition
+from agents.problem_materializer import materialize_problem_candidate
 from agents.safety import (
     validate_action_files,
     validate_evidence_references,
     validate_model_urls,
 )
-from agents.schemas import ActionEnvelope, CompanyState
+from agents.schemas import ActionEnvelope, ActionType, CompanyState
 
 
 class ActionExecutionError(RuntimeError):
@@ -35,6 +36,12 @@ class ActionExecutor:
             validate_transition(
                 action.state_transition.from_stage, action.state_transition.to_stage
             )
+
+    def prepare(self, action: ActionEnvelope) -> ActionEnvelope:
+        prepared = action.model_copy(deep=True)
+        if prepared.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
+            prepared.files = [materialize_problem_candidate(prepared, self.root)]
+        return prepared
 
     def apply_files(self, action: ActionEnvelope) -> list[Path]:
         self.validate(action)

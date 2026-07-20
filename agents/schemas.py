@@ -8,6 +8,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     StringConstraints,
     field_validator,
     model_validator,
@@ -149,6 +150,14 @@ class FileChange(StrictModel):
     operation: Literal["upsert"] = "upsert"
 
 
+class ProblemCandidateProposal(StrictModel):
+    problem_id: str = Field(pattern=r"^problem-[a-z0-9][a-z0-9._-]{0,100}$")
+    title: str = Field(min_length=3, max_length=200)
+    target_users: list[str] = Field(min_length=1, max_length=8)
+    description: str = Field(min_length=20, max_length=3000)
+    current_workaround: str = Field(min_length=3, max_length=2000)
+
+
 class DependencyProposal(StrictModel):
     proposal_id: StrictId
     ecosystem: Literal["npm", "python"]
@@ -176,31 +185,31 @@ class ActionEnvelope(StrictModel):
     state_transition: StateTransition | None = None
     files: list[FileChange] = Field(default_factory=list, max_length=50)
     dependency_proposal: DependencyProposal | None = None
+    problem_candidate: ProblemCandidateProposal | None = None
 
     @model_validator(mode="after")
     def enforce_action_shape(self) -> ActionEnvelope:
         if self.action_type == ActionType.NO_OP and (
-            self.files or self.state_transition or self.dependency_proposal
+            self.files
+            or self.state_transition
+            or self.dependency_proposal
+            or self.problem_candidate
         ):
-            raise ValueError("no_op cannot mutate files, dependencies, or state")
+            raise ValueError("no_op cannot mutate files, problem data, dependencies, or state")
         if self.action_type == ActionType.PROPOSE_DEPENDENCY and not self.dependency_proposal:
             raise ValueError("dependency proposal payload is required")
         if self.dependency_proposal and self.action_type != ActionType.PROPOSE_DEPENDENCY:
             raise ValueError("dependency proposal is only valid for propose_dependency")
-        if self.action_type in {
-            ActionType.CREATE_PROBLEM_CANDIDATE,
-            ActionType.VALIDATE_EVIDENCE,
-        }:
+        if self.problem_candidate and self.action_type != ActionType.CREATE_PROBLEM_CANDIDATE:
+            raise ValueError("problem_candidate is only valid for create_problem_candidate")
+        if self.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
             if not self.evidence_ids:
                 raise ValueError("discovery analysis actions require stored evidence_ids")
-            if not self.files:
-                raise ValueError("discovery analysis actions require a material output file")
+            if not self.problem_candidate:
+                raise ValueError("create_problem_candidate requires problem_candidate")
+        if self.action_type == ActionType.VALIDATE_EVIDENCE and not self.evidence_ids:
+            raise ValueError("discovery analysis actions require stored evidence_ids")
         return self
-
-
-class DiscoveryFileChange(StrictModel):
-    path: str = Field(min_length=1, max_length=240)
-    content: str = Field(max_length=30_000)
 
 
 class DiscoveryStateTransition(StrictModel):
@@ -211,69 +220,63 @@ class DiscoveryStateTransition(StrictModel):
     ] = Field(alias="to")
 
 
-class DiscoveryActionEnvelope(StrictModel):
+class DiscoveryActionBase(StrictModel):
     role: AgentRole
-    action_type: Literal[
-        ActionType.COLLECT_SIGNALS,
-        ActionType.CREATE_PROBLEM_CANDIDATE,
-        ActionType.VALIDATE_EVIDENCE,
-        ActionType.WRITE_REPORT,
-        ActionType.NO_OP,
-    ]
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=1600)
     rationale: str = Field(min_length=1, max_length=1600)
     risk_level: RiskLevel
     requires_approval: bool
-    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=20)
+
+
+class DiscoveryCreateProblemAction(DiscoveryActionBase):
+    action_type: Literal[ActionType.CREATE_PROBLEM_CANDIDATE]
+    evidence_ids: list[StrictId] = Field(min_length=1, max_length=20)
+    problem_candidate: ProblemCandidateProposal
     state_transition: DiscoveryStateTransition | None = None
-    files: list[DiscoveryFileChange] = Field(default_factory=list, max_length=4)
-
-    @model_validator(mode="after")
-    def enforce_discovery_shape(self) -> DiscoveryActionEnvelope:
-        if self.action_type == ActionType.NO_OP and (self.files or self.state_transition):
-            raise ValueError("no_op cannot mutate files or state")
-        if self.action_type in {
-            ActionType.CREATE_PROBLEM_CANDIDATE,
-            ActionType.VALIDATE_EVIDENCE,
-        } and (not self.evidence_ids or not self.files):
-            raise ValueError("discovery analysis requires evidence_ids and files")
-        return self
-
-    def to_action_envelope(self) -> ActionEnvelope:
-        return ActionEnvelope.model_validate(self.model_dump(mode="json", by_alias=True))
 
 
-class CompactDiscoveryActionEnvelope(StrictModel):
-    role: AgentRole
+class DiscoveryNoOpAction(DiscoveryActionBase):
+    action_type: Literal[ActionType.NO_OP]
+    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=20)
+
+
+class DiscoveryOtherAction(DiscoveryActionBase):
     action_type: Literal[
         ActionType.COLLECT_SIGNALS,
-        ActionType.CREATE_PROBLEM_CANDIDATE,
         ActionType.VALIDATE_EVIDENCE,
         ActionType.WRITE_REPORT,
-        ActionType.NO_OP,
     ]
-    title: str = Field(min_length=1, max_length=120)
-    summary: str = Field(min_length=1, max_length=800)
-    rationale: str = Field(min_length=1, max_length=800)
-    risk_level: RiskLevel
-    requires_approval: bool
-    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=12)
-    files: list[DiscoveryFileChange] = Field(default_factory=list, max_length=2)
+    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=20)
+    state_transition: DiscoveryStateTransition | None = None
 
-    @model_validator(mode="after")
-    def enforce_compact_discovery_shape(self) -> CompactDiscoveryActionEnvelope:
-        if self.action_type == ActionType.NO_OP and self.files:
-            raise ValueError("no_op cannot mutate files")
-        if self.action_type in {
-            ActionType.CREATE_PROBLEM_CANDIDATE,
-            ActionType.VALIDATE_EVIDENCE,
-        } and (not self.evidence_ids or not self.files):
-            raise ValueError("discovery analysis requires evidence_ids and files")
-        return self
+
+DiscoveryAction = Annotated[
+    DiscoveryCreateProblemAction | DiscoveryNoOpAction | DiscoveryOtherAction,
+    Field(discriminator="action_type"),
+]
+
+
+class DiscoveryActionEnvelope(RootModel[DiscoveryAction]):
 
     def to_action_envelope(self) -> ActionEnvelope:
-        return ActionEnvelope.model_validate(self.model_dump(mode="json", by_alias=True))
+        return ActionEnvelope.model_validate(self.root.model_dump(mode="json", by_alias=True))
+
+
+class CompactDiscoveryActionEnvelope(RootModel[DiscoveryAction]):
+    model_config = ConfigDict(title="D")
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.root.model_dump(mode="json", by_alias=True))
+
+
+class PydanticErrorDiagnostic(StrictModel):
+    path: str = Field(min_length=1, max_length=300)
+    error_type: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=300)
+    missing_field: str | None = Field(default=None, max_length=200)
+    extra_field: str | None = Field(default=None, max_length=200)
+    expected_type: str | None = Field(default=None, max_length=100)
 
 
 class ModelInferenceDiagnostic(StrictModel):
@@ -288,9 +291,16 @@ class ModelInferenceDiagnostic(StrictModel):
     retry_attempted: bool = False
     failure_stage: FailureStage | None = None
     pydantic_validation_error_paths: list[str] = Field(default_factory=list, max_length=50)
+    pydantic_validation_errors: list[PydanticErrorDiagnostic] = Field(
+        default_factory=list, max_length=50
+    )
+    pydantic_validation_error_count: int = Field(default=0, ge=0, le=50)
+    validation_correction_attempted: bool = False
     completed_inference_calls: int = Field(default=0, ge=0, le=2)
     reserved_inference_calls: int = Field(default=0, ge=0, le=2)
     failed_after_request_calls: int = Field(default=0, ge=0, le=2)
+    http_failed_calls: int = Field(default=0, ge=0, le=2)
+    response_validation_failed_calls: int = Field(default=0, ge=0, le=2)
     request_body_bytes: int = Field(default=0, ge=0)
     system_prompt_chars: int = Field(default=0, ge=0)
     user_prompt_chars: int = Field(default=0, ge=0)
@@ -437,6 +447,14 @@ class InferenceCallRecord(StrictModel):
     fingerprint: str = Field(min_length=64, max_length=64)
     requested_at: datetime
     failed_after_request: bool = False
+    http_failed: bool = False
+    response_validation_failed: bool = False
+
+    @model_validator(mode="after")
+    def synchronize_legacy_failure_flag(self) -> InferenceCallRecord:
+        if self.http_failed or self.response_validation_failed:
+            self.failed_after_request = True
+        return self
 
 
 class UsageDay(StrictModel):
@@ -448,6 +466,8 @@ class UsageDay(StrictModel):
     completed_inference_calls: int = Field(default=0, ge=0)
     reserved_inference_calls: int = Field(default=0, ge=0)
     failed_after_request_calls: int = Field(default=0, ge=0)
+    http_failed_calls: int = Field(default=0, ge=0)
+    response_validation_failed_calls: int = Field(default=0, ge=0)
     skipped_runs: int = Field(default=0, ge=0)
     inference_call_upper_bound: int = Field(default=0, ge=0)
     request_fingerprints: list[str] = Field(default_factory=list)
@@ -460,6 +480,9 @@ class UsageDay(StrictModel):
             raise ValueError("reserved count cannot be smaller than reservation records")
         if self.failed_after_request_calls > self.completed_inference_calls:
             raise ValueError("failed requests cannot exceed completed inference calls")
+        classified_failures = self.http_failed_calls + self.response_validation_failed_calls
+        if classified_failures > self.completed_inference_calls:
+            raise ValueError("classified failed requests cannot exceed completed inference calls")
         return self
 
     @property
@@ -506,12 +529,21 @@ class MarketSignal(StrictModel):
     content_hash: str
 
 
+class ProblemEvidenceReference(StrictModel):
+    evidence_id: StrictId
+    source_type: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=1, max_length=2000)
+    summary: str = Field(min_length=1, max_length=500)
+
+
 class ProblemCandidate(StrictModel):
     problem_id: StrictId
     title: str
     target_users: list[str]
     description: str
+    current_workaround: str
     evidence_ids: list[StrictId]
+    evidence: list[ProblemEvidenceReference]
     frequency_score: int = Field(ge=0, le=10)
     severity_score: int = Field(ge=0, le=10)
     buildability_score: int = Field(ge=0, le=10)

@@ -70,6 +70,14 @@ def collect_metrics(client: GitHubClient) -> dict[str, Any]:
         "failed_after_request_calls": (
             model_usage["failed_after_request_calls"] if model_usage is not None else None
         ),
+        "http_failed_calls": (
+            model_usage.get("http_failed_calls", 0) if model_usage is not None else None
+        ),
+        "response_validation_failed_calls": (
+            model_usage.get("response_validation_failed_calls", 0)
+            if model_usage is not None
+            else None
+        ),
         "active_model_reservations": (
             model_usage["reserved_inference_calls"] if model_usage is not None else None
         ),
@@ -104,12 +112,16 @@ def write_daily_usage_snapshot(path: Path, usage: dict[str, int] | None) -> bool
             usage["completed_inference_calls"],
             usage["reserved_inference_calls"],
             usage["failed_after_request_calls"],
+            usage.get("http_failed_calls", 0),
+            usage.get("response_validation_failed_calls", 0),
             usage["skipped_runs"],
         )
         current = (
             existing.completed_inference_calls,
             existing.reserved_inference_calls,
             existing.failed_after_request_calls,
+            existing.http_failed_calls,
+            existing.response_validation_failed_calls,
             existing.skipped_runs,
         )
         if current == values and existing.inference_call_upper_bound == 0:
@@ -117,7 +129,9 @@ def write_daily_usage_snapshot(path: Path, usage: dict[str, int] | None) -> bool
         existing.completed_inference_calls = values[0]
         existing.reserved_inference_calls = values[1]
         existing.failed_after_request_calls = values[2]
-        existing.skipped_runs = values[3]
+        existing.http_failed_calls = values[3]
+        existing.response_validation_failed_calls = values[4]
+        existing.skipped_runs = values[5]
         existing.inference_call_upper_bound = 0
     else:
         ledger.days.append(
@@ -126,6 +140,10 @@ def write_daily_usage_snapshot(path: Path, usage: dict[str, int] | None) -> bool
                 completed_inference_calls=usage["completed_inference_calls"],
                 reserved_inference_calls=usage["reserved_inference_calls"],
                 failed_after_request_calls=usage["failed_after_request_calls"],
+                http_failed_calls=usage.get("http_failed_calls", 0),
+                response_validation_failed_calls=usage.get(
+                    "response_validation_failed_calls", 0
+                ),
                 skipped_runs=usage["skipped_runs"],
             )
         )
@@ -146,6 +164,10 @@ def main() -> int:
             "completed_inference_calls": int(metrics["model_calls"]),
             "reserved_inference_calls": int(metrics["active_model_reservations"]),
             "failed_after_request_calls": int(metrics["failed_after_request_calls"]),
+            "http_failed_calls": int(metrics["http_failed_calls"]),
+            "response_validation_failed_calls": int(
+                metrics["response_validation_failed_calls"]
+            ),
             "skipped_runs": int(metrics["skipped_model_runs"]),
         }
     usage_changed = write_daily_usage_snapshot(args.output.parent / "usage.json", usage)

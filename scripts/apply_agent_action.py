@@ -37,6 +37,8 @@ def main() -> int:
         write_output("action_type", action.action_type.value)
         return 0
     executor = ActionExecutor(root)
+    action = executor.prepare(action)
+    args.action.write_text(action.model_dump_json(indent=2) + "\n")
     executor.apply_files(action)
     material = bool(action.files or action.state_transition)
     if action.state_transition:
