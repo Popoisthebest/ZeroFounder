@@ -23,6 +23,13 @@ def test_workflow_yaml_and_permissions():
     assert "pull_request_target" not in (ROOT / ".github/workflows/agent.yml").read_text()
     quality = workflows["quality-check.yml"]
     assert "workflow_dispatch" in quality[True]
+    deploy = workflows["deploy.yml"]
+    assert deploy["permissions"] == {"contents": "read"}
+    assert deploy["jobs"]["deploy"]["permissions"] == {
+        "contents": "read",
+        "pages": "write",
+        "id-token": "write",
+    }
 
 
 def test_founder_results_is_protected_from_model_patch():

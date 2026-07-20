@@ -1,0 +1,85 @@
+name: Deploy Venture to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "venture/product/**"
+      - "venture/content/**"
+      - "venture/public/**"
+      - "package.json"
+      - "package-lock.json"
+      - "vite.config.ts"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: python -m pip install -r requirements.txt
+      - run: npm ci
+      - run: python -m pytest
+      - run: ruff check agents tests scripts
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test -- --run
+      - env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          VITE_REPOSITORY_URL: https://github.com/${{ github.repository }}
+        run: npm run build
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
+
+  report-failure:
+    needs: [build, deploy]
+    if: failure()
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+        run: python scripts/report_deploy_failure.py
+
