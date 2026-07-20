@@ -47,9 +47,14 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
           DAILY_MODEL_CALL_LIMIT: ${{ vars.DAILY_MODEL_CALL_LIMIT || '8' }}
+          MODEL_DIAGNOSTIC_MODE: ${{ vars.MODEL_DIAGNOSTIC_MODE || 'false' }}
+          MANUAL_DIAGNOSTIC_CALL_ALLOWANCE: ${{ vars.MANUAL_DIAGNOSTIC_CALL_ALLOWANCE || '1' }}
         run: |
           python -m agents.orchestrator preflight --output runtime/preflight.json
           python -c "import json,os; d=json.load(open('runtime/preflight.json')); open(os.environ['GITHUB_OUTPUT'],'a').write('should_call_model='+str(d['should_call_model']).lower()+'\n')"
+      - name: Summarize model usage preflight
+        if: always()
+        run: python -m scripts.write_preflight_summary --preflight runtime/preflight.json
       - uses: actions/upload-artifact@v4
         with:
           name: preflight
@@ -74,7 +79,8 @@ jobs:
         with:
           name: preflight
           path: runtime
-      - env:
+      - id: model_run
+        env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_MODEL: ${{ vars.GITHUB_MODEL }}
           GITHUB_FALLBACK_MODELS: ${{ vars.GITHUB_FALLBACK_MODELS }}
@@ -88,6 +94,21 @@ jobs:
             --preflight runtime/preflight.json \
             --output runtime/action.json \
             --diagnostics runtime/model-diagnostic.json
+      - name: Confirm inference call 1
+        if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') >= 1 }}
+        run: "true"
+      - name: Confirm inference call 2
+        if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') >= 2 }}
+        run: "true"
+      - name: Mark failed inference call 1
+        if: ${{ always() && fromJSON(steps.model_run.outputs.failed_after_request_calls || '0') >= 1 }}
+        run: "true"
+      - name: Mark failed inference call 2
+        if: ${{ always() && fromJSON(steps.model_run.outputs.failed_after_request_calls || '0') >= 2 }}
+        run: "true"
+      - name: Mark inference run skipped
+        if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') == 0 }}
+        run: "true"
       - name: Summarize model action validation
         if: always()
         run: python -m scripts.write_model_summary --diagnostic runtime/model-diagnostic.json

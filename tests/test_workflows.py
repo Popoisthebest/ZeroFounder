@@ -26,8 +26,14 @@ def test_workflow_yaml_and_permissions():
     assert "--preflight runtime/preflight.json" in model_commands
     assert "--diagnostics runtime/model-diagnostic.json" in model_commands
     assert "scripts.write_model_summary" in model_commands
+    assert "Confirm inference call 1" in {step.get("name") for step in model_steps}
+    assert "Confirm inference call 2" in {step.get("name") for step in model_steps}
+    assert "Mark inference run skipped" in {step.get("name") for step in model_steps}
     model_env = next(step["env"] for step in model_steps if "env" in step)
     assert "MODEL_DIAGNOSTIC_MODE" in model_env
+    preflight_steps = agent["jobs"]["preflight"]["steps"]
+    preflight_commands = "\n".join(str(step.get("run", "")) for step in preflight_steps)
+    assert "scripts.write_preflight_summary" in preflight_commands
     quality = workflows["quality-check.yml"]
     assert "workflow_dispatch" in quality[True]
     deploy = workflows["deploy.yml"]

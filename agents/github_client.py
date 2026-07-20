@@ -140,14 +140,18 @@ class GitHubClient:
             else:
                 self._request("POST", f"/repos/{self.repository}/labels", json=payload)
 
-    def model_call_upper_bound_today(self) -> int:
+    def model_usage_today(self) -> dict[str, int]:
+        """Count only explicit successful inference markers from Actions job steps."""
         today = datetime.now(UTC).date().isoformat()
         runs = self._request(
             "GET",
             f"/repos/{self.repository}/actions/workflows/agent.yml/runs",
             params={"created": f">={today}", "per_page": 100},
         ).get("workflow_runs", [])
-        model_jobs = 0
+        completed_calls = 0
+        failed_after_request_calls = 0
+        active_reservations = 0
+        skipped_runs = 0
         for run in runs:
             run_id = run.get("id")
             if not isinstance(run_id, int):
@@ -157,5 +161,36 @@ class GitHubClient:
                 f"/repos/{self.repository}/actions/runs/{run_id}/jobs",
                 params={"per_page": 100},
             ).get("jobs", [])
-            model_jobs += sum(job.get("name") == "model" for job in jobs)
-        return model_jobs * 2
+            for job in jobs:
+                if job.get("name") != "model":
+                    continue
+                if job.get("conclusion") == "skipped":
+                    skipped_runs += 1
+                steps = job.get("steps")
+                if not isinstance(steps, list):
+                    continue
+                confirmed_slots: set[str] = set()
+                reserved_slots: set[str] = set()
+                for step in steps:
+                    if not isinstance(step, dict) or step.get("conclusion") != "success":
+                        continue
+                    name = str(step.get("name", ""))
+                    if name.startswith("Confirm inference call "):
+                        confirmed_slots.add(name.rsplit(" ", 1)[-1])
+                    elif name.startswith("Reserve inference call "):
+                        reserved_slots.add(name.rsplit(" ", 1)[-1])
+                    elif name.startswith("Mark failed inference call "):
+                        failed_after_request_calls += 1
+                    elif name == "Mark inference run skipped":
+                        skipped_runs += 1
+                completed_calls += len(confirmed_slots)
+                if job.get("status") == "in_progress":
+                    active_reservations += len(reserved_slots - confirmed_slots)
+        return {
+            "completed_inference_calls": completed_calls,
+            "reserved_inference_calls": active_reservations,
+            "failed_after_request_calls": min(
+                failed_after_request_calls, completed_calls
+            ),
+            "skipped_runs": skipped_runs,
+        }

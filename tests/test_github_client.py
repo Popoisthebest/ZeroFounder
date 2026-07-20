@@ -29,3 +29,51 @@ def test_dispatch_rejects_untrusted_inputs():
         client.dispatch_quality_check(
             pr_number=1, agent_branch="$(evil)", commit_sha="bad", ref="main"
         )
+
+
+def test_model_usage_counts_only_successful_inference_markers():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/agent.yml/runs"):
+            return httpx.Response(200, json={"workflow_runs": [{"id": 1}, {"id": 2}]})
+        if request.url.path.endswith("/actions/runs/1/jobs"):
+            return httpx.Response(
+                200,
+                json={
+                    "jobs": [
+                        {
+                            "name": "model",
+                            "status": "completed",
+                            "conclusion": "success",
+                            "steps": [
+                                {"name": "Confirm inference call 1", "conclusion": "success"},
+                                {"name": "Confirm inference call 2", "conclusion": "skipped"},
+                                {
+                                    "name": "Mark failed inference call 1",
+                                    "conclusion": "success",
+                                },
+                            ],
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "jobs": [
+                    {
+                        "name": "model",
+                        "status": "completed",
+                        "conclusion": "skipped",
+                        "steps": [],
+                    }
+                ]
+            },
+        )
+
+    client = GitHubClient("fake", "owner/repo", transport=httpx.MockTransport(handler))
+    assert client.model_usage_today() == {
+        "completed_inference_calls": 1,
+        "reserved_inference_calls": 0,
+        "failed_after_request_calls": 1,
+        "skipped_runs": 1,
+    }

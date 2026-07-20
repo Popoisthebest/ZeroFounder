@@ -331,12 +331,13 @@ class GitHubModelsClient:
         )
         current_mode = request_mode
         calls = 0
+        call_limit = 1 if diagnostic_mode else min(2, self.limiter.max_run_calls)
         last_error = ModelPipelineError(
             FailureStage.REQUEST_BUILD,
             "model request was not completed",
         )
         original_action_type: ActionType | None = None
-        while calls < 2:
+        while calls < call_limit:
             original_action_type = None
             diagnostic.request_mode = current_mode
             diagnostic.http_status = None
@@ -362,8 +363,10 @@ class GitHubModelsClient:
             fingerprint = request_fingerprint(
                 {"kind": "chat", "payload": payload, "attempt": calls + 1}
             )
+            reservation_id: str | None = None
+            request_id: str | None = None
             try:
-                self.limiter.reserve("chat", fingerprint)
+                reservation_id = self.limiter.reserve("chat", fingerprint)
                 calls += 1
                 response = self.client.post(CHAT_URL, json=payload)
             except UsageLimitReached:
@@ -374,43 +377,66 @@ class GitHubModelsClient:
                 self.limiter.record_failure()
                 break
             except httpx.HTTPError:
+                if reservation_id is not None:
+                    self.limiter.complete_request(
+                        reservation_id, failed_after_request=True
+                    )
+                    reservation_id = None
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     "GitHub Models HTTP request failed",
                     retryable=True,
                 )
                 self.limiter.record_failure()
-                if calls < 2:
+                if calls < call_limit:
                     diagnostic.retry_attempted = True
                     self.sleep(2 ** max(calls - 1, 0))
                     continue
                 break
+            except Exception:
+                if reservation_id is not None:
+                    self.limiter.complete_request(
+                        reservation_id, failed_after_request=True
+                    )
+                raise
+            else:
+                if reservation_id is not None:
+                    request_id = self.limiter.complete_request(
+                        reservation_id, failed_after_request=False
+                    )
+                    reservation_id = None
             diagnostic.http_status = response.status_code
             if response.status_code in {400, 422} and current_mode == ModelRequestMode.JSON_SCHEMA:
+                if request_id is not None:
+                    self.limiter.mark_request_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     "json_schema request was not supported by the selected model",
                     fallback_eligible=True,
                 )
                 self.limiter.record_failure()
-                if calls < 2:
+                if calls < call_limit:
                     diagnostic.fallback_attempted = True
                     current_mode = ModelRequestMode.JSON_ONLY
                     continue
                 break
             if response.status_code == 429 or response.status_code >= 500:
+                if request_id is not None:
+                    self.limiter.mark_request_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     f"GitHub Models returned HTTP {response.status_code}",
                     retryable=True,
                 )
                 self.limiter.record_failure()
-                if calls < 2:
+                if calls < call_limit:
                     diagnostic.retry_attempted = True
                     self.sleep(2 ** max(calls - 1, 0))
                     continue
                 break
             if not 200 <= response.status_code < 300:
+                if request_id is not None:
+                    self.limiter.mark_request_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.HTTP_REQUEST,
                     f"GitHub Models returned HTTP {response.status_code}",
@@ -420,6 +446,8 @@ class GitHubModelsClient:
             try:
                 data = response.json()
             except (json.JSONDecodeError, ValueError):
+                if request_id is not None:
+                    self.limiter.mark_request_failed(request_id)
                 last_error = ModelPipelineError(
                     FailureStage.RESPONSE_DECODE,
                     "GitHub Models returned a non-JSON response body",
@@ -427,7 +455,9 @@ class GitHubModelsClient:
                     fallback_eligible=True,
                 )
                 self.limiter.record_failure()
-                if self._continue_after_failure(last_error, diagnostic, current_mode, calls):
+                if self._continue_after_failure(
+                    last_error, diagnostic, current_mode, calls, call_limit
+                ):
                     current_mode = ModelRequestMode.JSON_ONLY
                     continue
                 break
@@ -438,10 +468,14 @@ class GitHubModelsClient:
                     max_output_chars=max_output_chars,
                 )
             except ModelPipelineError as exc:
+                if request_id is not None:
+                    self.limiter.mark_request_failed(request_id)
                 last_error = exc
                 original_action_type = exc.original_action_type or original_action_type
                 self.limiter.record_failure()
-                if self._continue_after_failure(exc, diagnostic, current_mode, calls):
+                if self._continue_after_failure(
+                    exc, diagnostic, current_mode, calls, call_limit
+                ):
                     if current_mode == ModelRequestMode.JSON_SCHEMA:
                         current_mode = ModelRequestMode.JSON_ONLY
                     else:
@@ -450,6 +484,7 @@ class GitHubModelsClient:
                 break
             diagnostic.failure_stage = None
             diagnostic.pydantic_validation_error_paths = []
+            self._update_usage_diagnostic(diagnostic)
             return ModelCallResult(
                 action=action,
                 original_action_type=original_action_type,
@@ -457,6 +492,8 @@ class GitHubModelsClient:
             )
         diagnostic.failure_stage = last_error.stage
         diagnostic.pydantic_validation_error_paths = last_error.validation_paths
+        self.limiter.release_run_reservations()
+        self._update_usage_diagnostic(diagnostic)
         return ModelCallResult(
             action=safe_no_op(last_error.reason),
             original_action_type=original_action_type,
@@ -464,6 +501,12 @@ class GitHubModelsClient:
             rejection_code=last_error.code,
             rejection_reason=last_error.reason,
         )
+
+    def _update_usage_diagnostic(self, diagnostic: ModelInferenceDiagnostic) -> None:
+        usage = self.limiter.run_usage()
+        diagnostic.completed_inference_calls = usage["completed_inference_calls"]
+        diagnostic.reserved_inference_calls = usage["reserved_inference_calls"]
+        diagnostic.failed_after_request_calls = usage["failed_after_request_calls"]
 
     @staticmethod
     def _build_chat_payload(
@@ -518,8 +561,9 @@ class GitHubModelsClient:
         diagnostic: ModelInferenceDiagnostic,
         request_mode: ModelRequestMode,
         calls: int,
+        call_limit: int,
     ) -> bool:
-        if calls >= 2:
+        if calls >= call_limit:
             return False
         if request_mode == ModelRequestMode.JSON_SCHEMA and error.fallback_eligible:
             diagnostic.fallback_attempted = True
@@ -633,15 +677,29 @@ class GitHubModelsClient:
             "encoding_format": "float",
         }
         fingerprint = request_fingerprint({"kind": "embedding", "payload": payload})
+        reservation_id: str | None = None
         try:
-            self.limiter.reserve("embedding", fingerprint)
+            reservation_id = self.limiter.reserve("embedding", fingerprint)
             response = self.client.post(EMBEDDINGS_URL, json=payload)
+            self.limiter.complete_request(
+                reservation_id, failed_after_request=response.status_code >= 400
+            )
+            reservation_id = None
             response.raise_for_status()
             data = response.json().get("data", [])
             vectors = [item["embedding"] for item in sorted(data, key=lambda item: item["index"])]
             if len(vectors) != len(texts):
                 return None
             return vectors
-        except (UsageLimitReached, httpx.HTTPError, KeyError, TypeError, ValueError):
+        except httpx.HTTPError:
+            if reservation_id is not None:
+                self.limiter.complete_request(reservation_id, failed_after_request=True)
+                reservation_id = None
             self.limiter.record_failure()
             return None
+        except (UsageLimitReached, KeyError, TypeError, ValueError):
+            self.limiter.record_failure()
+            return None
+        finally:
+            if reservation_id is not None:
+                self.limiter.release(reservation_id)

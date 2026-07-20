@@ -86,6 +86,8 @@ workflow 최상위 권한은 `contents: read`입니다. 모델, Issue, 브랜치
 | `GITHUB_EMBEDDING_MODEL` | 자동 선택 | 사용 가능한 임베딩 모델 |
 | `MODEL_DIAGNOSTIC_MODE` | `false` | `true`이면 작은 `no_op` 응답으로 모델 파이프라인만 검증 |
 | `DAILY_MODEL_CALL_LIMIT` | `8` | chat과 embedding 합산 soft limit |
+| `MANUAL_DIAGNOSTIC_CALL_ALLOWANCE` | `1` | 수동 진단 실행에만 적용되는 추가 일일 안전 한도 |
+| `MODEL_RESERVATION_TTL_SECONDS` | `1800` | 중단된 inference 예약 자동 해제 시간 |
 | `MAX_FILES_PER_ACTION` | `12` | 한 행동의 최대 파일 수 |
 | `MAX_FILE_CHARS` | `20000` | 파일당 생성 문자 수 |
 | `MAX_TOTAL_OUTPUT_CHARS` | `60000` | 실행당 총 출력 문자 수 |
@@ -102,7 +104,14 @@ workflow 최상위 권한은 `contents: read`입니다. 모델, Issue, 브랜치
 
 같은 값은 `company/strategy.json`에서도 관리하며 Repository Variable이 우선합니다.
 
-채팅 모델은 매 실행에서 카탈로그 ID와 text 입출력·chat endpoint 적합성을 확인합니다. 카탈로그가 structured output 지원을 명확히 표시하지 않으면 JSON-only 모드로 시작합니다. `MODEL_DIAGNOSTIC_MODE=true`는 제품 산출물을 만들지 않고 작은 `no_op` 응답의 HTTP·content·JSON·Pydantic 처리 단계만 점검합니다. 모델 원문과 인증 헤더는 Actions summary에 기록하지 않습니다.
+채팅 모델은 매 실행에서 카탈로그 ID와 text 입출력·chat endpoint 적합성을 확인합니다. 카탈로그가 structured output 지원을 명확히 표시하지 않으면 JSON-only 모드로 시작합니다. `MODEL_DIAGNOSTIC_MODE=true`는 제품 산출물을 만들지 않고 작은 `no_op` 응답의 HTTP·content·JSON·Pydantic 처리 단계만 점검하며 필요한 호출 수를 1회로 계산합니다. 모델 원문과 인증 헤더는 Actions summary에 기록하지 않습니다.
+
+일일 한도에는 Actions의 `Confirm inference call 1/2` 단계가 성공한 실제 HTTP 요청만 포함됩니다. preflight, skip된 model job, 모델 선택 실패와 호환 모델 부재는 포함하지 않습니다. 한도 판정은 `completed calls + active reservations + required calls <= daily limit`이며 Actions summary에서 계산식을 확인할 수 있습니다. 잘못된 과거 상한이나 만료된 예약은 다음 명령으로 확인하고 정리합니다.
+
+```bash
+python scripts/reconcile_usage.py --date today --dry-run
+python scripts/reconcile_usage.py --date today --apply
+```
 
 ## 첫 시장 조사
 

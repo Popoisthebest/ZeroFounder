@@ -208,6 +208,9 @@ class ModelInferenceDiagnostic(StrictModel):
     retry_attempted: bool = False
     failure_stage: FailureStage | None = None
     pydantic_validation_error_paths: list[str] = Field(default_factory=list, max_length=50)
+    completed_inference_calls: int = Field(default=0, ge=0, le=2)
+    reserved_inference_calls: int = Field(default=0, ge=0, le=2)
+    failed_after_request_calls: int = Field(default=0, ge=0, le=2)
 
 
 class ModelSelection(StrictModel):
@@ -315,6 +318,32 @@ class PreflightDecision(StrictModel):
     metrics_hash: str | None = None
     idempotency_key: str
     blocked_reason: str | None = None
+    completed_calls_today: int = Field(default=0, ge=0)
+    active_reservations: int = Field(default=0, ge=0)
+    required_calls: int = Field(default=0, ge=0, le=2)
+    daily_limit: int = Field(default=0, ge=0)
+    manual_diagnostic_allowance: int = Field(default=0, ge=0)
+    effective_daily_limit: int = Field(default=0, ge=0)
+    usage_allowed: bool = True
+    usage_calculation: str = "0 + 0 + 0 <= 0"
+    failed_after_request_calls_today: int = Field(default=0, ge=0)
+    skipped_runs_today: int = Field(default=0, ge=0)
+
+
+class InferenceReservation(StrictModel):
+    reservation_id: StrictId
+    kind: Literal["chat", "embedding"]
+    fingerprint: str = Field(min_length=64, max_length=64)
+    reserved_at: datetime
+    run_id: str = Field(default="local", min_length=1, max_length=128)
+
+
+class InferenceCallRecord(StrictModel):
+    request_id: StrictId
+    kind: Literal["chat", "embedding"]
+    fingerprint: str = Field(min_length=64, max_length=64)
+    requested_at: datetime
+    failed_after_request: bool = False
 
 
 class UsageDay(StrictModel):
@@ -323,12 +352,26 @@ class UsageDay(StrictModel):
     embedding_calls: int = Field(default=0, ge=0)
     catalog_calls: int = Field(default=0, ge=0)
     failures: int = Field(default=0, ge=0)
+    completed_inference_calls: int = Field(default=0, ge=0)
+    reserved_inference_calls: int = Field(default=0, ge=0)
+    failed_after_request_calls: int = Field(default=0, ge=0)
+    skipped_runs: int = Field(default=0, ge=0)
     inference_call_upper_bound: int = Field(default=0, ge=0)
     request_fingerprints: list[str] = Field(default_factory=list)
+    reservations: list[InferenceReservation] = Field(default_factory=list)
+    call_records: list[InferenceCallRecord] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_usage_counts(self) -> UsageDay:
+        if self.reserved_inference_calls < len(self.reservations):
+            raise ValueError("reserved count cannot be smaller than reservation records")
+        if self.failed_after_request_calls > self.completed_inference_calls:
+            raise ValueError("failed requests cannot exceed completed inference calls")
+        return self
 
     @property
     def inference_calls(self) -> int:
-        return self.chat_calls + self.embedding_calls
+        return max(self.completed_inference_calls, self.chat_calls + self.embedding_calls)
 
 
 class UsageLedger(StrictModel):

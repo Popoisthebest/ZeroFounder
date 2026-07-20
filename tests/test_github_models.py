@@ -160,13 +160,16 @@ def test_non_chat_endpoint_is_not_selected(monkeypatch):
 
 
 def test_string_content_parses_normal_no_op():
-    result = _run(_client(_single_response(_completion())))
+    client = _client(_single_response(_completion()))
+    result = _run(client)
     assert result.action.action_type == ActionType.NO_OP
     assert result.rejection_code is None
     assert result.diagnostic.message_content_type == MessageContentType.STRING
     assert result.diagnostic.finish_reason == "stop"
     assert result.diagnostic.choices_count == 1
     assert result.diagnostic.response_char_count > 0
+    assert result.diagnostic.completed_inference_calls == 1
+    assert client.limiter.today().inference_calls == 1
 
 
 def test_array_content_joins_only_text_items():
@@ -276,6 +279,8 @@ def test_json_schema_failure_falls_back_to_json_only_and_preserves_model_id(
     assert result.diagnostic.request_mode == ModelRequestMode.JSON_ONLY
     assert result.diagnostic.fallback_attempted
     assert not result.diagnostic.retry_attempted
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.failed_after_request_calls == 1
 
 
 def test_empty_structured_content_can_fall_back_to_json_only():
@@ -328,6 +333,37 @@ def test_diagnostic_mode_builds_small_exact_response_request():
     assert result.rejection_code is None
     assert captured["max_tokens"] == 500
     assert any("Pipeline diagnostic mode" in item["content"] for item in captured["messages"])
+    assert result.diagnostic.completed_inference_calls == 1
+
+
+def test_diagnostic_mode_never_sends_a_fallback_request():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(422, json={"message": "unsupported"})
+
+    result = _run(
+        _client(handler),
+        diagnostic_mode=True,
+        request_mode=ModelRequestMode.JSON_SCHEMA,
+    )
+    assert calls == 1
+    assert result.diagnostic.completed_inference_calls == 1
+    assert not result.diagnostic.fallback_attempted
+
+
+def test_unexpected_workflow_exception_releases_reservation():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise RuntimeError("workflow interrupted")
+
+    client = _client(handler)
+    with pytest.raises(RuntimeError, match="workflow interrupted"):
+        _run(client)
+    assert client.limiter.today().reserved_inference_calls == 0
+    assert client.limiter.today().inference_calls == 1
+    assert client.limiter.today().failed_after_request_calls == 1
 
 
 def test_embedding_failure_is_nonfatal():

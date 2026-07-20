@@ -26,11 +26,17 @@ def render_daily_report(root: Path, today: date) -> str:
     )
     selected = venture.get("name") or "선택되지 않음"
     model_usage = usage_day.inference_calls if usage_day else 0
-    model_upper_bound = usage_day.inference_call_upper_bound if usage_day else 0
+    active_reservations = usage_day.reserved_inference_calls if usage_day else 0
+    failed_calls = usage_day.failed_after_request_calls if usage_day else 0
+    skipped_runs = usage_day.skipped_runs if usage_day else 0
     bugs = metrics.get("bug_reports", "확인 불가")
     features = metrics.get("feature_requests", "확인 불가")
     visitors = metrics.get("visitor_count")
     visitor_text = visitors if visitors is not None else "분석 도구 미연결 — 확인 불가"
+    usage_text = (
+        f"실제 요청 {model_usage}회, 활성 예약 {active_reservations}회, "
+        f"요청 후 실패 {failed_calls}회, skip 실행 {skipped_runs}회"
+    )
     return f"""# ZeroFounder 일일 경영 보고서 — {today.isoformat()}
 
 ## 현재 상태
@@ -59,7 +65,7 @@ def render_daily_report(root: Path, today: date) -> str:
 - 주요 위험: 근거·유통·검증 gate를 건너뛰지 않을 것
 - 다음 추천 행동: preflight가 확인한 실제 변화에 따라 결정
 - 인간 승인 필요: founder/tasks.md 및 열린 `requires-approval` Issue 확인
-- 모델 사용량: 합산 확인 {model_usage}회, Actions 기반 보수적 상한 {model_upper_bound}회
+- 모델 사용량: {usage_text}
 
 확인할 수 없는 수치는 추정하지 않았습니다.
 """

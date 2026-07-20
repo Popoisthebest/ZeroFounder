@@ -46,9 +46,9 @@ def collect_metrics(client: GitHubClient) -> dict[str, Any]:
         item for item in pure_issues if labels(item) & {"feedback", "bug", "feature-request"}
     ]
     try:
-        model_upper_bound = client.model_call_upper_bound_today()
+        model_usage = client.model_usage_today()
     except Exception:
-        model_upper_bound = None
+        model_usage = None
     return {
         "as_of": datetime.now(UTC).isoformat(),
         "product_features": 0,
@@ -64,8 +64,16 @@ def collect_metrics(client: GitHubClient) -> dict[str, Any]:
         "stars": int(repository.get("stargazers_count", 0)),
         "forks": int(repository.get("forks_count", 0)),
         "agent_success_rate": None,
-        "model_calls": None,
-        "model_calls_upper_bound": model_upper_bound,
+        "model_calls": (
+            model_usage["completed_inference_calls"] if model_usage is not None else None
+        ),
+        "failed_after_request_calls": (
+            model_usage["failed_after_request_calls"] if model_usage is not None else None
+        ),
+        "active_model_reservations": (
+            model_usage["reserved_inference_calls"] if model_usage is not None else None
+        ),
+        "skipped_model_runs": model_usage["skipped_runs"] if model_usage is not None else None,
         "experiments": 0,
         "successful_experiments": 0,
         "recent_product_changes": 0,
@@ -85,18 +93,42 @@ def write_daily_metrics(path: Path, metrics: dict[str, Any]) -> bool:
     return True
 
 
-def write_daily_usage_upper_bound(path: Path, upper_bound: int | None) -> bool:
-    if upper_bound is None:
+def write_daily_usage_snapshot(path: Path, usage: dict[str, int] | None) -> bool:
+    if usage is None:
         return False
     ledger = UsageLedger.model_validate_json(path.read_text()) if path.exists() else UsageLedger()
     today = datetime.now(UTC).date()
     existing = next((item for item in ledger.days if item.date == today), None)
     if existing:
-        if existing.inference_call_upper_bound == upper_bound:
+        values = (
+            usage["completed_inference_calls"],
+            usage["reserved_inference_calls"],
+            usage["failed_after_request_calls"],
+            usage["skipped_runs"],
+        )
+        current = (
+            existing.completed_inference_calls,
+            existing.reserved_inference_calls,
+            existing.failed_after_request_calls,
+            existing.skipped_runs,
+        )
+        if current == values and existing.inference_call_upper_bound == 0:
             return False
-        existing.inference_call_upper_bound = upper_bound
+        existing.completed_inference_calls = values[0]
+        existing.reserved_inference_calls = values[1]
+        existing.failed_after_request_calls = values[2]
+        existing.skipped_runs = values[3]
+        existing.inference_call_upper_bound = 0
     else:
-        ledger.days.append(UsageDay(date=today, inference_call_upper_bound=upper_bound))
+        ledger.days.append(
+            UsageDay(
+                date=today,
+                completed_inference_calls=usage["completed_inference_calls"],
+                reserved_inference_calls=usage["reserved_inference_calls"],
+                failed_after_request_calls=usage["failed_after_request_calls"],
+                skipped_runs=usage["skipped_runs"],
+            )
+        )
     path.write_text(ledger.model_dump_json(indent=2) + "\n")
     return True
 
@@ -108,9 +140,15 @@ def main() -> int:
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
     metrics = collect_metrics(client)
     changed = write_daily_metrics(args.output, metrics)
-    usage_changed = write_daily_usage_upper_bound(
-        args.output.parent / "usage.json", metrics.get("model_calls_upper_bound")
-    )
+    usage = None
+    if metrics.get("model_calls") is not None:
+        usage = {
+            "completed_inference_calls": int(metrics["model_calls"]),
+            "reserved_inference_calls": int(metrics["active_model_reservations"]),
+            "failed_after_request_calls": int(metrics["failed_after_request_calls"]),
+            "skipped_runs": int(metrics["skipped_model_runs"]),
+        }
+    usage_changed = write_daily_usage_snapshot(args.output.parent / "usage.json", usage)
     print(json.dumps({"metrics_updated": changed, "usage_updated": usage_changed}))
     return 0
 

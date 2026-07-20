@@ -15,7 +15,7 @@ from agents.lifecycle import (
     allowed_actions,
     validate_action_transition,
 )
-from agents.preflight import build_preflight_decision
+from agents.preflight import build_preflight_decision, usage_allows_run
 from agents.safety import validate_evidence_references
 from agents.schemas import (
     ActionEnvelope,
@@ -31,7 +31,7 @@ from agents.schemas import (
     RepositoryCheckpoint,
     TriggerReason,
 )
-from agents.usage_limiter import UsageLimiter
+from agents.usage_limiter import UsageLimiter, required_inference_calls
 
 
 def _signal_quality(root: Path) -> dict[str, float]:
@@ -89,17 +89,60 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     )
     token = os.getenv("GITHUB_TOKEN")
     repository = os.getenv("GITHUB_REPOSITORY")
-    limit = int(os.getenv("DAILY_MODEL_CALL_LIMIT", "8"))
+    base_limit = int(os.getenv("DAILY_MODEL_CALL_LIMIT", "8"))
+    diagnostic_mode = os.getenv("MODEL_DIAGNOSTIC_MODE", "false").lower() == "true"
+    manual_diagnostic_allowance = (
+        int(os.getenv("MANUAL_DIAGNOSTIC_CALL_ALLOWANCE", "1"))
+        if diagnostic_mode and event_name == "workflow_dispatch"
+        else 0
+    )
+    limit = base_limit + manual_diagnostic_allowance
+    required_calls = (
+        required_inference_calls(diagnostic_mode) if decision.should_call_model else 0
+    )
+    usage = {
+        "completed_inference_calls": 0,
+        "reserved_inference_calls": 0,
+        "failed_after_request_calls": 0,
+        "skipped_runs": 0,
+    }
     if token and repository:
         try:
-            upper_bound = GitHubClient(token, repository).model_call_upper_bound_today()
+            usage = GitHubClient(token, repository).model_usage_today()
         except Exception:
-            upper_bound = 0
-        if upper_bound >= limit:
-            decision.should_call_model = False
-            decision.blocked_reason = (
-                f"conservative daily inference upper bound {upper_bound} reached limit {limit}"
-            )
+            ledger = UsageLimiter.from_path(root / "company/usage.json", daily_limit=limit)
+            day = ledger.today()
+            usage = {
+                "completed_inference_calls": day.inference_calls,
+                "reserved_inference_calls": day.reserved_inference_calls,
+                "failed_after_request_calls": day.failed_after_request_calls,
+                "skipped_runs": day.skipped_runs,
+            }
+    completed = usage["completed_inference_calls"]
+    active = usage["reserved_inference_calls"]
+    allowed = usage_allows_run(
+        completed_calls=completed,
+        active_reservations=active,
+        required_calls=required_calls,
+        daily_limit=limit,
+    )
+    decision.completed_calls_today = completed
+    decision.active_reservations = active
+    decision.required_calls = required_calls
+    decision.daily_limit = base_limit
+    decision.manual_diagnostic_allowance = manual_diagnostic_allowance
+    decision.effective_daily_limit = limit
+    decision.usage_allowed = allowed
+    decision.usage_calculation = f"{completed} + {active} + {required_calls} <= {limit}"
+    decision.failed_after_request_calls_today = usage["failed_after_request_calls"]
+    decision.skipped_runs_today = usage["skipped_runs"]
+    if decision.should_call_model and not allowed:
+        decision.should_call_model = False
+        decision.blocked_reason = (
+            "daily inference limit would be exceeded: "
+            f"{completed} completed + {active} active reservations + "
+            f"{required_calls} required > limit {limit}"
+        )
     return decision.model_dump(mode="json", by_alias=True)
 
 
@@ -315,7 +358,16 @@ def run_model(
             reason="sleep mode is active",
             failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
-    limiter = UsageLimiter.from_path(root / "company/usage.json")
+    diagnostic_mode = os.getenv("MODEL_DIAGNOSTIC_MODE", "false").lower() == "true"
+    limiter = UsageLimiter.from_path(
+        root / "company/usage.json",
+        daily_limit=(
+            decision.effective_daily_limit
+            if decision and decision.effective_daily_limit
+            else None
+        ),
+        max_run_calls=required_inference_calls(diagnostic_mode),
+    )
     client = GitHubModelsClient(os.environ["GITHUB_TOKEN"], limiter)
     try:
         catalog = client.catalog()
@@ -334,7 +386,6 @@ def run_model(
             reason="no compatible text model is available",
             failure_stage=FailureStage.MODEL_SELECTION,
         )
-    diagnostic_mode = os.getenv("MODEL_DIAGNOSTIC_MODE", "false").lower() == "true"
     if diagnostic_mode:
         messages = [
             {
@@ -389,6 +440,17 @@ def main() -> int:
             decision = PreflightDecision.model_validate_json(args.preflight.read_text())
         outcome = run_model(root, decision)
         result = outcome.action.model_dump(mode="json", by_alias=True)
+        github_output = os.getenv("GITHUB_OUTPUT")
+        if github_output:
+            inference = outcome.diagnostic.inference
+            with Path(github_output).open("a", encoding="utf-8") as handle:
+                handle.write(
+                    f"completed_inference_calls={inference.completed_inference_calls}\n"
+                )
+                handle.write(
+                    "failed_after_request_calls="
+                    f"{inference.failed_after_request_calls}\n"
+                )
         if args.diagnostics:
             args.diagnostics.parent.mkdir(parents=True, exist_ok=True)
             args.diagnostics.write_text(

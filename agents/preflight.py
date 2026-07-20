@@ -7,6 +7,15 @@ from datetime import date
 from agents.schemas import PreflightDecision, RepositoryCheckpoint, TriggerReason
 
 
+def usage_allows_run(
+    *, completed_calls: int, active_reservations: int, required_calls: int, daily_limit: int
+) -> bool:
+    values = (completed_calls, active_reservations, required_calls, daily_limit)
+    if any(value < 0 for value in values):
+        raise ValueError("usage gate values cannot be negative")
+    return completed_calls + active_reservations + required_calls <= daily_limit
+
+
 def build_preflight_decision(
     *,
     checkpoint: RepositoryCheckpoint,
