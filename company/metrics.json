@@ -10,11 +10,11 @@
   "stars": 0,
   "forks": 0,
   "agent_success_rate": null,
-  "model_calls": 0,
+  "model_calls": null,
+  "model_calls_upper_bound": 0,
   "experiments": 0,
   "successful_experiments": 0,
   "recent_product_changes": 0,
   "feedback_sentiment": {"positive": 0, "negative": 0, "unknown": 0},
   "visitor_count": null
 }
-

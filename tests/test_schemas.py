@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from agents.safety import SafetyViolation, validate_action_files, validate_evidence_references
+from agents.safety import (
+    SafetyViolation,
+    validate_action_files,
+    validate_evidence_references,
+    validate_model_urls,
+)
 from agents.schemas import ActionEnvelope, ActionType, CompanyState, LifecycleStage
 
 ROOT = Path(__file__).parents[1]
@@ -77,6 +82,27 @@ def test_existing_evidence_is_accepted(tmp_path: Path):
     )
     action = valid_action(evidence_ids=["evidence-001"])
     assert "evidence-001" in validate_evidence_references(action, tmp_path)
+
+
+def test_model_cannot_invent_evidence_url(tmp_path: Path):
+    target = tmp_path / "signals/processed"
+    target.mkdir(parents=True)
+    (target / "e.json").write_text(
+        json.dumps({"evidence_id": "evidence-001", "url": "https://trusted.example/a"})
+    )
+    action = valid_action(
+        action_type="select_idea",
+        evidence_ids=["evidence-001"],
+        files=[
+            {
+                "path": "ideas/selected/decision.md",
+                "content": "Invented https://attacker.example/fake",
+            }
+        ],
+    )
+    evidence = validate_evidence_references(action, tmp_path)
+    with pytest.raises(SafetyViolation):
+        validate_model_urls(action, evidence)
 
 
 def test_no_op_cannot_modify_state():

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -138,3 +139,23 @@ class GitHubClient:
                 self._request("PATCH", f"/repos/{self.repository}/labels/{name}", json=payload)
             else:
                 self._request("POST", f"/repos/{self.repository}/labels", json=payload)
+
+    def model_call_upper_bound_today(self) -> int:
+        today = datetime.now(UTC).date().isoformat()
+        runs = self._request(
+            "GET",
+            f"/repos/{self.repository}/actions/workflows/agent.yml/runs",
+            params={"created": f">={today}", "per_page": 100},
+        ).get("workflow_runs", [])
+        model_jobs = 0
+        for run in runs:
+            run_id = run.get("id")
+            if not isinstance(run_id, int):
+                continue
+            jobs = self._request(
+                "GET",
+                f"/repos/{self.repository}/actions/runs/{run_id}/jobs",
+                params={"per_page": 100},
+            ).get("jobs", [])
+            model_jobs += sum(job.get("name") == "model" for job in jobs)
+        return model_jobs * 2

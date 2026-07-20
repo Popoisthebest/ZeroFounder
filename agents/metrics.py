@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.github_client import GitHubClient
+from agents.schemas import UsageDay, UsageLedger
 
 POSITIVE = {"helpful", "useful", "thanks", "great", "좋아요", "유용", "감사"}
 NEGATIVE = {"broken", "bad", "confusing", "error", "버그", "오류", "불편"}
@@ -44,6 +45,10 @@ def collect_metrics(client: GitHubClient) -> dict[str, Any]:
     feedback = [
         item for item in pure_issues if labels(item) & {"feedback", "bug", "feature-request"}
     ]
+    try:
+        model_upper_bound = client.model_call_upper_bound_today()
+    except Exception:
+        model_upper_bound = None
     return {
         "as_of": datetime.now(UTC).isoformat(),
         "product_features": 0,
@@ -59,7 +64,8 @@ def collect_metrics(client: GitHubClient) -> dict[str, Any]:
         "stars": int(repository.get("stargazers_count", 0)),
         "forks": int(repository.get("forks_count", 0)),
         "agent_success_rate": None,
-        "model_calls": 0,
+        "model_calls": None,
+        "model_calls_upper_bound": model_upper_bound,
         "experiments": 0,
         "successful_experiments": 0,
         "recent_product_changes": 0,
@@ -79,13 +85,33 @@ def write_daily_metrics(path: Path, metrics: dict[str, Any]) -> bool:
     return True
 
 
+def write_daily_usage_upper_bound(path: Path, upper_bound: int | None) -> bool:
+    if upper_bound is None:
+        return False
+    ledger = UsageLedger.model_validate_json(path.read_text()) if path.exists() else UsageLedger()
+    today = datetime.now(UTC).date()
+    existing = next((item for item in ledger.days if item.date == today), None)
+    if existing:
+        if existing.inference_call_upper_bound == upper_bound:
+            return False
+        existing.inference_call_upper_bound = upper_bound
+    else:
+        ledger.days.append(UsageDay(date=today, inference_call_upper_bound=upper_bound))
+    path.write_text(ledger.model_dump_json(indent=2) + "\n")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("company/metrics.json"))
     args = parser.parse_args()
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
-    changed = write_daily_metrics(args.output, collect_metrics(client))
-    print(json.dumps({"metrics_updated": changed}))
+    metrics = collect_metrics(client)
+    changed = write_daily_metrics(args.output, metrics)
+    usage_changed = write_daily_usage_upper_bound(
+        args.output.parent / "usage.json", metrics.get("model_calls_upper_bound")
+    )
+    print(json.dumps({"metrics_updated": changed, "usage_updated": usage_changed}))
     return 0
 
 

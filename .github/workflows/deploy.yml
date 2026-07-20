@@ -38,6 +38,7 @@ jobs:
       - run: npm ci
       - run: python -m pytest
       - run: ruff check agents tests scripts
+      - run: python -m scripts.check_workflows
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test -- --run
@@ -45,6 +46,9 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           VITE_REPOSITORY_URL: https://github.com/${{ github.repository }}
         run: npm run build
+      - run: python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
+      - run: npm audit --audit-level=high
+      - run: python -m scripts.security_check
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v4
         with:
@@ -81,5 +85,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: python scripts/report_deploy_failure.py
-
+        run: python -m scripts.report_deploy_failure

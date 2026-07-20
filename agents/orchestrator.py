@@ -8,8 +8,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agents.context_builder import build_context
+from agents.github_client import GitHubClient
 from agents.github_models import GitHubModelsClient, safe_no_op
+from agents.lifecycle import action_allowed, validate_transition
 from agents.preflight import build_preflight_decision
+from agents.safety import validate_evidence_references
 from agents.schemas import CompanyState, MarketSignal, RepositoryCheckpoint
 from agents.usage_limiter import UsageLimiter
 
@@ -67,6 +70,19 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
             os.getenv("STRONG_EVIDENCE_THRESHOLD", evidence["strong_evidence_threshold"])
         ),
     )
+    token = os.getenv("GITHUB_TOKEN")
+    repository = os.getenv("GITHUB_REPOSITORY")
+    limit = int(os.getenv("DAILY_MODEL_CALL_LIMIT", "8"))
+    if token and repository:
+        try:
+            upper_bound = GitHubClient(token, repository).model_call_upper_bound_today()
+        except Exception:
+            upper_bound = 0
+        if upper_bound >= limit:
+            decision.should_call_model = False
+            decision.blocked_reason = (
+                f"conservative daily inference upper bound {upper_bound} reached limit {limit}"
+            )
     return decision.model_dump(mode="json", by_alias=True)
 
 
@@ -92,6 +108,25 @@ def run_model(root: Path) -> dict:
             {"role": "user", "content": context},
         ],
     )
+    if not action_allowed(state.lifecycle_stage, action.action_type.value):
+        return safe_no_op("action is not allowed in the current lifecycle stage").model_dump(
+            mode="json", by_alias=True
+        )
+    if action.state_transition:
+        if action.state_transition.from_stage != state.lifecycle_stage:
+            return safe_no_op("state transition source mismatch").model_dump(
+                mode="json", by_alias=True
+            )
+        try:
+            validate_transition(
+                action.state_transition.from_stage, action.state_transition.to_stage
+            )
+        except ValueError as exc:
+            return safe_no_op(str(exc)).model_dump(mode="json", by_alias=True)
+    try:
+        validate_evidence_references(action, root)
+    except ValueError as exc:
+        return safe_no_op(str(exc)).model_dump(mode="json", by_alias=True)
     return action.model_dump(mode="json", by_alias=True)
 
 

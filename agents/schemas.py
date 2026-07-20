@@ -196,6 +196,7 @@ class PreflightDecision(StrictModel):
     product_sha: str | None = None
     metrics_hash: str | None = None
     idempotency_key: str
+    blocked_reason: str | None = None
 
 
 class UsageDay(StrictModel):
@@ -204,6 +205,7 @@ class UsageDay(StrictModel):
     embedding_calls: int = Field(default=0, ge=0)
     catalog_calls: int = Field(default=0, ge=0)
     failures: int = Field(default=0, ge=0)
+    inference_call_upper_bound: int = Field(default=0, ge=0)
     request_fingerprints: list[str] = Field(default_factory=list)
 
     @property
@@ -380,6 +382,8 @@ class SignalSource(StrictModel):
     repositories: list[str] = Field(default_factory=list)
     reliability: float = Field(ge=0, le=1)
     max_items: int = Field(default=25, ge=1, le=100)
+    terms_note: str | None = Field(default=None, max_length=500)
+    robots_note: str | None = Field(default=None, max_length=500)
 
 
 class SignalPack(StrictModel):
@@ -416,3 +420,50 @@ class FounderResult(StrictModel):
 
 class FounderResults(StrictModel):
     records: list[FounderResult] = Field(default_factory=list)
+
+
+class ExperimentStatus(StrEnum):
+    PLANNED = "planned"
+    ACTIVE = "active"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INCONCLUSIVE = "inconclusive"
+
+
+class Experiment(StrictModel):
+    experiment_id: StrictId
+    hypothesis: str = Field(min_length=10, max_length=2000)
+    change: str = Field(min_length=5, max_length=2000)
+    target_metric: str = Field(min_length=2, max_length=500)
+    success_condition: str = Field(min_length=5, max_length=1000)
+    failure_condition: str = Field(min_length=5, max_length=1000)
+    start_date: date
+    review_date: date
+    status: ExperimentStatus = ExperimentStatus.PLANNED
+
+    @model_validator(mode="after")
+    def valid_dates(self) -> Experiment:
+        if self.review_date < self.start_date:
+            raise ValueError("experiment review date precedes start date")
+        return self
+
+
+class ValidationThresholds(StrictModel):
+    validation_period_days: int = Field(default=14, ge=1)
+    min_distribution_activities: int = Field(default=2, ge=1)
+    min_user_or_visit_signals: int = Field(default=10, ge=1)
+    min_feedback_items: int = Field(default=3, ge=1)
+    min_growth_experiments: int = Field(default=2, ge=1)
+    min_distinct_feedback_authors: int = Field(default=2, ge=1)
+
+
+class ValidationSnapshot(StrictModel):
+    validation_days: int = Field(ge=0)
+    distribution_activities: int = Field(ge=0)
+    user_or_visit_signals: int = Field(ge=0)
+    feedback_items: int = Field(ge=0)
+    growth_experiments: int = Field(ge=0)
+    distinct_feedback_authors: int = Field(ge=0)
+    feedback_paths_verified: bool
+    active_experiment: bool
+    failure_indicators: list[str] = Field(default_factory=list)

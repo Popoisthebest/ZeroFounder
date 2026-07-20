@@ -126,3 +126,60 @@ def can_review_pivot(
             growth_experiments >= thresholds["min_growth_experiments"],
         )
     )
+
+
+STAGE_ACTIONS = {
+    LifecycleStage.DISCOVERY: {"collect_signals", "create_problem_candidate", "write_report"},
+    LifecycleStage.EVIDENCE_VALIDATION: {"validate_evidence", "write_report"},
+    LifecycleStage.IDEA_EVALUATION: {
+        "create_idea_candidates",
+        "evaluate_ideas",
+        "write_report",
+    },
+    LifecycleStage.DISTRIBUTION_CHECK: {"check_distribution", "write_report"},
+    LifecycleStage.IDEA_SELECTED: {"select_idea", "request_founder_approval"},
+    LifecycleStage.FOUNDER_APPROVAL: {"no_op", "write_report"},
+    LifecycleStage.MVP_PLANNING: {"create_product_spec", "write_report"},
+    LifecycleStage.INFRASTRUCTURE_SELECTION: {
+        "select_infrastructure",
+        "open_issue",
+        "write_report",
+    },
+    LifecycleStage.MVP_BUILDING: {
+        "create_code_patch",
+        "propose_dependency",
+        "write_report",
+    },
+    LifecycleStage.PRE_LAUNCH: {"create_content", "write_report", "update_state"},
+    LifecycleStage.DISTRIBUTION_REQUIRED: {
+        "create_content",
+        "create_experiment",
+        "write_report",
+    },
+    LifecycleStage.VALIDATION_RUNNING: {
+        "analyze_feedback",
+        "record_validation",
+        "create_experiment",
+        "write_report",
+        "update_state",
+    },
+    LifecycleStage.OPERATING: {
+        "analyze_feedback",
+        "create_content",
+        "update_strategy",
+        "create_experiment",
+        "write_report",
+    },
+    LifecycleStage.GROWTH_EXPERIMENT: {
+        "create_experiment",
+        "record_validation",
+        "write_report",
+    },
+    LifecycleStage.PIVOT_REVIEW: {"recommend_pivot", "write_report"},
+    LifecycleStage.PIVOTING: {"update_strategy", "update_state", "write_report"},
+    LifecycleStage.PAUSED: {"no_op", "write_report"},
+}
+
+
+def action_allowed(stage: LifecycleStage, action: str) -> bool:
+    return action in STAGE_ACTIONS[stage]

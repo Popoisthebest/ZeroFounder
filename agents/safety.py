@@ -5,7 +5,7 @@ import os
 import re
 from pathlib import Path, PurePosixPath
 
-from agents.schemas import ActionEnvelope, ActionType
+from agents.schemas import ActionEnvelope, ActionType, DecisionRecord
 
 CODE_ALLOWED_PREFIXES = (
     "venture/product/",
@@ -45,6 +45,11 @@ FOUNDER_CONTENT_ALLOWED = {
     "founder/outreach-plan.md",
     "founder/posting-pack.md",
 }
+SELECTION_ALLOWED = {
+    "ideas/selected/decision.md",
+    "venture/venture.json",
+    "company/strategy.json",
+}
 SECRET_PATTERNS = (
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
@@ -75,9 +80,42 @@ def path_allowed_for_action(path: str, action: ActionType) -> bool:
         return path in SPEC_ALLOWED
     if action == ActionType.CHECK_DISTRIBUTION:
         return path in FOUNDER_CONTENT_ALLOWED
+    if action == ActionType.SELECT_IDEA:
+        return path in SELECTION_ALLOWED
+    if action == ActionType.CREATE_PROBLEM_CANDIDATE:
+        return path.startswith("research/problems/")
+    if action == ActionType.CREATE_IDEA_CANDIDATES:
+        return path.startswith("ideas/candidates/")
+    if action == ActionType.EVALUATE_IDEAS:
+        return path.startswith("ideas/evaluations/")
+    if action == ActionType.VALIDATE_EVIDENCE:
+        return path.startswith(("signals/processed/", "research/"))
+    if action == ActionType.SELECT_INFRASTRUCTURE:
+        return path == "venture/infrastructure.json"
+    if action == ActionType.CREATE_EXPERIMENT:
+        return path.startswith("experiments/")
+    if action == ActionType.UPDATE_STRATEGY:
+        return path == "company/strategy.json"
+    if action == ActionType.UPDATE_STATE:
+        return path == "company/state.json"
+    if action in {
+        ActionType.COLLECT_SIGNALS,
+        ActionType.REQUEST_FOUNDER_APPROVAL,
+        ActionType.OPEN_ISSUE,
+        ActionType.CREATE_PULL_REQUEST,
+        ActionType.PROPOSE_DEPENDENCY,
+        ActionType.NO_OP,
+    }:
+        return False
     if action in {ActionType.WRITE_REPORT, ActionType.CREATE_CONTENT}:
         return path.startswith(("reports/", "research/", "venture/content/"))
-    return not path.startswith(PROTECTED_PREFIXES) and path not in ALWAYS_PROTECTED
+    if action == ActionType.ANALYZE_FEEDBACK:
+        return path.startswith(("reports/", "research/")) or path == "company/task-board.json"
+    if action == ActionType.RECORD_VALIDATION:
+        return path.startswith(("reports/", "experiments/")) or path == "company/metrics.json"
+    if action == ActionType.RECOMMEND_PIVOT:
+        return path.startswith("reports/") or path == "company/strategy.json"
+    return False
 
 
 def validate_action_files(
@@ -113,6 +151,17 @@ def validate_action_files(
         if root != resolved_parent and root not in resolved_parent.parents:
             raise SafetyViolation("resolved path escapes workspace")
         assert_no_secrets(change.content)
+        if normalized == "company/decisions.jsonl":
+            original = candidate.read_text() if candidate.exists() else ""
+            if not change.content.startswith(original):
+                raise SafetyViolation("decisions.jsonl is append-only")
+            appended = change.content[len(original) :]
+            for line in appended.splitlines():
+                if line.strip():
+                    try:
+                        DecisionRecord.model_validate_json(line)
+                    except ValueError as exc:
+                        raise SafetyViolation("invalid appended decision record") from exc
     if total > max_total_chars:
         raise SafetyViolation("total output character limit exceeded")
 
@@ -156,6 +205,28 @@ def validate_evidence_references(action: ActionEnvelope, root: Path) -> dict[str
     if missing:
         raise SafetyViolation(f"unknown evidence ids: {', '.join(missing)}")
     return {item: index[item] for item in action.evidence_ids}
+
+
+def validate_model_urls(action: ActionEnvelope, evidence: dict[str, dict]) -> None:
+    evidence_bound_actions = {
+        ActionType.CREATE_PROBLEM_CANDIDATE,
+        ActionType.CREATE_IDEA_CANDIDATES,
+        ActionType.EVALUATE_IDEAS,
+        ActionType.SELECT_IDEA,
+        ActionType.VALIDATE_EVIDENCE,
+    }
+    if action.action_type not in evidence_bound_actions:
+        return
+    allowed = {record.get("url") for record in evidence.values() if record.get("url")}
+    allowed_ids = set(action.evidence_ids)
+    for change in action.files:
+        referenced = set(re.findall(r"https?://[^\s)\]>'\"]+", change.content))
+        invented = referenced - allowed
+        if invented:
+            raise SafetyViolation("model output contains URLs not present in referenced evidence")
+        referenced_ids = set(re.findall(r"(?:evidence|signal)-[a-z0-9._:-]+", change.content))
+        if referenced_ids - allowed_ids:
+            raise SafetyViolation("model output contains undeclared evidence ids")
 
 
 def urls_from_evidence(evidence_ids: list[str], root: Path) -> list[str]:

@@ -16,7 +16,7 @@ def main() -> int:
     if status not in {"ci_not_started", "awaiting_ci_approval"}:
         raise SystemExit("invalid dispatch result")
     return subprocess.run(
-        ["python", "scripts/update_pr_status.py", "--pr", str(args.pr), "--status", status],
+        ["python", "-m", "scripts.update_pr_status", "--pr", str(args.pr), "--status", status],
         check=False,
     ).returncode
 

@@ -15,6 +15,7 @@ concurrency:
 jobs:
   collect:
     permissions:
+      actions: read
       contents: write
       issues: read
     runs-on: ubuntu-latest
@@ -31,11 +32,11 @@ jobs:
         run: |
           python -m agents.signal_collector --root .
           python -m agents.metrics
+          python -m agents.reporting --root .
       - run: |
-          if git diff --quiet -- signals company/metrics.json; then exit 0; fi
+          if git diff --quiet -- signals company/metrics.json company/usage.json reports; then exit 0; fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add signals/raw company/metrics.json
+          git add signals/raw company/metrics.json company/usage.json reports
           git commit -m "chore(agent): collect-signals [run:${GITHUB_RUN_ID}]"
           git push origin HEAD
-

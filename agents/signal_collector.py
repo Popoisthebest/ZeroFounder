@@ -78,7 +78,7 @@ class SignalCollector:
                     output.extend(self._collect_source(pack.pack_id, source, inbox))
                 except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError) as exc:
                     self.errors.append({"source_id": source.source_id, "error": str(exc)[:500]})
-                self.sleep(0.01)
+                self.sleep(1.0)
         deduped: dict[str, MarketSignal] = {}
         for signal in output:
             deduped.setdefault(signal.signal_id, signal)
@@ -153,7 +153,12 @@ class SignalCollector:
             title = item.get("title") or item.get("full_name") or item.get("name")
             if not isinstance(url, str) or not isinstance(title, str):
                 continue
-            summary = item.get("body") or item.get("description") or title
+            summary = (
+                item.get("body")
+                or item.get("bodyText")
+                or item.get("description")
+                or title
+            )
             signals.append(
                 self._make_signal(
                     pack_id,
@@ -163,6 +168,7 @@ class SignalCollector:
                     summary=str(summary)[:2000],
                 )
             )
+            self.sleep(0.2)
         return signals
 
     def _hacker_news(self, pack_id: str, source: SignalSource) -> list[MarketSignal]:
@@ -239,6 +245,7 @@ class SignalCollector:
                 .get("nodes", [])
             )
             signals.extend(self._from_github_items(pack_id, source, nodes))
+            self.sleep(0.2)
         return signals[: source.max_items]
 
     def _inbox(self, pack_id: str, source: SignalSource, inbox: Path) -> list[MarketSignal]:

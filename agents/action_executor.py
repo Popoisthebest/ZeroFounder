@@ -6,7 +6,11 @@ import subprocess
 from pathlib import Path
 
 from agents.lifecycle import validate_transition
-from agents.safety import validate_action_files, validate_evidence_references
+from agents.safety import (
+    validate_action_files,
+    validate_evidence_references,
+    validate_model_urls,
+)
 from agents.schemas import ActionEnvelope, CompanyState
 
 
@@ -20,7 +24,8 @@ class ActionExecutor:
 
     def validate(self, action: ActionEnvelope) -> None:
         validate_action_files(action, workspace=self.root)
-        validate_evidence_references(action, self.root)
+        evidence = validate_evidence_references(action, self.root)
+        validate_model_urls(action, evidence)
         if action.state_transition:
             state = CompanyState.model_validate_json((self.root / "company/state.json").read_text())
             if state.lifecycle_stage != action.state_transition.from_stage:

@@ -42,8 +42,11 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - id: decision
         env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_EVENT_NAME: ${{ github.event_name }}
+          DAILY_MODEL_CALL_LIMIT: ${{ vars.DAILY_MODEL_CALL_LIMIT || '8' }}
         run: |
           python -m agents.orchestrator preflight --output runtime/preflight.json
           python -c "import json,os; d=json.load(open('runtime/preflight.json')); open(os.environ['GITHUB_OUTPUT'],'a').write('should_call_model='+str(d['should_call_model']).lower()+'\n')"
@@ -106,7 +109,7 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python scripts/create_dependency_issue.py --action runtime/action.json
+        run: python -m scripts.create_dependency_issue --action runtime/action.json
 
   issue-command:
     if: github.event_name == 'issue_comment'
@@ -128,7 +131,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
-        run: python scripts/process_issue_command.py
+        run: python -m scripts.process_issue_command
       - uses: actions/upload-artifact@v4
         with:
           name: approval-command
@@ -153,7 +156,7 @@ jobs:
           path: runtime
       - env:
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: python scripts/apply_approval_command.py --input runtime/approval-command.json
+        run: python -m scripts.apply_approval_command --input runtime/approval-command.json
 
   dependency-branch:
     needs: issue-command
@@ -187,7 +190,7 @@ jobs:
       - id: apply
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: python scripts/apply_dependency_branch.py --input runtime/approval-command.json --run-id "$GITHUB_RUN_ID"
+        run: python -m scripts.apply_dependency_branch --input runtime/approval-command.json --run-id "$GITHUB_RUN_ID"
 
   create-dependency-pr:
     needs: dependency-branch
@@ -209,7 +212,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python scripts/create_dependency_pr.py --branch '${{ needs.dependency-branch.outputs.branch }}' --sha '${{ needs.dependency-branch.outputs.sha }}' --proposal '${{ needs.dependency-branch.outputs.proposal_id }}' --package '${{ needs.dependency-branch.outputs.package }}'
+        run: python -m scripts.create_dependency_pr --branch '${{ needs.dependency-branch.outputs.branch }}' --sha '${{ needs.dependency-branch.outputs.sha }}' --proposal '${{ needs.dependency-branch.outputs.proposal_id }}' --package '${{ needs.dependency-branch.outputs.package }}'
 
   setup-labels:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'setup-labels'
@@ -226,7 +229,7 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python scripts/setup_labels.py
+        run: python -m scripts.setup_labels
 
   create-branch:
     needs: [preflight, model]
@@ -261,18 +264,26 @@ jobs:
           name: validated-action
           path: runtime
       - id: apply
-        run: python scripts/apply_agent_action.py --action runtime/action.json --preflight runtime/preflight.json
+        run: python -m scripts.apply_agent_action --action runtime/action.json --preflight runtime/preflight.json
       - if: steps.apply.outputs.changed == 'true'
         run: python -m pytest
       - if: steps.apply.outputs.changed == 'true'
         run: ruff check agents tests scripts
+      - if: steps.apply.outputs.changed == 'true'
+        run: python -m scripts.check_workflows
       - if: steps.apply.outputs.changed == 'true' && hashFiles('package-lock.json') != ''
         run: npm run lint && npm run typecheck && npm test -- --run && npm run build
+      - if: steps.apply.outputs.changed == 'true'
+        run: python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
+      - if: steps.apply.outputs.changed == 'true' && hashFiles('package-lock.json') != ''
+        run: npm audit --audit-level=high
+      - if: steps.apply.outputs.changed == 'true'
+        run: python -m scripts.security_check
       - id: commit
         if: steps.apply.outputs.changed == 'true'
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: python scripts/commit_agent_changes.py --action runtime/action.json --run-id "$GITHUB_RUN_ID"
+        run: python -m scripts.commit_agent_changes --action runtime/action.json --run-id "$GITHUB_RUN_ID"
 
   create-pr:
     needs: create-branch
@@ -298,7 +309,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python scripts/create_agent_pr.py --action runtime/action.json --branch '${{ needs.create-branch.outputs.branch }}' --sha '${{ needs.create-branch.outputs.sha }}'
+        run: python -m scripts.create_agent_pr --action runtime/action.json --branch '${{ needs.create-branch.outputs.branch }}' --sha '${{ needs.create-branch.outputs.sha }}'
 
   dispatch-quality-check:
     needs: [create-branch, create-pr, dependency-branch, create-dependency-pr]
@@ -321,7 +332,7 @@ jobs:
           COMMIT_SHA: ${{ needs.create-branch.outputs.sha || needs.dependency-branch.outputs.sha }}
           DEFAULT_BRANCH: ${{ needs.create-pr.outputs.default_branch || needs.create-dependency-pr.outputs.default_branch }}
         continue-on-error: true
-        run: python scripts/dispatch_quality.py --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA" --ref "$DEFAULT_BRANCH" --result runtime/dispatch.json
+        run: python -m scripts.dispatch_quality --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA" --ref "$DEFAULT_BRANCH" --result runtime/dispatch.json
       - uses: actions/upload-artifact@v4
         with:
           name: quality-dispatch-result
@@ -349,4 +360,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ needs.create-pr.outputs.pr_number || needs.create-dependency-pr.outputs.pr_number }}
-        run: python scripts/update_pr_from_result.py --pr "$PR_NUMBER" --result runtime/dispatch.json
+        run: python -m scripts.update_pr_from_result --pr "$PR_NUMBER" --result runtime/dispatch.json

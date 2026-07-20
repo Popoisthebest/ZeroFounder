@@ -42,7 +42,18 @@ def main() -> int:
     )
     run(["python", "-m", "pytest"], root)
     run(["ruff", "check", "agents", "tests", "scripts"], root)
-    run(["python", "-m", "pip_audit", "-r", "requirements.txt"], root)
+    run(
+        [
+            "python",
+            "-m",
+            "pip_audit",
+            "--cache-dir",
+            ".cache/pip-audit",
+            "-r",
+            "requirements.txt",
+        ],
+        root,
+    )
     if (root / "package-lock.json").exists():
         run(["npm", "audit", "--audit-level=high"], root)
         run(["npm", "run", "lint"], root)

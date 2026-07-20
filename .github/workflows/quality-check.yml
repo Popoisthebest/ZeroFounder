@@ -40,7 +40,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           AGENT_BRANCH: ${{ inputs.agent_branch }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
-        run: python scripts/verify_pr_head.py --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA"
+        run: python -m scripts.verify_pr_head --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA"
 
   quality:
     needs: verify-head
@@ -64,6 +64,7 @@ jobs:
         if: hashFiles('package-lock.json') != ''
       - run: python -m pytest
       - run: ruff check agents tests scripts
+      - run: python -m scripts.check_workflows
       - run: npm run lint
         if: hashFiles('package-lock.json') != ''
       - run: npm run typecheck
@@ -72,6 +73,10 @@ jobs:
         if: hashFiles('package-lock.json') != ''
       - run: npm run build
         if: hashFiles('package-lock.json') != ''
+      - run: python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
+      - run: npm audit --audit-level=high
+        if: hashFiles('package-lock.json') != ''
+      - run: python -m scripts.security_check
 
   record-success:
     needs: [verify-head, quality]
@@ -90,7 +95,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python scripts/update_pr_status.py --pr "$PR_NUMBER" --status ready_for_human_review
+        run: python -m scripts.update_pr_status --pr "$PR_NUMBER" --status ready_for_human_review
 
   record-failure:
     needs: [verify-head, quality]
@@ -109,4 +114,4 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number }}
-        run: python scripts/update_pr_status.py --pr "$PR_NUMBER" --status ci_failed
+        run: python -m scripts.update_pr_status --pr "$PR_NUMBER" --status ci_failed
