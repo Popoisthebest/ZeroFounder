@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.schemas import LifecycleStage
+from agents.schemas import ActionType, LifecycleStage, StateTransition
 
 ALLOWED_TRANSITIONS: dict[LifecycleStage, frozenset[LifecycleStage]] = {
     LifecycleStage.DISCOVERY: frozenset(
@@ -128,58 +128,122 @@ def can_review_pivot(
     )
 
 
-STAGE_ACTIONS = {
-    LifecycleStage.DISCOVERY: {"collect_signals", "create_problem_candidate", "write_report"},
-    LifecycleStage.EVIDENCE_VALIDATION: {"validate_evidence", "write_report"},
+STAGE_ACTIONS: dict[LifecycleStage, frozenset[ActionType]] = {
+    LifecycleStage.DISCOVERY: frozenset(
+        {
+            ActionType.COLLECT_SIGNALS,
+            ActionType.CREATE_PROBLEM_CANDIDATE,
+            ActionType.VALIDATE_EVIDENCE,
+            ActionType.WRITE_REPORT,
+            ActionType.NO_OP,
+        }
+    ),
+    LifecycleStage.EVIDENCE_VALIDATION: frozenset(
+        {ActionType.VALIDATE_EVIDENCE, ActionType.WRITE_REPORT, ActionType.NO_OP}
+    ),
     LifecycleStage.IDEA_EVALUATION: {
-        "create_idea_candidates",
-        "evaluate_ideas",
-        "write_report",
+        ActionType.CREATE_IDEA_CANDIDATES,
+        ActionType.EVALUATE_IDEAS,
+        ActionType.WRITE_REPORT,
     },
-    LifecycleStage.DISTRIBUTION_CHECK: {"check_distribution", "write_report"},
-    LifecycleStage.IDEA_SELECTED: {"select_idea", "request_founder_approval"},
-    LifecycleStage.FOUNDER_APPROVAL: {"no_op", "write_report"},
-    LifecycleStage.MVP_PLANNING: {"create_product_spec", "write_report"},
+    LifecycleStage.DISTRIBUTION_CHECK: frozenset(
+        {ActionType.CHECK_DISTRIBUTION, ActionType.WRITE_REPORT}
+    ),
+    LifecycleStage.IDEA_SELECTED: frozenset(
+        {ActionType.SELECT_IDEA, ActionType.REQUEST_FOUNDER_APPROVAL}
+    ),
+    LifecycleStage.FOUNDER_APPROVAL: frozenset(
+        {ActionType.NO_OP, ActionType.WRITE_REPORT}
+    ),
+    LifecycleStage.MVP_PLANNING: frozenset(
+        {ActionType.CREATE_PRODUCT_SPEC, ActionType.WRITE_REPORT}
+    ),
     LifecycleStage.INFRASTRUCTURE_SELECTION: {
-        "select_infrastructure",
-        "open_issue",
-        "write_report",
+        ActionType.SELECT_INFRASTRUCTURE,
+        ActionType.OPEN_ISSUE,
+        ActionType.WRITE_REPORT,
     },
     LifecycleStage.MVP_BUILDING: {
-        "create_code_patch",
-        "propose_dependency",
-        "write_report",
+        ActionType.CREATE_CODE_PATCH,
+        ActionType.PROPOSE_DEPENDENCY,
+        ActionType.WRITE_REPORT,
     },
-    LifecycleStage.PRE_LAUNCH: {"create_content", "write_report", "update_state"},
+    LifecycleStage.PRE_LAUNCH: frozenset(
+        {ActionType.CREATE_CONTENT, ActionType.WRITE_REPORT, ActionType.UPDATE_STATE}
+    ),
     LifecycleStage.DISTRIBUTION_REQUIRED: {
-        "create_content",
-        "create_experiment",
-        "write_report",
+        ActionType.CREATE_CONTENT,
+        ActionType.CREATE_EXPERIMENT,
+        ActionType.WRITE_REPORT,
     },
     LifecycleStage.VALIDATION_RUNNING: {
-        "analyze_feedback",
-        "record_validation",
-        "create_experiment",
-        "write_report",
-        "update_state",
+        ActionType.ANALYZE_FEEDBACK,
+        ActionType.RECORD_VALIDATION,
+        ActionType.CREATE_EXPERIMENT,
+        ActionType.WRITE_REPORT,
+        ActionType.UPDATE_STATE,
     },
     LifecycleStage.OPERATING: {
-        "analyze_feedback",
-        "create_content",
-        "update_strategy",
-        "create_experiment",
-        "write_report",
+        ActionType.ANALYZE_FEEDBACK,
+        ActionType.CREATE_CONTENT,
+        ActionType.UPDATE_STRATEGY,
+        ActionType.CREATE_EXPERIMENT,
+        ActionType.WRITE_REPORT,
     },
     LifecycleStage.GROWTH_EXPERIMENT: {
-        "create_experiment",
-        "record_validation",
-        "write_report",
+        ActionType.CREATE_EXPERIMENT,
+        ActionType.RECORD_VALIDATION,
+        ActionType.WRITE_REPORT,
     },
-    LifecycleStage.PIVOT_REVIEW: {"recommend_pivot", "write_report"},
-    LifecycleStage.PIVOTING: {"update_strategy", "update_state", "write_report"},
-    LifecycleStage.PAUSED: {"no_op", "write_report"},
+    LifecycleStage.PIVOT_REVIEW: frozenset(
+        {ActionType.RECOMMEND_PIVOT, ActionType.WRITE_REPORT}
+    ),
+    LifecycleStage.PIVOTING: frozenset(
+        {ActionType.UPDATE_STRATEGY, ActionType.UPDATE_STATE, ActionType.WRITE_REPORT}
+    ),
+    LifecycleStage.PAUSED: frozenset({ActionType.NO_OP, ActionType.WRITE_REPORT}),
 }
 
 
-def action_allowed(stage: LifecycleStage, action: str) -> bool:
-    return action in STAGE_ACTIONS[stage]
+DISCOVERY_ACTION_TARGETS: dict[ActionType, frozenset[LifecycleStage]] = {
+    ActionType.COLLECT_SIGNALS: frozenset({LifecycleStage.DISCOVERY}),
+    ActionType.CREATE_PROBLEM_CANDIDATE: frozenset(
+        {LifecycleStage.DISCOVERY, LifecycleStage.EVIDENCE_VALIDATION}
+    ),
+    ActionType.VALIDATE_EVIDENCE: frozenset(
+        {LifecycleStage.DISCOVERY, LifecycleStage.EVIDENCE_VALIDATION}
+    ),
+    ActionType.WRITE_REPORT: frozenset({LifecycleStage.DISCOVERY}),
+    ActionType.NO_OP: frozenset(),
+}
+
+
+def allowed_actions(stage: LifecycleStage) -> tuple[ActionType, ...]:
+    permitted = set(STAGE_ACTIONS[stage]) | {ActionType.NO_OP}
+    return tuple(sorted(permitted, key=lambda item: item.value))
+
+
+def action_allowed(stage: LifecycleStage, action: ActionType | str) -> bool:
+    try:
+        parsed = action if isinstance(action, ActionType) else ActionType(action)
+    except ValueError:
+        return False
+    return parsed in allowed_actions(stage)
+
+
+def validate_action_transition(
+    current: LifecycleStage,
+    action: ActionType,
+    transition: StateTransition | None,
+) -> None:
+    if transition is None:
+        return
+    if transition.from_stage != current:
+        raise ValueError("state transition source mismatch")
+    validate_transition(current, transition.to_stage)
+    if current == LifecycleStage.DISCOVERY:
+        targets = DISCOVERY_ACTION_TARGETS[action]
+        if transition.to_stage not in targets:
+            raise ValueError(
+                f"action {action.value} cannot transition DISCOVERY to {transition.to_stage.value}"
+            )

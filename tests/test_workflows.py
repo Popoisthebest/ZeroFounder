@@ -21,6 +21,11 @@ def test_workflow_yaml_and_permissions():
     ]
     assert actions_writers == ["dispatch-quality-check"]
     assert "pull_request_target" not in (ROOT / ".github/workflows/agent.yml").read_text()
+    model_steps = agent["jobs"]["model"]["steps"]
+    model_commands = "\n".join(str(step.get("run", "")) for step in model_steps)
+    assert "--preflight runtime/preflight.json" in model_commands
+    assert "--diagnostics runtime/model-diagnostic.json" in model_commands
+    assert "scripts.write_model_summary" in model_commands
     quality = workflows["quality-check.yml"]
     assert "workflow_dispatch" in quality[True]
     deploy = workflows["deploy.yml"]

@@ -10,7 +10,13 @@ from agents.safety import (
     validate_evidence_references,
     validate_model_urls,
 )
-from agents.schemas import ActionEnvelope, ActionType, CompanyState, LifecycleStage
+from agents.schemas import (
+    ActionEnvelope,
+    ActionType,
+    CompanyState,
+    LifecycleStage,
+    ModelActionDiagnostic,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -112,4 +118,32 @@ def test_no_op_cannot_modify_state():
             action_type=ActionType.NO_OP,
             files=[],
             state_transition={"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
+        )
+
+
+@pytest.mark.parametrize("action_type", ["create_problem_candidate", "validate_evidence"])
+def test_discovery_analysis_requires_evidence_and_material_output(action_type: str):
+    with pytest.raises(ValidationError):
+        valid_action(action_type=action_type, files=[], evidence_ids=[])
+
+
+def test_model_diagnostic_rejects_unknown_fields_and_inconsistent_acceptance():
+    payload = {
+        "lifecycle_stage": "DISCOVERY",
+        "allowed_action_types": ["no_op"],
+        "original_action_type": "no_op",
+        "validated_action_type": "no_op",
+        "accepted": True,
+    }
+    assert ModelActionDiagnostic.model_validate(payload).accepted
+    with pytest.raises(ValidationError):
+        ModelActionDiagnostic.model_validate({**payload, "raw_model_text": "secret"})
+    with pytest.raises(ValidationError):
+        ModelActionDiagnostic.model_validate(
+            {
+                **payload,
+                "accepted": False,
+                "rejection_code": None,
+                "rejection_reason": None,
+            }
         )

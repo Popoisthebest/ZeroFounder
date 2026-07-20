@@ -45,6 +45,16 @@ def parse_action_response(value: str) -> ActionEnvelope:
     return ActionEnvelope.model_validate(parsed)
 
 
+def extract_known_action_type(value: str) -> ActionType | None:
+    try:
+        parsed = json.loads(strip_markdown_fence(value))
+        if not isinstance(parsed, dict):
+            return None
+        return ActionType(parsed.get("action_type"))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+
+
 def safe_no_op(reason: str) -> ActionEnvelope:
     return ActionEnvelope(
         role=AgentRole.AUDITOR,
@@ -70,6 +80,8 @@ class GitHubModelsClient:
         self.token = token
         self.limiter = limiter
         self.sleep = sleep
+        self.last_chat_failure: str | None = None
+        self.last_raw_action_type: ActionType | None = None
         self.client = httpx.Client(
             timeout=timeout,
             transport=transport,
@@ -130,6 +142,8 @@ class GitHubModelsClient:
         messages: list[dict[str, str]],
         max_output_chars: int | None = None,
     ) -> ActionEnvelope:
+        self.last_chat_failure = None
+        self.last_raw_action_type = None
         max_output_chars = max_output_chars or int(os.getenv("MAX_TOTAL_OUTPUT_CHARS", "60000"))
         base_payload: dict[str, Any] = {
             "model": model,
@@ -181,6 +195,7 @@ class GitHubModelsClient:
                 content = data["choices"][0]["message"]["content"]
                 if not isinstance(content, str) or len(content) > max_output_chars:
                     raise ValueError("model output length is invalid")
+                self.last_raw_action_type = extract_known_action_type(content)
                 return parse_action_response(content)
             except (
                 UsageLimitReached,
@@ -195,6 +210,7 @@ class GitHubModelsClient:
                 if isinstance(exc, UsageLimitReached) or attempts >= 2:
                     break
                 self.sleep(2 ** max(attempts - 1, 0))
+        self.last_chat_failure = mask_secrets(last_error)[:500]
         return safe_no_op(last_error)
 
     def embeddings(self, *, model: str, texts: list[str]) -> list[list[float]] | None:

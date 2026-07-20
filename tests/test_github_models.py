@@ -4,7 +4,11 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from agents.github_models import GitHubModelsClient, parse_action_response
+from agents.github_models import (
+    GitHubModelsClient,
+    extract_known_action_type,
+    parse_action_response,
+)
 from agents.schemas import ActionType
 from agents.usage_limiter import UsageLimiter
 
@@ -34,6 +38,12 @@ def test_invalid_json_and_extra_fields_rejected():
     invalid = dict(VALID, shell="echo unsafe")
     with pytest.raises(ValidationError):
         parse_action_response(json.dumps(invalid))
+
+
+def test_only_known_action_type_is_extracted_from_rejected_response():
+    assert extract_known_action_type(json.dumps(VALID)) == ActionType.NO_OP
+    assert extract_known_action_type('{"action_type":"run_shell"}') is None
+    assert extract_known_action_type("not-json") is None
 
 
 def test_catalog_model_fallback():

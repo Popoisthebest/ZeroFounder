@@ -10,10 +10,25 @@ from pathlib import Path
 from agents.context_builder import build_context
 from agents.github_client import GitHubClient
 from agents.github_models import GitHubModelsClient, safe_no_op
-from agents.lifecycle import action_allowed, validate_transition
+from agents.lifecycle import (
+    action_allowed,
+    allowed_actions,
+    validate_action_transition,
+)
 from agents.preflight import build_preflight_decision
 from agents.safety import validate_evidence_references
-from agents.schemas import CompanyState, MarketSignal, RepositoryCheckpoint
+from agents.schemas import (
+    ActionEnvelope,
+    ActionRejectionCode,
+    ActionType,
+    CompanyState,
+    MarketSignal,
+    ModelActionDiagnostic,
+    ModelRunOutcome,
+    PreflightDecision,
+    RepositoryCheckpoint,
+    TriggerReason,
+)
 from agents.usage_limiter import UsageLimiter
 
 
@@ -86,48 +101,235 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     return decision.model_dump(mode="json", by_alias=True)
 
 
-def run_model(root: Path) -> dict:
+def _count_records(directory: Path) -> int:
+    count = 0
+    if not directory.exists():
+        return count
+    for path in directory.rglob("*"):
+        if not path.is_file() or path.suffix not in {".json", ".jsonl"}:
+            continue
+        try:
+            if path.suffix == ".jsonl":
+                count += sum(1 for line in path.read_text().splitlines() if line.strip())
+            else:
+                value = json.loads(path.read_text())
+                count += len(value) if isinstance(value, list) else int(isinstance(value, dict))
+        except (OSError, json.JSONDecodeError):
+            continue
+    return count
+
+
+def build_model_instruction(
+    root: Path,
+    state: CompanyState,
+    decision: PreflightDecision | None,
+) -> str:
+    permitted = allowed_actions(state.lifecycle_stage)
+    preferred = list(permitted)
+    guidance = "Choose one allowed action that advances only the current lifecycle stage."
+    transition_policy: dict[str, str] = {}
+    counts = {
+        "raw_signals": _count_records(root / "signals/raw"),
+        "processed_evidence": _count_records(root / "signals/processed"),
+        "problem_candidates": _count_records(root / "research/problems"),
+    }
+    reasons = decision.reasons if decision else []
+    if state.lifecycle_stage.value == "DISCOVERY":
+        strategy = json.loads((root / "company/strategy.json").read_text())
+        minimum = int(
+            os.getenv("MIN_UNIQUE_SIGNALS", strategy["evidence"]["min_unique_signals"])
+        )
+        has_strong_signal = TriggerReason.STRONG_SIGNAL in reasons
+        enough_signals = counts["raw_signals"] >= minimum or has_strong_signal
+        if enough_signals and counts["problem_candidates"] == 0:
+            preferred = [
+                ActionType.CREATE_PROBLEM_CANDIDATE,
+                ActionType.VALIDATE_EVIDENCE,
+                ActionType.WRITE_REPORT,
+                ActionType.NO_OP,
+                ActionType.COLLECT_SIGNALS,
+            ]
+            guidance = (
+                "Raw signals are already sufficient. Do not collect them again. Create one "
+                "problem candidate grounded in existing signal IDs; validate evidence instead "
+                "only if a candidate can already be supported."
+            )
+        elif enough_signals:
+            preferred = [
+                ActionType.VALIDATE_EVIDENCE,
+                ActionType.CREATE_PROBLEM_CANDIDATE,
+                ActionType.WRITE_REPORT,
+                ActionType.NO_OP,
+                ActionType.COLLECT_SIGNALS,
+            ]
+            guidance = (
+                "Raw signals and at least one problem candidate already exist. Validate the "
+                "candidate's evidence, or create a distinct evidence-backed problem. Do not "
+                "request duplicate signal collection."
+            )
+        else:
+            preferred = [
+                ActionType.COLLECT_SIGNALS,
+                ActionType.CREATE_PROBLEM_CANDIDATE,
+                ActionType.WRITE_REPORT,
+                ActionType.NO_OP,
+                ActionType.VALIDATE_EVIDENCE,
+            ]
+            guidance = (
+                "Stored signals are below the configured discovery threshold. collect_signals "
+                "is appropriate unless the supplied strong evidence supports a concrete problem."
+            )
+        transition_policy = {
+            ActionType.COLLECT_SIGNALS.value: "omit state_transition",
+            ActionType.CREATE_PROBLEM_CANDIDATE.value: (
+                "omit it, keep DISCOVERY, or transition DISCOVERY to EVIDENCE_VALIDATION"
+            ),
+            ActionType.VALIDATE_EVIDENCE.value: (
+                "omit it, keep DISCOVERY, or transition DISCOVERY to EVIDENCE_VALIDATION"
+            ),
+            ActionType.WRITE_REPORT.value: "omit state_transition",
+            ActionType.NO_OP.value: "state_transition is forbidden",
+        }
+    payload = {
+        "orchestration_policy": {
+            "lifecycle_stage": state.lifecycle_stage.value,
+            "allowed_action_types": [item.value for item in permitted],
+            "preferred_action_types": [item.value for item in preferred],
+            "trigger_reasons": [item.value for item in reasons],
+            "new_signal_ids": decision.new_signal_ids if decision else [],
+            "repository_counts": counts,
+            "guidance": guidance,
+            "state_transition_policy": transition_policy,
+        }
+    }
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _rejected_outcome(
+    state: CompanyState,
+    *,
+    code: ActionRejectionCode,
+    reason: str,
+    original_action_type: ActionType | None = None,
+) -> ModelRunOutcome:
+    action = safe_no_op(reason)
+    return ModelRunOutcome(
+        action=action,
+        diagnostic=ModelActionDiagnostic(
+            lifecycle_stage=state.lifecycle_stage,
+            allowed_action_types=list(allowed_actions(state.lifecycle_stage)),
+            original_action_type=original_action_type,
+            validated_action_type=ActionType.NO_OP,
+            accepted=False,
+            rejection_code=code,
+            rejection_reason=reason,
+        ),
+    )
+
+
+def validate_model_action(
+    root: Path,
+    state: CompanyState,
+    action: ActionEnvelope,
+) -> ModelRunOutcome:
+    if not action_allowed(state.lifecycle_stage, action.action_type):
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.LIFECYCLE_ACTION_NOT_ALLOWED,
+            reason=(
+                f"{action.action_type.value} is not allowed during "
+                f"{state.lifecycle_stage.value}"
+            ),
+            original_action_type=action.action_type,
+        )
+    if action.state_transition and action.state_transition.from_stage != state.lifecycle_stage:
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.STATE_TRANSITION_SOURCE_MISMATCH,
+            reason="state transition source does not match the current lifecycle stage",
+            original_action_type=action.action_type,
+        )
+    try:
+        validate_action_transition(
+            state.lifecycle_stage,
+            action.action_type,
+            action.state_transition,
+        )
+    except ValueError:
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.INVALID_STATE_TRANSITION,
+            reason="action requested a state transition that is not allowed",
+            original_action_type=action.action_type,
+        )
+    try:
+        validate_evidence_references(action, root)
+    except ValueError:
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
+            reason="one or more evidence_ids do not exist in stored signal records",
+            original_action_type=action.action_type,
+        )
+    return ModelRunOutcome(
+        action=action,
+        diagnostic=ModelActionDiagnostic(
+            lifecycle_stage=state.lifecycle_stage,
+            allowed_action_types=list(allowed_actions(state.lifecycle_stage)),
+            original_action_type=action.action_type,
+            validated_action_type=action.action_type,
+            accepted=True,
+        ),
+    )
+
+
+def run_model(
+    root: Path,
+    decision: PreflightDecision | None = None,
+) -> ModelRunOutcome:
     state = CompanyState.model_validate_json((root / "company/state.json").read_text())
     if state.sleep_mode:
-        return safe_no_op("sleep mode is active").model_dump(mode="json", by_alias=True)
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.SLEEP_MODE,
+            reason="sleep mode is active",
+        )
     limiter = UsageLimiter.from_path(root / "company/usage.json")
     client = GitHubModelsClient(os.environ["GITHUB_TOKEN"], limiter)
     try:
         catalog = client.catalog()
-    except Exception as exc:
-        return safe_no_op(str(exc)).model_dump(mode="json", by_alias=True)
+    except Exception:
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.MODEL_CATALOG_UNAVAILABLE,
+            reason="GitHub Models catalog is unavailable",
+        )
     model = client.select_chat_model(catalog)
     if not model:
-        return safe_no_op("no compatible text model").model_dump(mode="json", by_alias=True)
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.NO_COMPATIBLE_MODEL,
+            reason="no compatible text model is available",
+        )
     prompt = (root / "agents/prompts/core.md").read_text()
     context = build_context(root)
+    instruction = build_model_instruction(root, state, decision)
     action = client.chat_action(
         model=model,
         messages=[
             {"role": "system", "content": prompt},
+            {"role": "system", "content": instruction},
             {"role": "user", "content": context},
         ],
     )
-    if not action_allowed(state.lifecycle_stage, action.action_type.value):
-        return safe_no_op("action is not allowed in the current lifecycle stage").model_dump(
-            mode="json", by_alias=True
+    if client.last_chat_failure is not None:
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.MODEL_RESPONSE_REJECTED,
+            reason="model response could not be completed and parsed safely",
+            original_action_type=client.last_raw_action_type,
         )
-    if action.state_transition:
-        if action.state_transition.from_stage != state.lifecycle_stage:
-            return safe_no_op("state transition source mismatch").model_dump(
-                mode="json", by_alias=True
-            )
-        try:
-            validate_transition(
-                action.state_transition.from_stage, action.state_transition.to_stage
-            )
-        except ValueError as exc:
-            return safe_no_op(str(exc)).model_dump(mode="json", by_alias=True)
-    try:
-        validate_evidence_references(action, root)
-    except ValueError as exc:
-        return safe_no_op(str(exc)).model_dump(mode="json", by_alias=True)
-    return action.model_dump(mode="json", by_alias=True)
+    return validate_model_action(root, state, action)
 
 
 def main() -> int:
@@ -135,6 +337,8 @@ def main() -> int:
     parser.add_argument("mode", choices=["preflight", "model"])
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--preflight", type=Path)
+    parser.add_argument("--diagnostics", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
     if args.mode == "preflight":
@@ -144,7 +348,16 @@ def main() -> int:
             os.getenv("GITHUB_EVENT_NAME", "schedule"),
         )
     else:
-        result = run_model(root)
+        decision = None
+        if args.preflight and args.preflight.exists():
+            decision = PreflightDecision.model_validate_json(args.preflight.read_text())
+        outcome = run_model(root, decision)
+        result = outcome.action.model_dump(mode="json", by_alias=True)
+        if args.diagnostics:
+            args.diagnostics.parent.mkdir(parents=True, exist_ok=True)
+            args.diagnostics.write_text(
+                outcome.diagnostic.model_dump_json(indent=2) + "\n"
+            )
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps({"mode": args.mode, "completed": True}))

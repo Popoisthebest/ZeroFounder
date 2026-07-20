@@ -82,6 +82,17 @@ class ActionType(StrEnum):
     PROPOSE_DEPENDENCY = "propose_dependency"
 
 
+class ActionRejectionCode(StrEnum):
+    SLEEP_MODE = "sleep_mode"
+    MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
+    NO_COMPATIBLE_MODEL = "no_compatible_model"
+    MODEL_RESPONSE_REJECTED = "model_response_rejected"
+    LIFECYCLE_ACTION_NOT_ALLOWED = "lifecycle_action_not_allowed"
+    STATE_TRANSITION_SOURCE_MISMATCH = "state_transition_source_mismatch"
+    INVALID_STATE_TRANSITION = "invalid_state_transition"
+    EVIDENCE_REFERENCE_REJECTED = "evidence_reference_rejected"
+
+
 class RiskLevel(StrEnum):
     LOW = "low"
     MEDIUM = "medium"
@@ -144,7 +155,44 @@ class ActionEnvelope(StrictModel):
             raise ValueError("dependency proposal payload is required")
         if self.dependency_proposal and self.action_type != ActionType.PROPOSE_DEPENDENCY:
             raise ValueError("dependency proposal is only valid for propose_dependency")
+        if self.action_type in {
+            ActionType.CREATE_PROBLEM_CANDIDATE,
+            ActionType.VALIDATE_EVIDENCE,
+        }:
+            if not self.evidence_ids:
+                raise ValueError("discovery analysis actions require stored evidence_ids")
+            if not self.files:
+                raise ValueError("discovery analysis actions require a material output file")
         return self
+
+
+class ModelActionDiagnostic(StrictModel):
+    lifecycle_stage: LifecycleStage
+    allowed_action_types: list[ActionType] = Field(min_length=1)
+    original_action_type: ActionType | None = None
+    validated_action_type: ActionType
+    accepted: bool
+    rejection_code: ActionRejectionCode | None = None
+    rejection_reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def enforce_diagnostic_shape(self) -> ModelActionDiagnostic:
+        if self.accepted and (self.rejection_code or self.rejection_reason):
+            raise ValueError("accepted diagnostics cannot contain a rejection")
+        if not self.accepted and (not self.rejection_code or not self.rejection_reason):
+            raise ValueError("rejected diagnostics require a code and reason")
+        if (
+            self.original_action_type is not None
+            and self.accepted
+            and self.original_action_type != self.validated_action_type
+        ):
+            raise ValueError("accepted action type cannot change during validation")
+        return self
+
+
+class ModelRunOutcome(StrictModel):
+    action: ActionEnvelope
+    diagnostic: ModelActionDiagnostic
 
 
 class CompanyState(StrictModel):
