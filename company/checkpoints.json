@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "last_signal_ids": [],
+  "processed_issue_ids": [],
+  "processed_comment_ids": [],
+  "idempotency_keys": [],
+  "last_product_sha": null,
+  "last_metrics_hash": null,
+  "last_daily_review": null,
+  "last_weekly_review": null,
+  "updated_at": null
+}
+

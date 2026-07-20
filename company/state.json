@@ -1,0 +1,14 @@
+{
+  "lifecycle_stage": "DISCOVERY",
+  "autonomy_level": 1,
+  "selected_venture": null,
+  "active_experiment": null,
+  "infrastructure_provider": "unselected",
+  "sleep_mode": false,
+  "consecutive_failures": 0,
+  "last_agent_run": null,
+  "paused_from": null,
+  "validation_started_at": null,
+  "deployed_at": null
+}
+

@@ -1,0 +1,33 @@
+{
+  "evidence": {
+    "min_unique_signals": 12,
+    "min_source_types": 3,
+    "min_evidence_per_problem": 3,
+    "max_signal_age_days": 180,
+    "min_evidence_quality": 0.65,
+    "min_new_signals_for_analysis": 5,
+    "strong_evidence_threshold": 0.85
+  },
+  "selection": {
+    "min_business_score": 70,
+    "min_originality_score": 70,
+    "max_cliche_score": 39,
+    "semantic_similarity_threshold": 0.84,
+    "lexical_similarity_threshold": 0.72
+  },
+  "validation": {
+    "validation_period_days": 14,
+    "min_distribution_activities": 2,
+    "min_user_or_visit_signals": 10,
+    "min_feedback_items": 3,
+    "min_growth_experiments": 2,
+    "min_distinct_feedback_authors": 2
+  },
+  "review": {
+    "timezone": "Asia/Seoul",
+    "daily_hour": 9,
+    "weekly_day": 1,
+    "weekly_hour": 9
+  }
+}
+
