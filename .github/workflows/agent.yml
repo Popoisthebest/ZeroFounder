@@ -415,12 +415,19 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
+      - working-directory: control
+        run: python -m pip install -r requirements.txt
       - id: record
+        working-directory: control
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -429,6 +436,9 @@ jobs:
           VERIFIED_SHA: ${{ needs.quality-check.outputs.verified_sha }}
           FAILED_CHECK: ${{ needs.quality-check.outputs.failed_check }}
           QUALITY_RUN_URL: ${{ needs.quality-check.outputs.quality_run_url }}
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
         run: python -m scripts.record_quality_status --pr "$PR_NUMBER"
 
   quality-gate:
@@ -439,11 +449,20 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - env:
+      - working-directory: control
+        env:
           VALIDATION_STATUS: ${{ needs.quality-check.outputs.validation_status || 'quality_check_not_started' }}
           RECORD_RESULT: ${{ needs.record-quality-status.result }}
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
         run: python -m scripts.quality_gate

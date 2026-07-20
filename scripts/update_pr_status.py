@@ -9,7 +9,10 @@ MARKER = "<!-- zerofounder-ci-status -->"
 STATUS_LABELS = {
     "ready_for_human_review": "사람의 최종 검토 준비 완료",
     "quality_check_failed": "품질검사 실패",
-    "sha_mismatch": "PR 브랜치 또는 SHA 불일치",
+    "invalid_pr": "유효하지 않은 Pull Request",
+    "branch_mismatch": "PR head branch 불일치",
+    "sha_mismatch": "PR head SHA 불일치",
+    "repository_mismatch": "PR 저장소 불일치",
     "quality_check_not_started": "품질검사 시작 안 됨",
 }
 

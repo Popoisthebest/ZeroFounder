@@ -4,7 +4,7 @@ import argparse
 import os
 
 from agents.github_client import GitHubAPIError, GitHubClient
-from agents.quality import classify_pull_target
+from agents.quality import candidate_change_paths_allowed, classify_pull_target
 
 
 def main() -> int:
@@ -25,6 +25,14 @@ def main() -> int:
             branch=args.branch,
             commit_sha=args.sha,
         )
+        if status == "valid":
+            try:
+                files = client.pull_request_files(args.pr)
+            except (GitHubAPIError, ValueError):
+                status = "invalid_pr"
+            else:
+                if not candidate_change_paths_allowed(args.branch, files):
+                    status = "invalid_pr"
     output = os.getenv("GITHUB_OUTPUT")
     if output:
         with open(output, "a", encoding="utf-8") as handle:

@@ -91,16 +91,97 @@ def test_reusable_quality_workflow_contract_and_exact_sha_checkout():
         "quality_run_url",
     }
 
-    quality_steps = quality["jobs"]["quality"]["steps"]
-    checkout = next(
-        step
+    quality_job = quality["jobs"]["quality"]
+    assert quality_job["if"] == "needs.verify-head.outputs.validation_status == 'valid'"
+    quality_steps = quality_job["steps"]
+    checkouts = {
+        step.get("with", {}).get("path"): step
         for step in quality_steps
         if str(step.get("uses", "")).startswith("actions/checkout@")
+    }
+    assert set(checkouts) == {"control", "candidate"}
+    assert checkouts["control"]["with"]["ref"] == (
+        "${{ github.event.repository.default_branch }}"
     )
-    assert checkout["with"]["ref"] == "${{ needs.verify-head.outputs.verified_sha }}"
+    assert checkouts["candidate"]["with"]["ref"] == (
+        "${{ needs.verify-head.outputs.verified_sha }}"
+    )
+    assert checkouts["candidate"]["with"]["persist-credentials"] is False
     verify_command = quality["jobs"]["verify-head"]["steps"][-1]["run"]
     assert "--branch \"$AGENT_BRANCH\"" in verify_command
     assert "--sha \"$COMMIT_SHA\"" in verify_command
+
+
+def test_candidate_commands_and_control_helpers_are_isolated():
+    quality = load_workflows()["quality-check.yml"]
+    candidate_steps = [
+        step for step in quality["jobs"]["quality"]["steps"] if step.get("id")
+    ]
+    assert candidate_steps
+    for step in candidate_steps:
+        assert step["working-directory"] == "candidate"
+        assert "env -u GITHUB_ENV -u GITHUB_PATH" in step["run"]
+        assert "scripts.summarize_quality_checks" not in step["run"]
+        assert "scripts.security_check" not in step["run"]
+    assert "--ignore-scripts" in next(
+        step["run"] for step in candidate_steps if step["id"] == "npm_ci"
+    )
+    assert "--disable-pip-version-check" in next(
+        step["run"] for step in candidate_steps if step["id"] == "python_dependencies"
+    )
+
+    policy_steps = quality["jobs"]["policy"]["steps"]
+    policy_commands = "\n".join(str(step.get("run", "")) for step in policy_steps)
+    assert "scripts.check_candidate_workflows" in policy_commands
+    assert "scripts.security_check" in policy_commands
+    for step in policy_steps:
+        if step.get("id") in {"workflow", "security"}:
+            assert step["working-directory"] == "control"
+            assert step["env"]["PYTHONPATH"] == "${{ github.workspace }}/control"
+
+    result_step = next(
+        step for step in quality["jobs"]["finalize"]["steps"] if step.get("id") == "result"
+    )
+    assert result_step["working-directory"] == "control"
+    assert "scripts.summarize_quality_checks" in result_step["run"]
+    assert "$GITHUB_WORKSPACE/runtime/quality-results" in result_step["run"]
+    assert result_step["env"]["PYTHONPATH"] == "${{ github.workspace }}/control"
+
+
+def test_invalid_pr_target_never_runs_candidate_jobs():
+    quality = load_workflows()["quality-check.yml"]
+    for job_name in {"quality", "policy"}:
+        assert quality["jobs"][job_name]["if"] == (
+            "needs.verify-head.outputs.validation_status == 'valid'"
+        )
+    verify_steps = quality["jobs"]["verify-head"]["steps"]
+    assert not any(step.get("with", {}).get("path") == "candidate" for step in verify_steps)
+
+
+def test_manual_dispatch_uses_the_same_control_candidate_jobs():
+    quality = load_workflows()["quality-check.yml"]
+    assert set(quality[True]["workflow_dispatch"]["inputs"]) == {
+        "pull_request_number",
+        "agent_branch",
+        "commit_sha",
+    }
+    assert {
+        "verify-head",
+        "quality",
+        "policy",
+        "finalize",
+        "manual-result",
+        "manual-record",
+    }.issubset(quality["jobs"])
+    manual_steps = quality["jobs"]["manual-result"]["steps"]
+    assert any(step.get("with", {}).get("path") == "control" for step in manual_steps)
+    assert not any(step.get("with", {}).get("path") == "candidate" for step in manual_steps)
+    manual_record = quality["jobs"]["manual-record"]
+    assert "always()" in manual_record["if"]
+    assert manual_record["permissions"] == {
+        "contents": "read",
+        "pull-requests": "write",
+    }
 
 
 def test_quality_result_is_recorded_after_failure_and_final_gate_is_present():
@@ -116,10 +197,15 @@ def test_quality_result_is_recorded_after_failure_and_final_gate_is_present():
     assert "needs.quality-check.outputs.validation_status" in record_env["VALIDATION_STATUS"]
     assert "needs.quality-check.outputs.failed_check" in record_env["FAILED_CHECK"]
     assert "needs.quality-check.outputs.quality_run_url" in record_env["QUALITY_RUN_URL"]
+    assert next(step for step in record["steps"] if step.get("id") == "record")[
+        "working-directory"
+    ] == "control"
 
     gate = agent["jobs"]["quality-gate"]
     assert "always()" in gate["if"]
     assert {"quality-check", "record-quality-status"}.issubset(gate["needs"])
+    gate_command = next(step for step in gate["steps"] if "run" in step)
+    assert gate_command["working-directory"] == "control"
 
 
 def test_model_preflight_and_diagnostic_inputs_remain_wired():

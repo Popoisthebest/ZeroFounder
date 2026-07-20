@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import re
 from pathlib import Path
 
@@ -9,7 +10,10 @@ TEXT_SUFFIXES = {".py", ".ts", ".tsx", ".js", ".mjs", ".json", ".yml", ".yaml", 
 
 
 def main() -> int:
-    root = Path(__file__).parents[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path(__file__).parents[1])
+    args = parser.parse_args()
+    root = args.root.resolve()
     forbidden = [
         re.compile(r"curl\s+.*\$\{\{\s*github\.event\.(issue|comment)", re.I),
         re.compile(r"rm\s+-rf"),
@@ -22,18 +26,18 @@ def main() -> int:
         ):
             continue
         if path.is_symlink():
-            failures.append(f"symlink: {path.relative_to(root)}")
+            failures.append(f"심볼릭 링크: {path.relative_to(root)}")
             continue
         if path.suffix not in TEXT_SUFFIXES and path.name not in {"requirements.txt"}:
             continue
         text = path.read_text(errors="replace")
         if any(pattern.search(text) for pattern in SECRET_PATTERNS):
-            failures.append(f"potential secret: {path.relative_to(root)}")
+            failures.append(f"비밀값 가능성: {path.relative_to(root)}")
         if any(pattern.search(text) for pattern in forbidden):
-            failures.append(f"forbidden operation: {path.relative_to(root)}")
+            failures.append(f"금지된 작업: {path.relative_to(root)}")
     if failures:
         raise SystemExit("\n".join(failures))
-    print("secret and forbidden-path scan passed")
+    print("비밀값 및 금지 경로 검사가 통과했습니다.")
     return 0
 
 

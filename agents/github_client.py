@@ -120,6 +120,16 @@ class GitHubClient:
             raise ValueError("invalid PR number")
         return self._request("GET", f"/repos/{self.repository}/pulls/{number}")
 
+    def pull_request_files(self, number: int) -> list[dict[str, Any]]:
+        if number <= 0:
+            raise ValueError("invalid PR number")
+        result = self._request(
+            "GET",
+            f"/repos/{self.repository}/pulls/{number}/files",
+            params={"per_page": 100},
+        )
+        return result if isinstance(result, list) else []
+
     def update_pull_request_body(self, number: int, body: str) -> dict[str, Any]:
         return self._request(
             "PATCH", f"/repos/{self.repository}/pulls/{number}", json={"body": body[:60_000]}

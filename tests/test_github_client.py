@@ -13,11 +13,13 @@ def test_pull_request_target_verification_uses_exact_repository_branch_and_sha()
             "repo": {"full_name": "owner/repo"},
         },
         "base": {"repo": {"full_name": "owner/repo"}},
+        "state": "open",
+        "merged_at": None,
     }
     status, verified_sha = classify_pull_target(
         pull, repository="owner/repo", branch="agent/1-test", commit_sha="a" * 40
     )
-    assert status == "verified"
+    assert status == "valid"
     assert verified_sha == "a" * 40
 
 
@@ -30,11 +32,13 @@ def test_pull_request_target_rejects_branch_mismatch():
             "repo": {"full_name": "owner/repo"},
         },
         "base": {"repo": {"full_name": "owner/repo"}},
+        "state": "open",
+        "merged_at": None,
     }
     status, verified_sha = classify_pull_target(
         pull, repository="owner/repo", branch="agent/1-test", commit_sha="a" * 40
     )
-    assert status == "sha_mismatch"
+    assert status == "branch_mismatch"
     assert verified_sha == "a" * 40
 
 

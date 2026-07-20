@@ -18,7 +18,7 @@ on:
         default: false
     outputs:
       validation_status:
-        description: passed, failed, sha_mismatch, invalid_pr, quality_check_not_started
+        description: passed, failed, invalid_pr, branch_mismatch, sha_mismatch, repository_mismatch, closed_pr, quality_check_not_started
         value: ${{ jobs.finalize.outputs.validation_status }}
       verified_sha:
         description: 실제 검증한 SHA
@@ -49,7 +49,7 @@ permissions:
 
 jobs:
   verify-head:
-    name: PR 브랜치와 SHA 검증
+    name: PR 저장소·상태·브랜치·SHA 검증
     permissions:
       contents: read
       pull-requests: read
@@ -58,96 +58,181 @@ jobs:
       validation_status: ${{ steps.verify.outputs.validation_status }}
       verified_sha: ${{ steps.verify.outputs.sha }}
     steps:
-      - uses: actions/checkout@v6
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
+          cache: pip
+          cache-dependency-path: control/requirements.txt
+      - name: 제어 코드 의존성 설치
+        working-directory: control
+        run: python -m pip install -r requirements.txt
       - id: verify
+        name: 신뢰된 코드로 PR 검증
+        working-directory: control
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pull_request_number }}
           AGENT_BRANCH: ${{ inputs.agent_branch }}
           COMMIT_SHA: ${{ inputs.commit_sha }}
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
         run: python -m scripts.verify_pr_head --pr "$PR_NUMBER" --branch "$AGENT_BRANCH" --sha "$COMMIT_SHA"
 
   quality:
-    name: 정확한 commit 품질 검사
+    name: 정확한 candidate commit 제품 검사
     needs: verify-head
-    if: needs.verify-head.outputs.validation_status == 'verified'
+    if: needs.verify-head.outputs.validation_status == 'valid'
     permissions:
       contents: read
     runs-on: ubuntu-latest
     outputs:
-      validation_status: ${{ steps.summarize.outputs.validation_status }}
-      failed_check: ${{ steps.summarize.outputs.failed_check }}
+      python_dependencies_result: ${{ steps.python_dependencies.outcome }}
+      pytest_result: ${{ steps.pytest.outcome }}
+      ruff_result: ${{ steps.ruff.outcome }}
+      npm_ci_result: ${{ steps.npm_ci.outcome }}
+      eslint_result: ${{ steps.eslint.outcome }}
+      typecheck_result: ${{ steps.typecheck.outcome }}
+      vitest_result: ${{ steps.vitest.outcome }}
+      build_result: ${{ steps.build.outcome }}
+      pip_audit_result: ${{ steps.pip_audit.outcome }}
+      npm_audit_result: ${{ steps.npm_audit.outcome }}
     steps:
-      - uses: actions/checkout@v6
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
+      - name: 검증된 candidate commit 가져오기
+        uses: actions/checkout@v6
         with:
           ref: ${{ needs.verify-head.outputs.verified_sha }}
+          path: candidate
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
+          cache-dependency-path: candidate/requirements.txt
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: npm
-          cache-dependency-path: package-lock.json
-      - run: python -m pip install -r requirements.txt
+          cache-dependency-path: candidate/package-lock.json
+      - id: python_dependencies
+        name: candidate Python 의존성 설치
+        continue-on-error: true
+        working-directory: candidate
+        run: >-
+          env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY
+          python -m pip install --disable-pip-version-check -r requirements.txt
       - id: pytest
+        name: candidate Python 테스트
         continue-on-error: true
-        run: python -m pytest
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY python -m pytest
       - id: ruff
+        name: candidate Ruff 검사
         continue-on-error: true
-        run: python -m ruff check agents tests scripts
-      - id: workflow
-        continue-on-error: true
-        run: python -m scripts.check_workflows
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY python -m ruff check agents tests scripts
       - id: npm_ci
+        name: candidate Node 의존성 설치
         continue-on-error: true
-        run: npm ci
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY npm ci --ignore-scripts
       - id: eslint
+        name: candidate ESLint 검사
         continue-on-error: true
-        run: npm run lint
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY npm run lint
       - id: typecheck
+        name: candidate TypeScript 검사
         continue-on-error: true
-        run: npm run typecheck
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY npm run typecheck
       - id: vitest
+        name: candidate Vitest 검사
         continue-on-error: true
-        run: npm test -- --run
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY npm test -- --run
       - id: build
+        name: candidate production build
         continue-on-error: true
-        run: npm run build
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY npm run build
       - id: pip_audit
+        name: candidate Python 의존성 감사
         continue-on-error: true
-        run: python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY python -m pip_audit --cache-dir .cache/pip-audit -r requirements.txt
       - id: npm_audit
+        name: candidate Node 의존성 감사
         continue-on-error: true
-        run: npm audit --audit-level=high
-      - id: security
+        working-directory: candidate
+        run: env -u GITHUB_ENV -u GITHUB_PATH -u GITHUB_OUTPUT -u GITHUB_STEP_SUMMARY npm audit --audit-level=high
+
+  policy:
+    name: 신뢰된 코드로 candidate 정책 검사
+    needs: verify-head
+    if: needs.verify-head.outputs.validation_status == 'valid'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    outputs:
+      workflow_result: ${{ steps.workflow.outcome }}
+      security_result: ${{ steps.security.outcome }}
+    steps:
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
+      - name: 검증된 candidate commit 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.verify-head.outputs.verified_sha }}
+          path: candidate
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: control/requirements.txt
+      - name: 제어 코드 의존성 설치
+        working-directory: control
+        run: python -m pip install -r requirements.txt
+      - id: workflow
+        name: candidate YAML 및 workflow 권한 검사
         continue-on-error: true
-        run: python -m scripts.security_check
-      - id: summarize
-        if: always()
+        working-directory: control
         env:
-          PYTEST_RESULT: ${{ steps.pytest.outcome }}
-          RUFF_RESULT: ${{ steps.ruff.outcome }}
-          WORKFLOW_RESULT: ${{ steps.workflow.outcome }}
-          NPM_CI_RESULT: ${{ steps.npm_ci.outcome }}
-          ESLINT_RESULT: ${{ steps.eslint.outcome }}
-          TYPECHECK_RESULT: ${{ steps.typecheck.outcome }}
-          VITEST_RESULT: ${{ steps.vitest.outcome }}
-          BUILD_RESULT: ${{ steps.build.outcome }}
-          PIP_AUDIT_RESULT: ${{ steps.pip_audit.outcome }}
-          NPM_AUDIT_RESULT: ${{ steps.npm_audit.outcome }}
-          SECURITY_RESULT: ${{ steps.security.outcome }}
-        run: python -m scripts.summarize_quality_checks
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
+        run: python -m scripts.check_candidate_workflows --root "$GITHUB_WORKSPACE/candidate"
+      - id: security
+        name: candidate 비밀값 및 금지 경로 검사
+        continue-on-error: true
+        working-directory: control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
+        run: python -m scripts.security_check --root "$GITHUB_WORKSPACE/candidate"
 
   finalize:
-    name: 품질검사 결과 확정
-    needs: [verify-head, quality]
+    name: 신뢰된 코드로 품질검사 결과 확정
+    needs: [verify-head, quality, policy]
     if: always()
     permissions:
       contents: read
@@ -158,47 +243,123 @@ jobs:
       failed_check: ${{ steps.result.outputs.failed_check }}
       quality_run_url: ${{ steps.result.outputs.quality_run_url }}
     steps:
-      - uses: actions/checkout@v6
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
+          cache: pip
+          cache-dependency-path: control/requirements.txt
+      - name: 제어 코드 의존성 설치
+        working-directory: control
+        run: python -m pip install -r requirements.txt
       - id: result
+        name: candidate 검사 결과 집계
+        working-directory: control
         env:
-          VERIFICATION_STATUS: ${{ needs.verify-head.outputs.validation_status }}
-          VERIFIED_SHA: ${{ needs.verify-head.outputs.verified_sha }}
-          QUALITY_JOB_RESULT: ${{ needs.quality.result }}
-          QUALITY_STATUS: ${{ needs.quality.outputs.validation_status }}
-          FAILED_CHECK: ${{ needs.quality.outputs.failed_check }}
-          QUALITY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          QUALITY_RESULT_PATH: runtime/quality-result.json
-        run: python -m scripts.finalize_quality_result
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
+          PYTHON_DEPENDENCIES_RESULT: ${{ needs.quality.outputs.python_dependencies_result }}
+          PYTEST_RESULT: ${{ needs.quality.outputs.pytest_result }}
+          RUFF_RESULT: ${{ needs.quality.outputs.ruff_result }}
+          WORKFLOW_RESULT: ${{ needs.policy.outputs.workflow_result }}
+          NPM_CI_RESULT: ${{ needs.quality.outputs.npm_ci_result }}
+          ESLINT_RESULT: ${{ needs.quality.outputs.eslint_result }}
+          TYPECHECK_RESULT: ${{ needs.quality.outputs.typecheck_result }}
+          VITEST_RESULT: ${{ needs.quality.outputs.vitest_result }}
+          BUILD_RESULT: ${{ needs.quality.outputs.build_result }}
+          PIP_AUDIT_RESULT: ${{ needs.quality.outputs.pip_audit_result }}
+          NPM_AUDIT_RESULT: ${{ needs.quality.outputs.npm_audit_result }}
+          SECURITY_RESULT: ${{ needs.policy.outputs.security_result }}
+        run: >-
+          python -m scripts.summarize_quality_checks
+          --results-dir "$GITHUB_WORKSPACE/runtime/quality-results"
+          --output "$GITHUB_WORKSPACE/runtime/quality-summary.json"
+          --verification-status '${{ needs.verify-head.outputs.validation_status }}'
+          --verified-sha '${{ needs.verify-head.outputs.verified_sha }}'
+          --quality-job-result '${{ needs.quality.result }}'
+          --policy-job-result '${{ needs.policy.result }}'
+          --run-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
 
   manual-result:
-    name: 수동 진단 결과 저장
+    name: 수동 품질검사 결과 저장
     needs: finalize
     if: always() && inputs.called_by_agent != true
     permissions:
       contents: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: python -m pip install -r requirements.txt
-      - env:
+      - name: 제어 코드 의존성 설치
+        working-directory: control
+        run: python -m pip install -r requirements.txt
+      - name: 수동 실행 결과 JSON 작성
+        working-directory: control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/control
           VALIDATION_STATUS: ${{ needs.finalize.outputs.validation_status }}
           VERIFIED_SHA: ${{ needs.finalize.outputs.verified_sha }}
           FAILED_CHECK: ${{ needs.finalize.outputs.failed_check }}
           QUALITY_RUN_URL: ${{ needs.finalize.outputs.quality_run_url }}
-          QUALITY_RESULT_PATH: runtime/quality-result.json
+          QUALITY_RESULT_PATH: ${{ github.workspace }}/runtime/quality-result.json
         run: python -m scripts.write_quality_result
-      - env:
-          QUALITY_RESULT_PATH: runtime/quality-result.json
+      - name: 수동 실행 결과 요약
+        working-directory: control
+        env:
+          PYTHONPATH: ${{ github.workspace }}/control
+          QUALITY_RESULT_PATH: ${{ github.workspace }}/runtime/quality-result.json
         run: python -m scripts.write_quality_summary
       - uses: actions/upload-artifact@v4
         with:
           name: quality-check-manual-result
           path: runtime/quality-result.json
           retention-days: 7
+
+  manual-record:
+    name: 수동 품질검사 PR 상태 기록
+    needs: finalize
+    if: always() && inputs.called_by_agent != true
+    permissions:
+      contents: read
+      pull-requests: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: 신뢰된 제어 코드 가져오기
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          path: control
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: 제어 코드 의존성 설치
+        working-directory: control
+        run: python -m pip install -r requirements.txt
+      - name: PR에 품질검사 상태 기록
+        working-directory: control
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          VALIDATION_STATUS: ${{ needs.finalize.outputs.validation_status }}
+          VERIFIED_SHA: ${{ needs.finalize.outputs.verified_sha }}
+          FAILED_CHECK: ${{ needs.finalize.outputs.failed_check }}
+          QUALITY_RUN_URL: ${{ needs.finalize.outputs.quality_run_url }}
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
+        run: python -m scripts.record_quality_status --pr "$PR_NUMBER"
