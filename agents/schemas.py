@@ -262,6 +262,137 @@ class ProblemCandidate(StrictModel):
     confidence: float = Field(ge=0, le=1)
 
 
+class EvidenceClassification(StrictModel):
+    evidence_id: StrictId
+    specificity: Literal["low", "medium", "high"]
+    directness: Literal["indirect", "mixed", "direct"]
+
+
+class IdeaCandidate(StrictModel):
+    idea_id: StrictId
+    name: str = Field(min_length=2, max_length=100)
+    one_liner: str = Field(min_length=10, max_length=300)
+    problem_id: StrictId
+    evidence_ids: list[StrictId] = Field(min_length=1, max_length=20)
+    target_users: list[str] = Field(min_length=1, max_length=8)
+    existing_solutions: list[str] = Field(min_length=1, max_length=10)
+    core_features: list[str] = Field(min_length=1, max_length=3)
+    competitors: list[str] = Field(default_factory=list, max_length=10)
+    differentiation: str = Field(min_length=10, max_length=1000)
+    first_user_channel: str = Field(min_length=5, max_length=1000)
+    search_phrases: list[str] = Field(min_length=1, max_length=10)
+    switching_reason: str = Field(min_length=10, max_length=1000)
+    founder_required_work: list[str] = Field(min_length=1, max_length=10)
+    revenue_model: str = Field(min_length=2, max_length=500)
+    free_operation: str = Field(min_length=10, max_length=1000)
+    mvp_scope: list[str] = Field(min_length=1, max_length=3)
+    difficulty: Literal["low", "medium", "high"]
+    risks: list[str] = Field(min_length=1, max_length=10)
+    kill_criteria: list[str] = Field(min_length=1, max_length=10)
+    cliche_patterns: list[str] = Field(default_factory=list, max_length=10)
+    structural_difference: str = Field(min_length=10, max_length=1000)
+    non_ai_value: str = Field(min_length=10, max_length=1000)
+    novel_mechanism: str = Field(min_length=10, max_length=1000)
+    why_now: str = Field(min_length=10, max_length=1000)
+    copy_risk: str = Field(min_length=2, max_length=500)
+    ai_role: Literal["none", "assistive", "core"]
+    solution_structure: Literal[
+        "software_tool",
+        "information_product",
+        "community_participation",
+        "workflow_change",
+        "coordination",
+        "visualization",
+        "open_data",
+        "online_offline",
+    ]
+    product_pattern: Literal["tool", "content", "chatbot", "directory", "data", "coordination"]
+
+
+class BusinessScores(StrictModel):
+    severity: int = Field(ge=0, le=15)
+    frequency: int = Field(ge=0, le=10)
+    user_clarity: int = Field(ge=0, le=10)
+    solution_gap: int = Field(ge=0, le=10)
+    free_mvp: int = Field(ge=0, le=15)
+    differentiation: int = Field(ge=0, le=10)
+    user_access: int = Field(ge=0, le=10)
+    revenue_potential: int = Field(ge=0, le=10)
+    maintainability: int = Field(ge=0, le=5)
+    safety: int = Field(ge=0, le=5)
+
+    @property
+    def total(self) -> int:
+        return sum(self.model_dump().values())
+
+
+class OriginalityScores(StrictModel):
+    pattern_difference: int = Field(ge=0, le=20)
+    problem_specificity: int = Field(ge=0, le=15)
+    mechanism_originality: int = Field(ge=0, le=20)
+    behavior_change: int = Field(ge=0, le=15)
+    structural_difference: int = Field(ge=0, le=15)
+    low_ai_dependency: int = Field(ge=0, le=10)
+    memorability: int = Field(ge=0, le=5)
+
+    @property
+    def total(self) -> int:
+        return sum(self.model_dump().values())
+
+
+class ClicheReview(StrictModel):
+    idea_id: StrictId
+    verdict: Literal["reject", "pass"]
+    cliche_score: int = Field(ge=0, le=100)
+    reasons: list[str] = Field(min_length=1, max_length=20)
+    required_changes: list[str] = Field(default_factory=list, max_length=20)
+
+
+class IdeaEvaluation(StrictModel):
+    idea_id: StrictId
+    business_scores: BusinessScores
+    originality_scores: OriginalityScores
+    cliche_review: ClicheReview
+    rationale: list[str] = Field(min_length=1, max_length=20)
+    confidence: float = Field(ge=0, le=1)
+    unverified_assumptions: list[str] = Field(default_factory=list, max_length=20)
+    biggest_failure_mode: str
+    mvp_hypothesis: str
+    success_metrics: list[str] = Field(min_length=1, max_length=10)
+    auditor_safe: bool
+
+
+class SignalSource(StrictModel):
+    source_id: StrictId
+    source_type: str
+    adapter: Literal[
+        "github_search",
+        "github_repo_search",
+        "github_discussions",
+        "hacker_news",
+        "rss",
+        "repository_issues",
+        "inbox",
+    ]
+    enabled: bool = True
+    url: str | None = None
+    query: str | None = None
+    repositories: list[str] = Field(default_factory=list)
+    reliability: float = Field(ge=0, le=1)
+    max_items: int = Field(default=25, ge=1, le=100)
+
+
+class SignalPack(StrictModel):
+    pack_id: StrictId
+    enabled: bool = True
+    sources: list[SignalSource]
+
+
+class SignalSourceConfig(StrictModel):
+    enabled_packs: list[StrictId]
+    packs: list[SignalPack]
+
+
 class DecisionRecord(StrictModel):
     timestamp: datetime
     run_id: str

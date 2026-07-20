@@ -1,0 +1,58 @@
+{
+  "enabled_packs": [
+    "developer",
+    "education",
+    "local-life",
+    "small-business",
+    "productivity",
+    "public-data",
+    "offline-coordination"
+  ],
+  "packs": [
+    {
+      "pack_id": "developer",
+      "enabled": true,
+      "sources": [
+        {"source_id": "github-pain", "source_type": "github_issue", "adapter": "github_search", "query": "is:issue is:open (frustrating OR workaround OR tedious) -label:spam", "reliability": 0.7, "max_items": 20},
+        {"source_id": "hn-new", "source_type": "hacker_news", "adapter": "hacker_news", "reliability": 0.65, "max_items": 15},
+        {"source_id": "own-issues", "source_type": "repository_issue", "adapter": "repository_issues", "reliability": 0.9, "max_items": 25}
+      ]
+    },
+    {
+      "pack_id": "education",
+      "sources": [
+        {"source_id": "education-rss", "source_type": "industry_rss", "adapter": "rss", "url": "https://www.edsurge.com/articles_rss", "reliability": 0.7, "max_items": 15}
+      ]
+    },
+    {
+      "pack_id": "local-life",
+      "sources": [
+        {"source_id": "local-life-rss", "source_type": "community_rss", "adapter": "rss", "url": "https://www.strongtowns.org/journal?format=rss", "reliability": 0.65, "max_items": 15}
+      ]
+    },
+    {
+      "pack_id": "small-business",
+      "sources": [
+        {"source_id": "small-business-rss", "source_type": "public_agency_rss", "adapter": "rss", "url": "https://www.sba.gov/blogs.xml", "reliability": 0.8, "max_items": 15}
+      ]
+    },
+    {
+      "pack_id": "productivity",
+      "sources": [
+        {"source_id": "productivity-rss", "source_type": "independent_rss", "adapter": "rss", "url": "https://zenhabits.net/feed/", "reliability": 0.55, "max_items": 10}
+      ]
+    },
+    {
+      "pack_id": "public-data",
+      "sources": [
+        {"source_id": "public-data-repos", "source_type": "github_repository", "adapter": "github_repo_search", "query": "open-data created:>2025-01-01", "reliability": 0.6, "max_items": 15}
+      ]
+    },
+    {
+      "pack_id": "offline-coordination",
+      "sources": [
+        {"source_id": "human-inbox", "source_type": "user_research", "adapter": "inbox", "reliability": 0.95, "max_items": 25}
+      ]
+    }
+  ]
+}
