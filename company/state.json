@@ -1,14 +1,13 @@
 {
-  "lifecycle_stage": "DISCOVERY",
+  "lifecycle_stage": "EVIDENCE_VALIDATION",
   "autonomy_level": 1,
   "selected_venture": null,
   "active_experiment": null,
   "infrastructure_provider": "unselected",
   "sleep_mode": false,
   "consecutive_failures": 0,
-  "last_agent_run": null,
+  "last_agent_run": "2026-07-20T15:56:05.208497Z",
   "paused_from": null,
   "validation_started_at": null,
   "deployed_at": null
 }
-
