@@ -152,3 +152,19 @@ def test_job_summary_masks_tokens_and_omits_model_text():
     summary = render_summary(diagnostic)
     assert "[REDACTED]" in summary
     assert "raw_model_text" not in summary
+    assert "Authorization" not in summary
+    for field in {
+        "selected_model",
+        "request_mode",
+        "http_status",
+        "choices_count",
+        "message_content_type",
+        "response_char_count",
+        "finish_reason",
+        "fallback_attempted",
+        "retry_attempted",
+        "failure_stage",
+        "rejection_code",
+        "pydantic_validation_error_paths",
+    }:
+        assert f"| {field} |" in summary

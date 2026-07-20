@@ -26,6 +26,8 @@ def test_workflow_yaml_and_permissions():
     assert "--preflight runtime/preflight.json" in model_commands
     assert "--diagnostics runtime/model-diagnostic.json" in model_commands
     assert "scripts.write_model_summary" in model_commands
+    model_env = next(step["env"] for step in model_steps if "env" in step)
+    assert "MODEL_DIAGNOSTIC_MODE" in model_env
     quality = workflows["quality-check.yml"]
     assert "workflow_dispatch" in quality[True]
     deploy = workflows["deploy.yml"]

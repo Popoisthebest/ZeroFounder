@@ -16,6 +16,7 @@ from agents.schemas import (
     CompanyState,
     LifecycleStage,
     ModelActionDiagnostic,
+    ModelInferenceDiagnostic,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -147,3 +148,5 @@ def test_model_diagnostic_rejects_unknown_fields_and_inconsistent_acceptance():
                 "rejection_reason": None,
             }
         )
+    with pytest.raises(ValidationError):
+        ModelInferenceDiagnostic.model_validate({"failure_stage": "unknown_stage"})

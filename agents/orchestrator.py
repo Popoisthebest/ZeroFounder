@@ -22,8 +22,10 @@ from agents.schemas import (
     ActionRejectionCode,
     ActionType,
     CompanyState,
+    FailureStage,
     MarketSignal,
     ModelActionDiagnostic,
+    ModelInferenceDiagnostic,
     ModelRunOutcome,
     PreflightDecision,
     RepositoryCheckpoint,
@@ -211,8 +213,15 @@ def _rejected_outcome(
     code: ActionRejectionCode,
     reason: str,
     original_action_type: ActionType | None = None,
+    inference: ModelInferenceDiagnostic | None = None,
+    failure_stage: FailureStage | None = None,
 ) -> ModelRunOutcome:
     action = safe_no_op(reason)
+    model_diagnostic = inference or ModelInferenceDiagnostic()
+    if failure_stage is not None:
+        model_diagnostic = model_diagnostic.model_copy(
+            update={"failure_stage": failure_stage}
+        )
     return ModelRunOutcome(
         action=action,
         diagnostic=ModelActionDiagnostic(
@@ -223,6 +232,7 @@ def _rejected_outcome(
             accepted=False,
             rejection_code=code,
             rejection_reason=reason,
+            inference=model_diagnostic,
         ),
     )
 
@@ -231,6 +241,7 @@ def validate_model_action(
     root: Path,
     state: CompanyState,
     action: ActionEnvelope,
+    inference: ModelInferenceDiagnostic | None = None,
 ) -> ModelRunOutcome:
     if not action_allowed(state.lifecycle_stage, action.action_type):
         return _rejected_outcome(
@@ -241,6 +252,8 @@ def validate_model_action(
                 f"{state.lifecycle_stage.value}"
             ),
             original_action_type=action.action_type,
+            inference=inference,
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
     if action.state_transition and action.state_transition.from_stage != state.lifecycle_stage:
         return _rejected_outcome(
@@ -248,6 +261,8 @@ def validate_model_action(
             code=ActionRejectionCode.STATE_TRANSITION_SOURCE_MISMATCH,
             reason="state transition source does not match the current lifecycle stage",
             original_action_type=action.action_type,
+            inference=inference,
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
     try:
         validate_action_transition(
@@ -261,6 +276,8 @@ def validate_model_action(
             code=ActionRejectionCode.INVALID_STATE_TRANSITION,
             reason="action requested a state transition that is not allowed",
             original_action_type=action.action_type,
+            inference=inference,
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
     try:
         validate_evidence_references(action, root)
@@ -270,6 +287,8 @@ def validate_model_action(
             code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
             reason="one or more evidence_ids do not exist in stored signal records",
             original_action_type=action.action_type,
+            inference=inference,
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
     return ModelRunOutcome(
         action=action,
@@ -279,6 +298,7 @@ def validate_model_action(
             original_action_type=action.action_type,
             validated_action_type=action.action_type,
             accepted=True,
+            inference=inference or ModelInferenceDiagnostic(),
         ),
     )
 
@@ -293,6 +313,7 @@ def run_model(
             state,
             code=ActionRejectionCode.SLEEP_MODE,
             reason="sleep mode is active",
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
     limiter = UsageLimiter.from_path(root / "company/usage.json")
     client = GitHubModelsClient(os.environ["GITHUB_TOKEN"], limiter)
@@ -303,33 +324,48 @@ def run_model(
             state,
             code=ActionRejectionCode.MODEL_CATALOG_UNAVAILABLE,
             reason="GitHub Models catalog is unavailable",
+            failure_stage=FailureStage.MODEL_SELECTION,
         )
-    model = client.select_chat_model(catalog)
-    if not model:
+    selection = client.select_chat_model(catalog)
+    if not selection:
         return _rejected_outcome(
             state,
             code=ActionRejectionCode.NO_COMPATIBLE_MODEL,
             reason="no compatible text model is available",
+            failure_stage=FailureStage.MODEL_SELECTION,
         )
-    prompt = (root / "agents/prompts/core.md").read_text()
-    context = build_context(root)
-    instruction = build_model_instruction(root, state, decision)
-    action = client.chat_action(
-        model=model,
-        messages=[
+    diagnostic_mode = os.getenv("MODEL_DIAGNOSTIC_MODE", "false").lower() == "true"
+    if diagnostic_mode:
+        messages = [
+            {
+                "role": "system",
+                "content": "Verify the response pipeline with the exact diagnostic JSON.",
+            }
+        ]
+    else:
+        prompt = (root / "agents/prompts/core.md").read_text()
+        context = build_context(root)
+        instruction = build_model_instruction(root, state, decision)
+        messages = [
             {"role": "system", "content": prompt},
             {"role": "system", "content": instruction},
             {"role": "user", "content": context},
-        ],
+        ]
+    call = client.chat_action(
+        model=selection.selected_model,
+        request_mode=selection.request_mode,
+        diagnostic_mode=diagnostic_mode,
+        messages=messages,
     )
-    if client.last_chat_failure is not None:
+    if call.rejection_code is not None:
         return _rejected_outcome(
             state,
-            code=ActionRejectionCode.MODEL_RESPONSE_REJECTED,
-            reason="model response could not be completed and parsed safely",
-            original_action_type=client.last_raw_action_type,
+            code=call.rejection_code,
+            reason=call.rejection_reason or "model response was rejected safely",
+            original_action_type=call.original_action_type,
+            inference=call.diagnostic,
         )
-    return validate_model_action(root, state, action)
+    return validate_model_action(root, state, call.action, call.diagnostic)
 
 
 def main() -> int:

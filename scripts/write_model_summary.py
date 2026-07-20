@@ -13,18 +13,36 @@ def _safe_cell(value: object) -> str:
 
 
 def render_summary(diagnostic: ModelActionDiagnostic) -> str:
+    inference = diagnostic.inference
     original = diagnostic.original_action_type or "unavailable"
     rejection_code = diagnostic.rejection_code or "none"
     rejection_reason = diagnostic.rejection_reason or "none"
     allowed = ", ".join(item.value for item in diagnostic.allowed_action_types)
+    validation_paths = ", ".join(inference.pydantic_validation_error_paths) or "none"
     rows = [
-        ("Lifecycle stage", diagnostic.lifecycle_stage.value),
-        ("Allowed action types", allowed),
-        ("Original model action_type", original),
-        ("Validated action_type", diagnostic.validated_action_type.value),
-        ("Accepted", str(diagnostic.accepted).lower()),
-        ("Rejection code", rejection_code),
-        ("Rejection reason", rejection_reason),
+        ("lifecycle_stage", diagnostic.lifecycle_stage.value),
+        ("allowed_action_types", allowed),
+        ("original_model_action_type", original),
+        ("validated_action_type", diagnostic.validated_action_type.value),
+        ("accepted", str(diagnostic.accepted).lower()),
+        ("selected_model", inference.selected_model or "unavailable"),
+        ("request_mode", inference.request_mode or "unavailable"),
+        ("http_status", inference.http_status or "unavailable"),
+        (
+            "choices_count",
+            inference.choices_count
+            if inference.choices_count is not None
+            else "unavailable",
+        ),
+        ("message_content_type", inference.message_content_type or "unavailable"),
+        ("response_char_count", inference.response_char_count),
+        ("finish_reason", inference.finish_reason or "unavailable"),
+        ("fallback_attempted", str(inference.fallback_attempted).lower()),
+        ("retry_attempted", str(inference.retry_attempted).lower()),
+        ("failure_stage", inference.failure_stage or "none"),
+        ("rejection_code", rejection_code),
+        ("rejection_reason", rejection_reason),
+        ("pydantic_validation_error_paths", validation_paths),
     ]
     table = "\n".join(f"| {_safe_cell(name)} | {_safe_cell(value)} |" for name, value in rows)
     return (

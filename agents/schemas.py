@@ -82,6 +82,33 @@ class ActionType(StrEnum):
     PROPOSE_DEPENDENCY = "propose_dependency"
 
 
+class FailureStage(StrEnum):
+    MODEL_SELECTION = "model_selection"
+    REQUEST_BUILD = "request_build"
+    HTTP_REQUEST = "http_request"
+    RESPONSE_DECODE = "response_decode"
+    CHOICE_EXTRACTION = "choice_extraction"
+    CONTENT_EXTRACTION = "content_extraction"
+    FINISH_REASON_CHECK = "finish_reason_check"
+    JSON_EXTRACTION = "json_extraction"
+    JSON_PARSE = "json_parse"
+    SCHEMA_VALIDATION = "schema_validation"
+    LIFECYCLE_VALIDATION = "lifecycle_validation"
+
+
+class ModelRequestMode(StrEnum):
+    JSON_SCHEMA = "json_schema"
+    JSON_ONLY = "json_only"
+
+
+class MessageContentType(StrEnum):
+    STRING = "string"
+    ARRAY = "array"
+    NULL = "null"
+    MISSING = "missing"
+    OTHER = "other"
+
+
 class ActionRejectionCode(StrEnum):
     SLEEP_MODE = "sleep_mode"
     MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
@@ -91,6 +118,9 @@ class ActionRejectionCode(StrEnum):
     STATE_TRANSITION_SOURCE_MISMATCH = "state_transition_source_mismatch"
     INVALID_STATE_TRANSITION = "invalid_state_transition"
     EVIDENCE_REFERENCE_REJECTED = "evidence_reference_rejected"
+    TRUNCATED_MODEL_RESPONSE = "truncated_model_response"
+    MODEL_CONTENT_FILTERED = "model_content_filtered"
+    MODEL_REFUSAL = "model_refusal"
 
 
 class RiskLevel(StrEnum):
@@ -166,6 +196,43 @@ class ActionEnvelope(StrictModel):
         return self
 
 
+class ModelInferenceDiagnostic(StrictModel):
+    selected_model: str | None = Field(default=None, max_length=200)
+    request_mode: ModelRequestMode | None = None
+    http_status: int | None = Field(default=None, ge=100, le=599)
+    choices_count: int | None = Field(default=None, ge=0)
+    message_content_type: MessageContentType | None = None
+    response_char_count: int = Field(default=0, ge=0)
+    finish_reason: str | None = Field(default=None, max_length=100)
+    fallback_attempted: bool = False
+    retry_attempted: bool = False
+    failure_stage: FailureStage | None = None
+    pydantic_validation_error_paths: list[str] = Field(default_factory=list, max_length=50)
+
+
+class ModelSelection(StrictModel):
+    selected_model: str = Field(pattern=r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.:-]+$", max_length=200)
+    request_mode: ModelRequestMode
+
+
+class ModelCallResult(StrictModel):
+    action: ActionEnvelope
+    original_action_type: ActionType | None = None
+    diagnostic: ModelInferenceDiagnostic
+    rejection_code: ActionRejectionCode | None = None
+    rejection_reason: str | None = Field(default=None, max_length=500)
+
+    @model_validator(mode="after")
+    def enforce_call_result_shape(self) -> ModelCallResult:
+        if bool(self.rejection_code) != bool(self.rejection_reason):
+            raise ValueError("model call rejection requires both code and reason")
+        if self.rejection_code and self.diagnostic.failure_stage is None:
+            raise ValueError("rejected model calls require a failure stage")
+        if not self.rejection_code and self.diagnostic.failure_stage is not None:
+            raise ValueError("successful model calls cannot contain a failure stage")
+        return self
+
+
 class ModelActionDiagnostic(StrictModel):
     lifecycle_stage: LifecycleStage
     allowed_action_types: list[ActionType] = Field(min_length=1)
@@ -174,6 +241,7 @@ class ModelActionDiagnostic(StrictModel):
     accepted: bool
     rejection_code: ActionRejectionCode | None = None
     rejection_reason: str | None = Field(default=None, max_length=500)
+    inference: ModelInferenceDiagnostic = Field(default_factory=ModelInferenceDiagnostic)
 
     @model_validator(mode="after")
     def enforce_diagnostic_shape(self) -> ModelActionDiagnostic:
@@ -181,6 +249,8 @@ class ModelActionDiagnostic(StrictModel):
             raise ValueError("accepted diagnostics cannot contain a rejection")
         if not self.accepted and (not self.rejection_code or not self.rejection_reason):
             raise ValueError("rejected diagnostics require a code and reason")
+        if self.accepted and self.inference.failure_stage is not None:
+            raise ValueError("accepted diagnostics cannot contain a failure stage")
         if (
             self.original_action_type is not None
             and self.accepted

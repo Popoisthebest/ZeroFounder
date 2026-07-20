@@ -84,6 +84,7 @@ workflow 최상위 권한은 `contents: read`입니다. 모델, Issue, 브랜치
 | `GITHUB_MODEL` | 비어 있음 | 카탈로그에서 확인할 우선 채팅 모델 |
 | `GITHUB_FALLBACK_MODELS` | `openai/gpt-4.1-mini,openai/gpt-4.1` | 순차 fallback |
 | `GITHUB_EMBEDDING_MODEL` | 자동 선택 | 사용 가능한 임베딩 모델 |
+| `MODEL_DIAGNOSTIC_MODE` | `false` | `true`이면 작은 `no_op` 응답으로 모델 파이프라인만 검증 |
 | `DAILY_MODEL_CALL_LIMIT` | `8` | chat과 embedding 합산 soft limit |
 | `MAX_FILES_PER_ACTION` | `12` | 한 행동의 최대 파일 수 |
 | `MAX_FILE_CHARS` | `20000` | 파일당 생성 문자 수 |
@@ -100,6 +101,8 @@ workflow 최상위 권한은 `contents: read`입니다. 모델, Issue, 브랜치
 | `MIN_GROWTH_EXPERIMENTS` | `2` | 완료 실험 수 |
 
 같은 값은 `company/strategy.json`에서도 관리하며 Repository Variable이 우선합니다.
+
+채팅 모델은 매 실행에서 카탈로그 ID와 text 입출력·chat endpoint 적합성을 확인합니다. 카탈로그가 structured output 지원을 명확히 표시하지 않으면 JSON-only 모드로 시작합니다. `MODEL_DIAGNOSTIC_MODE=true`는 제품 산출물을 만들지 않고 작은 `no_op` 응답의 HTTP·content·JSON·Pydantic 처리 단계만 점검합니다. 모델 원문과 인증 헤더는 Actions summary에 기록하지 않습니다.
 
 ## 첫 시장 조사
 
