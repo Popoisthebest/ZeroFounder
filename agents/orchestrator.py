@@ -7,6 +7,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
+from agents.approval import AGENT_COMMANDS, is_bot_actor, parse_comment_command
 from agents.context_builder import build_context_bundle
 from agents.github_client import GitHubClient
 from agents.github_models import (
@@ -64,39 +65,91 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
         event = loaded if isinstance(loaded, dict) else {}
     issue = event.get("issue") if isinstance(event.get("issue"), dict) else {}
     comment = event.get("comment") if isinstance(event.get("comment"), dict) else {}
-    issue_ids = [issue["id"]] if isinstance(issue.get("id"), int) else []
-    comment_ids = [comment["id"]] if isinstance(comment.get("id"), int) else []
-    metrics = (root / "company/metrics.json").read_bytes()
-    strategy = json.loads((root / "company/strategy.json").read_text())
-    now = datetime.now(UTC)
-    review = strategy["review"]
-    daily_due = checkpoint.last_daily_review != now.date() and now.hour >= int(review["daily_hour"])
-    weekly_due = (
-        now.isoweekday() == int(review["weekly_day"])
-        and checkpoint.last_weekly_review != now.date()
-        and now.hour >= int(review["weekly_hour"])
-    )
-    evidence = strategy["evidence"]
-    decision = build_preflight_decision(
-        checkpoint=checkpoint,
-        signal_quality=_signal_quality(root),
-        issue_ids=issue_ids,
-        comment_ids=comment_ids,
-        product_sha=os.getenv("PRODUCT_SHA"),
-        metrics_hash=hashlib.sha256(metrics).hexdigest(),
-        due_experiment=False,
-        daily_review_due=daily_due,
-        weekly_review_due=weekly_due,
-        manual=event_name == "workflow_dispatch",
-        min_new_signals=int(
-            os.getenv("MIN_NEW_SIGNALS_FOR_ANALYSIS", evidence["min_new_signals_for_analysis"])
-        ),
-        strong_evidence_threshold=float(
-            os.getenv("STRONG_EVIDENCE_THRESHOLD", evidence["strong_evidence_threshold"])
-        ),
-    )
     token = os.getenv("GITHUB_TOKEN")
     repository = os.getenv("GITHUB_REPOSITORY")
+    decision: PreflightDecision
+    if event_name == "issue_comment":
+        actor = str(comment.get("user", {}).get("login", ""))
+        author_type = str(comment.get("user", {}).get("type", ""))
+        labels = {
+            item.get("name") for item in issue.get("labels", []) if isinstance(item, dict)
+        }
+        command = parse_comment_command(str(comment.get("body", "")))
+        skip_reason = None
+        if author_type == "Bot" or is_bot_actor(actor):
+            skip_reason = "bot_comment"
+        elif command is None:
+            skip_reason = "unrecognized_comment_command"
+        elif command not in AGENT_COMMANDS:
+            skip_reason = "command_handled_by_approval_flow"
+        elif not labels & {"agent-generated", "requires-approval", "founder-approval"}:
+            skip_reason = "unsupported_issue_context"
+        elif not (token and repository):
+            skip_reason = "unauthorized_actor"
+        else:
+            try:
+                if not GitHubClient(token, repository).has_write_permission(actor):
+                    skip_reason = "unauthorized_actor"
+            except Exception:
+                skip_reason = "unauthorized_actor"
+        if skip_reason:
+            decision = PreflightDecision(
+                should_call_model=False,
+                idempotency_key=hashlib.sha256(
+                    f"skip:{skip_reason}:{comment.get('id')}".encode()
+                ).hexdigest(),
+                blocked_reason=skip_reason,
+            )
+        else:
+            decision = build_preflight_decision(
+                checkpoint=checkpoint,
+                signal_quality={},
+                issue_ids=[],
+                comment_ids=[comment["id"]] if isinstance(comment.get("id"), int) else [],
+                product_sha=None,
+                metrics_hash=None,
+                due_experiment=False,
+                daily_review_due=False,
+                weekly_review_due=False,
+                manual=True,
+                min_new_signals=999999,
+                strong_evidence_threshold=2.0,
+            )
+    else:
+        issue_ids = [issue["id"]] if isinstance(issue.get("id"), int) else []
+        metrics = (root / "company/metrics.json").read_bytes()
+        strategy = json.loads((root / "company/strategy.json").read_text())
+        now = datetime.now(UTC)
+        review = strategy["review"]
+        daily_due = checkpoint.last_daily_review != now.date() and now.hour >= int(
+            review["daily_hour"]
+        )
+        weekly_due = (
+            now.isoweekday() == int(review["weekly_day"])
+            and checkpoint.last_weekly_review != now.date()
+            and now.hour >= int(review["weekly_hour"])
+        )
+        evidence = strategy["evidence"]
+        decision = build_preflight_decision(
+            checkpoint=checkpoint,
+            signal_quality=_signal_quality(root),
+            issue_ids=issue_ids,
+            comment_ids=[],
+            product_sha=os.getenv("PRODUCT_SHA"),
+            metrics_hash=hashlib.sha256(metrics).hexdigest(),
+            due_experiment=False,
+            daily_review_due=daily_due,
+            weekly_review_due=weekly_due,
+            manual=event_name == "workflow_dispatch",
+            min_new_signals=int(
+                os.getenv(
+                    "MIN_NEW_SIGNALS_FOR_ANALYSIS", evidence["min_new_signals_for_analysis"]
+                )
+            ),
+            strong_evidence_threshold=float(
+                os.getenv("STRONG_EVIDENCE_THRESHOLD", evidence["strong_evidence_threshold"])
+            ),
+        )
     base_limit = int(os.getenv("DAILY_MODEL_CALL_LIMIT", "8"))
     diagnostic_mode = os.getenv("MODEL_DIAGNOSTIC_MODE", "false").lower() == "true"
     manual_diagnostic_allowance = (

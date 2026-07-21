@@ -140,7 +140,11 @@ python scripts/reconcile_usage.py --date today --apply
 /pivot
 ```
 
-문장 안 명령, 추가 셸 문자열, 권한 없는 사용자, PR 댓글은 무시됩니다.
+문장 안 명령, 추가 셸 문자열, 권한 없는 사용자, 일반 PR/Issue 댓글은 무시됩니다.
+Issue 댓글은 첫 줄의 정확한 소문자 명령만 처리합니다. `/approve something`,
+`/approve-not`, 봇 댓글, 일반 대화, 리뷰 의견, `Duplicate of #...` 댓글은 모델 호출을
+열지 않습니다. 모델 흐름을 수동으로 열 때는 write 권한이 있는 사람이 대상 Issue/PR에
+`/run-agent` 또는 `/retry`를 독립된 한 줄로 남깁니다.
 
 ## AI가 만든 PR 검토
 

@@ -14,6 +14,8 @@ def _safe(value: object) -> str:
 
 def render_summary(decision: PreflightDecision) -> str:
     rows = [
+        ("skipped", str(not decision.should_call_model).lower()),
+        ("skip_reason", decision.blocked_reason or "none"),
         ("should_call_model", str(decision.should_call_model).lower()),
         ("오늘 완료된 호출", decision.completed_calls_today),
         ("활성 예약", decision.active_reservations),

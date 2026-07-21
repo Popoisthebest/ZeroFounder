@@ -45,6 +45,20 @@ def test_workflow_yaml_and_job_permissions():
     }
 
 
+def test_issue_comment_command_job_exposes_skip_outputs():
+    agent = load_workflows()["agent.yml"]
+    job = agent["jobs"]["issue-command"]
+    assert job["if"] == "github.event_name == 'issue_comment'"
+    expected = {
+        "valid": "${{ steps.command.outputs.valid }}",
+        "kind": "${{ steps.command.outputs.kind }}",
+        "skipped": "${{ steps.command.outputs.skipped }}",
+        "skip_reason": "${{ steps.command.outputs.skip_reason }}",
+    }
+    for key, value in expected.items():
+        assert job["outputs"][key] == value
+
+
 def test_workflow_and_job_display_names_are_korean():
     for workflow in load_workflows().values():
         assert re.search(r"[가-힣]", workflow["name"])

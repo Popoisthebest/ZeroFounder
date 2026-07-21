@@ -7,7 +7,11 @@ from datetime import UTC, datetime
 from agents.lifecycle import validate_transition
 from agents.schemas import CompanyState, FounderResult, LifecycleStage
 
-COMMAND = re.compile(r"^/(approve|reject|revise|pause|resume|pivot)\s*$")
+LIFECYCLE_COMMANDS = {"approve", "reject", "revise", "pause", "resume", "pivot"}
+AGENT_COMMANDS = {"run-agent", "retry"}
+COMMAND = re.compile(
+    r"^/(approve|reject|revise|pause|resume|pivot|run-agent|retry)$"
+)
 BOT = re.compile(r"(?:\[bot\]|bot$|agent)", re.I)
 
 
@@ -17,9 +21,25 @@ class ApprovalDecision:
     target_stage: LifecycleStage
 
 
-def parse_approval_command(body: str) -> str | None:
-    match = COMMAND.fullmatch(body.strip())
+def is_bot_actor(actor: str) -> bool:
+    return bool(BOT.search(actor))
+
+
+def parse_comment_command(body: str) -> str | None:
+    stripped = body.strip()
+    if not stripped:
+        return None
+    lines = stripped.splitlines()
+    first_line = lines[0].strip()
+    if any(line.strip() for line in lines[1:]):
+        return None
+    match = COMMAND.fullmatch(first_line)
     return match.group(1) if match else None
+
+
+def parse_approval_command(body: str) -> str | None:
+    command = parse_comment_command(body)
+    return command if command in LIFECYCLE_COMMANDS else None
 
 
 def decide_command(state: CompanyState, command: str) -> ApprovalDecision:
@@ -60,7 +80,7 @@ def apply_command(state: CompanyState, decision: ApprovalDecision) -> CompanySta
 def validate_human_founder_result(
     payload: dict[str, str], *, actor: str, actor_has_write: bool
 ) -> FounderResult:
-    if not actor_has_write or BOT.search(actor):
+    if not actor_has_write or is_bot_actor(actor):
         raise ValueError("founder evidence must be recorded by a verified human")
     if payload.get("recorded_by") != actor:
         raise ValueError("recorded_by must match the verified actor")
@@ -72,7 +92,7 @@ def validate_human_founder_result(
 
 
 def founder_result_counts_as_validation(result: FounderResult) -> bool:
-    return not BOT.search(result.recorded_by) and result.source_type in {
+    return not is_bot_actor(result.recorded_by) and result.source_type in {
         "human_commit",
         "verified_issue",
     }
