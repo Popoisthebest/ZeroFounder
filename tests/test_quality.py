@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from agents.quality import (
@@ -6,9 +7,11 @@ from agents.quality import (
     finalize_validation_status,
     review_status,
     summarize_check_results,
+    validate_changed_file_contract,
 )
 from scripts.summarize_quality_checks import CHECKS, aggregate_quality_results
 from scripts.update_pr_status import render_status_body
+from scripts.write_quality_result import main as write_quality_result
 
 
 def pull(branch: str = "agent/42-discovery", sha: str = "a" * 40) -> dict:
@@ -99,6 +102,68 @@ def test_candidate_changed_paths_preserve_dependency_and_control_policy():
     )
 
 
+def test_pr_one_create_problem_candidate_file_contract_is_valid():
+    files = [
+        {"filename": "company/checkpoints.json", "status": "modified"},
+        {"filename": "company/state.json", "status": "modified"},
+        {
+            "filename": "research/problems/problem-navigation-inefficiency.json",
+            "status": "added",
+        },
+    ]
+    result = validate_changed_file_contract(
+        "agent/29757293892-create-problem-candidate", files
+    )
+    assert result.status == "valid"
+    assert result.problem_id == "problem-navigation-inefficiency"
+    assert result.changed_files_count == 3
+
+
+def test_create_problem_candidate_rejects_any_extra_file():
+    files = [
+        {"filename": "company/checkpoints.json", "status": "modified"},
+        {"filename": "company/state.json", "status": "modified"},
+        {"filename": "research/problems/problem-001.json", "status": "added"},
+        {"filename": "reports/unrelated.md", "status": "added"},
+    ]
+    result = validate_changed_file_contract(
+        "agent/29757293892-create-problem-candidate", files
+    )
+    assert result.status == "too_many_files"
+    assert result.rejected_files == ("reports/unrelated.md",)
+
+
+def test_create_problem_candidate_rejects_deletion_and_multiple_problem_files():
+    deleted = validate_changed_file_contract(
+        "agent/1-create-problem-candidate",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "company/state.json", "status": "modified"},
+            {"filename": "research/problems/problem-001.json", "status": "removed"},
+        ],
+    )
+    assert deleted.status == "deleted_file"
+    renamed = validate_changed_file_contract(
+        "agent/1-create-problem-candidate",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "company/state.json", "status": "modified"},
+            {"filename": "research/problems/problem-001.json", "status": "renamed"},
+        ],
+    )
+    assert renamed.status == "deleted_file"
+    multiple = validate_changed_file_contract(
+        "agent/1-create-problem-candidate",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "company/state.json", "status": "modified"},
+            {"filename": "research/problems/problem-001.json", "status": "added"},
+            {"filename": "research/problems/problem-002.json", "status": "added"},
+        ],
+    )
+    assert multiple.status == "invalid_problem_path"
+
+
 def test_quality_success_and_failure_outputs():
     assert summarize_check_results([("pytest", "success"), ("ruff", "success")]) == (
         "passed",
@@ -182,6 +247,27 @@ def test_trusted_aggregator_reports_failed_check(tmp_path: Path):
     assert result["failed_check"] == "vitest"
 
 
+def test_trusted_aggregator_preserves_safe_rejection_diagnostics(tmp_path: Path):
+    result = aggregate_quality_results(
+        results_dir=tmp_path / "runtime/quality-results",
+        output=tmp_path / "runtime/quality-summary.json",
+        verification_status="invalid_checkpoint_change",
+        verified_sha="a" * 40,
+        quality_job_result="skipped",
+        policy_job_result="success",
+        run_url="https://github.com/owner/repo/actions/runs/1",
+        outcomes={},
+        rejection_code="invalid_checkpoint_change",
+        rejection_reason="checkpoint 변경 검증에 실패했습니다.",
+        rejected_files=["company/checkpoints.json"],
+        changed_files_count=3,
+    )
+    assert result["validation_status"] == "invalid_checkpoint_change"
+    assert result["rejection_code"] == "invalid_checkpoint_change"
+    assert result["rejected_files"] == ["company/checkpoints.json"]
+    assert result["changed_files_count"] == 3
+
+
 def test_quality_status_body_is_korean_and_keeps_machine_status():
     body = render_status_body(
         "## 기존 본문\n",
@@ -189,8 +275,48 @@ def test_quality_status_body_is_korean_and_keeps_machine_status():
         verified_sha="a" * 40,
         failed_check="pytest",
         run_url="https://github.com/owner/repo/actions/runs/1",
+        rejection_code="invalid_state_change",
+        rejection_reason="상태 변경이 허용 범위를 벗어났습니다.",
+        rejected_files=["company/state.json"],
+        changed_files_count=3,
     )
     assert "## 품질검사 상태" in body
     assert "품질검사 실패" in body
     assert "`quality_check_failed`" in body
     assert "pytest" in body
+    assert "invalid_state_change" in body
+    assert "company/state.json" in body
+
+
+def test_quality_result_json_contains_only_safe_rejection_diagnostics(
+    tmp_path: Path, monkeypatch
+):
+    target = tmp_path / "quality-result.json"
+    values = {
+        "QUALITY_RESULT_PATH": str(target),
+        "VALIDATION_STATUS": "disallowed_file",
+        "VERIFIED_SHA": "a" * 40,
+        "FAILED_CHECK": "disallowed_file",
+        "QUALITY_RUN_URL": "https://github.com/owner/repo/actions/runs/1",
+        "REJECTION_CODE": "disallowed_file",
+        "REJECTION_REASON": "허용되지 않은 파일이 포함됐습니다.",
+        "REJECTED_FILES": '["scripts/unsafe.py"]',
+        "CHANGED_FILES_COUNT": "4",
+    }
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    assert write_quality_result() == 0
+    result = json.loads(target.read_text(encoding="utf-8"))
+    assert result["validation_status"] == "disallowed_file"
+    assert result["rejected_files"] == ["scripts/unsafe.py"]
+    assert result["changed_files_count"] == 4
+    assert set(result) == {
+        "validation_status",
+        "verified_sha",
+        "failed_check",
+        "quality_run_url",
+        "rejection_code",
+        "rejection_reason",
+        "rejected_files",
+        "changed_files_count",
+    }

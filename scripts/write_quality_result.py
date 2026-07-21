@@ -5,6 +5,16 @@ import os
 from pathlib import Path
 
 
+def _rejected_files() -> list[str]:
+    try:
+        value = json.loads(os.getenv("REJECTED_FILES", "[]"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def main() -> int:
     target = Path(os.environ["QUALITY_RESULT_PATH"])
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -17,6 +27,10 @@ def main() -> int:
                 "verified_sha": os.getenv("VERIFIED_SHA", ""),
                 "failed_check": os.getenv("FAILED_CHECK", ""),
                 "quality_run_url": os.getenv("QUALITY_RUN_URL", ""),
+                "rejection_code": os.getenv("REJECTION_CODE", ""),
+                "rejection_reason": os.getenv("REJECTION_REASON", ""),
+                "rejected_files": _rejected_files(),
+                "changed_files_count": int(os.getenv("CHANGED_FILES_COUNT", "0") or 0),
             },
             ensure_ascii=False,
             indent=2,

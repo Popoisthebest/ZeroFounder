@@ -16,6 +16,10 @@ def main() -> int:
 - 검증 상태: `{result['validation_status']}`
 - 검증 SHA: `{result['verified_sha'] or '없음'}`
 - 실패 검사: `{result['failed_check'] or '없음'}`
+- 거부 코드: `{result.get('rejection_code') or '없음'}`
+- 거부 사유: {result.get('rejection_reason') or '없음'}
+- 거부 파일: {', '.join(result.get('rejected_files', [])) or '없음'}
+- 변경 파일 수: {result.get('changed_files_count', 0)}
 - 실행 URL: {result['quality_run_url'] or '확인 불가'}
 
 검증 대상은 전달받은 PR head SHA와 일치하는 경우에만 checkout했습니다.

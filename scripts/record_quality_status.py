@@ -9,6 +9,16 @@ from agents.quality import review_status
 from scripts.update_pr_status import render_status_body
 
 
+def _rejected_files() -> list[str]:
+    import json
+
+    try:
+        value = json.loads(os.getenv("REJECTED_FILES", "[]"))
+    except json.JSONDecodeError:
+        return []
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pr", type=int, required=True)
@@ -23,6 +33,10 @@ def main() -> int:
         verified_sha=os.getenv("VERIFIED_SHA", ""),
         failed_check=os.getenv("FAILED_CHECK", ""),
         run_url=os.getenv("QUALITY_RUN_URL", ""),
+        rejection_code=os.getenv("REJECTION_CODE", ""),
+        rejection_reason=os.getenv("REJECTION_REASON", ""),
+        rejected_files=_rejected_files(),
+        changed_files_count=int(os.getenv("CHANGED_FILES_COUNT", "0") or 0),
     )
     client.update_pull_request_body(args.pr, body)
     output = os.getenv("GITHUB_OUTPUT")

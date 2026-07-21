@@ -61,7 +61,16 @@ def main() -> int:
     if "workflow_call" not in triggers or "workflow_dispatch" not in triggers:
         raise SystemExit("quality-check는 workflow_call과 workflow_dispatch를 지원해야 합니다.")
     call_outputs = triggers["workflow_call"].get("outputs", {})
-    required_outputs = {"validation_status", "verified_sha", "failed_check", "quality_run_url"}
+    required_outputs = {
+        "validation_status",
+        "verified_sha",
+        "failed_check",
+        "quality_run_url",
+        "rejection_code",
+        "rejection_reason",
+        "rejected_files",
+        "changed_files_count",
+    }
     if not required_outputs.issubset(call_outputs):
         raise SystemExit("quality-check reusable output이 불완전합니다.")
     quality_jobs = quality.get("jobs", {})
@@ -75,11 +84,18 @@ def main() -> int:
     }
     if not required_jobs.issubset(quality_jobs):
         raise SystemExit("quality-check control/candidate job이 불완전합니다.")
-    for job_name in ("quality", "policy"):
-        if quality_jobs[job_name].get("if") != (
-            "needs.verify-head.outputs.validation_status == 'valid'"
-        ):
-            raise SystemExit(f"candidate job은 신뢰된 PR 검증 뒤에만 실행해야 합니다: {job_name}")
+    expected_conditions = {
+        "policy": "needs.verify-head.outputs.validation_status == 'valid'",
+        "quality": (
+            "needs.verify-head.outputs.validation_status == 'valid' && "
+            "needs.policy.outputs.validation_status == 'valid'"
+        ),
+    }
+    for job_name, expected_condition in expected_conditions.items():
+        if quality_jobs[job_name].get("if") != expected_condition:
+            raise SystemExit(
+                f"candidate job은 신뢰된 PR·정책 검증 뒤에만 실행해야 합니다: {job_name}"
+            )
         paths = {
             step.get("with", {}).get("path")
             for step in quality_jobs[job_name].get("steps", [])
@@ -94,6 +110,20 @@ def main() -> int:
         step.get("working-directory") != "candidate" for step in candidate_steps
     ):
         raise SystemExit("candidate 명령은 candidate 경로에서만 실행해야 합니다.")
+    validation_step = next(
+        (
+            step
+            for step in quality_jobs["policy"].get("steps", [])
+            if step.get("id") == "candidate_validation"
+        ),
+        None,
+    )
+    if (
+        not validation_step
+        or validation_step.get("working-directory") != "control"
+        or "scripts.validate_candidate_change" not in str(validation_step.get("run", ""))
+    ):
+        raise SystemExit("action별 candidate 검증은 신뢰된 control 코드로 실행해야 합니다.")
     result_step = next(
         (
             step

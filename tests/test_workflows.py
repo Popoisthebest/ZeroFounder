@@ -89,10 +89,17 @@ def test_reusable_quality_workflow_contract_and_exact_sha_checkout():
         "verified_sha",
         "failed_check",
         "quality_run_url",
+        "rejection_code",
+        "rejection_reason",
+        "rejected_files",
+        "changed_files_count",
     }
 
     quality_job = quality["jobs"]["quality"]
-    assert quality_job["if"] == "needs.verify-head.outputs.validation_status == 'valid'"
+    assert quality_job["if"] == (
+        "needs.verify-head.outputs.validation_status == 'valid' && "
+        "needs.policy.outputs.validation_status == 'valid'"
+    )
     quality_steps = quality_job["steps"]
     checkouts = {
         step.get("with", {}).get("path"): step
@@ -132,6 +139,7 @@ def test_candidate_commands_and_control_helpers_are_isolated():
 
     policy_steps = quality["jobs"]["policy"]["steps"]
     policy_commands = "\n".join(str(step.get("run", "")) for step in policy_steps)
+    assert "scripts.validate_candidate_change" in policy_commands
     assert "scripts.check_candidate_workflows" in policy_commands
     assert "scripts.security_check" in policy_commands
     for step in policy_steps:
@@ -150,10 +158,13 @@ def test_candidate_commands_and_control_helpers_are_isolated():
 
 def test_invalid_pr_target_never_runs_candidate_jobs():
     quality = load_workflows()["quality-check.yml"]
-    for job_name in {"quality", "policy"}:
-        assert quality["jobs"][job_name]["if"] == (
-            "needs.verify-head.outputs.validation_status == 'valid'"
-        )
+    assert quality["jobs"]["policy"]["if"] == (
+        "needs.verify-head.outputs.validation_status == 'valid'"
+    )
+    assert quality["jobs"]["quality"]["if"] == (
+        "needs.verify-head.outputs.validation_status == 'valid' && "
+        "needs.policy.outputs.validation_status == 'valid'"
+    )
     verify_steps = quality["jobs"]["verify-head"]["steps"]
     assert not any(step.get("with", {}).get("path") == "candidate" for step in verify_steps)
 
@@ -197,6 +208,8 @@ def test_quality_result_is_recorded_after_failure_and_final_gate_is_present():
     assert "needs.quality-check.outputs.validation_status" in record_env["VALIDATION_STATUS"]
     assert "needs.quality-check.outputs.failed_check" in record_env["FAILED_CHECK"]
     assert "needs.quality-check.outputs.quality_run_url" in record_env["QUALITY_RUN_URL"]
+    assert "needs.quality-check.outputs.rejection_code" in record_env["REJECTION_CODE"]
+    assert "needs.quality-check.outputs.rejected_files" in record_env["REJECTED_FILES"]
     assert next(step for step in record["steps"] if step.get("id") == "record")[
         "working-directory"
     ] == "control"

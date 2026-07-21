@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -12,6 +14,12 @@ VerificationStatus = Literal[
     "sha_mismatch",
     "repository_mismatch",
     "closed_pr",
+    "disallowed_file",
+    "deleted_file",
+    "too_many_files",
+    "invalid_checkpoint_change",
+    "invalid_state_change",
+    "invalid_problem_path",
 ]
 ValidationStatus = Literal[
     "passed",
@@ -21,6 +29,12 @@ ValidationStatus = Literal[
     "sha_mismatch",
     "repository_mismatch",
     "closed_pr",
+    "disallowed_file",
+    "deleted_file",
+    "too_many_files",
+    "invalid_checkpoint_change",
+    "invalid_state_change",
+    "invalid_problem_path",
     "quality_check_not_started",
 ]
 ReviewStatus = Literal[
@@ -30,6 +44,12 @@ ReviewStatus = Literal[
     "branch_mismatch",
     "sha_mismatch",
     "repository_mismatch",
+    "disallowed_file",
+    "deleted_file",
+    "too_many_files",
+    "invalid_checkpoint_change",
+    "invalid_state_change",
+    "invalid_problem_path",
     "quality_check_not_started",
 ]
 
@@ -67,27 +87,168 @@ DEPENDENCY_ALLOWED_EXACT = {
     "package-lock.json",
 }
 
+CREATE_PROBLEM_REQUIRED_EXACT = {
+    "company/checkpoints.json",
+    "company/state.json",
+}
+PROBLEM_PATH = re.compile(
+    r"^research/problems/(?P<problem_id>problem-[a-z0-9][a-z0-9._-]{0,100})\.json$"
+)
+AGENT_ACTION_BRANCH = re.compile(
+    r"^agent/(?P<run_id>[0-9]{1,30})-(?P<action>[a-z][a-z0-9-]{1,80})$"
+)
+SAFE_REPORTED_PATH = re.compile(r"^[A-Za-z0-9._/-]{1,240}$")
 
-def candidate_change_paths_allowed(branch: str, files: list[dict[str, object]]) -> bool:
-    if not files or len(files) > 100:
-        return False
-    dependency_branch = branch.startswith("dependency/")
+
+@dataclass(frozen=True)
+class ChangeValidation:
+    status: VerificationStatus
+    rejection_code: str
+    rejection_reason: str
+    rejected_files: tuple[str, ...]
+    changed_files_count: int
+    action_type: str | None = None
+    problem_id: str | None = None
+
+
+def _change_result(
+    status: VerificationStatus,
+    *,
+    count: int,
+    reason: str = "",
+    files: list[str] | tuple[str, ...] = (),
+    action_type: str | None = None,
+    problem_id: str | None = None,
+) -> ChangeValidation:
+    return ChangeValidation(
+        status=status,
+        rejection_code="" if status == "valid" else status,
+        rejection_reason=reason,
+        rejected_files=tuple(sorted(set(files))),
+        changed_files_count=count,
+        action_type=action_type,
+        problem_id=problem_id,
+    )
+
+
+def action_type_from_branch(branch: str) -> str | None:
+    match = AGENT_ACTION_BRANCH.fullmatch(branch)
+    return match.group("action").replace("-", "_") if match else None
+
+
+def validate_changed_file_contract(
+    branch: str, files: list[dict[str, object]]
+) -> ChangeValidation:
+    count = len(files)
+    if not files:
+        return _change_result(
+            "disallowed_file", count=count, reason="변경 파일이 없습니다."
+        )
+    if count > 100:
+        return _change_result(
+            "too_many_files", count=count, reason="변경 파일 수가 안전 한도를 초과했습니다."
+        )
+    normalized_files: list[str] = []
     for record in files:
         raw = record.get("filename")
-        if not isinstance(raw, str) or record.get("status") == "removed":
-            return False
+        if not isinstance(raw, str):
+            return _change_result(
+                "disallowed_file", count=count, reason="변경 파일 경로 형식이 잘못됐습니다."
+            )
+        if not SAFE_REPORTED_PATH.fullmatch(raw):
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="변경 파일 경로에 허용되지 않은 문자가 포함됐습니다.",
+                files=["[invalid-path]"],
+            )
         path = PurePosixPath(raw)
         if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-            return False
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="절대경로나 경로 순회가 포함됐습니다.",
+                files=[raw],
+            )
         normalized = path.as_posix()
-        if dependency_branch:
-            if normalized not in DEPENDENCY_ALLOWED_EXACT:
-                return False
-        elif normalized not in AGENT_ALLOWED_EXACT and not normalized.startswith(
-            AGENT_ALLOWED_PREFIXES
-        ):
-            return False
-    return True
+        normalized_files.append(normalized)
+        if record.get("status") in {"removed", "renamed"}:
+            return _change_result(
+                "deleted_file",
+                count=count,
+                reason="파일 삭제 또는 이름 변경은 허용되지 않습니다.",
+                files=[normalized],
+            )
+
+    if branch.startswith("dependency/"):
+        rejected = [path for path in normalized_files if path not in DEPENDENCY_ALLOWED_EXACT]
+        if rejected:
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="승인된 의존성 파일 외 변경이 포함됐습니다.",
+                files=rejected,
+                action_type="propose_dependency",
+            )
+        return _change_result("valid", count=count, action_type="propose_dependency")
+
+    action_type = action_type_from_branch(branch)
+    if action_type == "create_problem_candidate":
+        problem_paths = [path for path in normalized_files if path.startswith("research/problems/")]
+        valid_problem_paths = [path for path in problem_paths if PROBLEM_PATH.fullmatch(path)]
+        if len(problem_paths) != 1 or len(valid_problem_paths) != 1:
+            return _change_result(
+                "invalid_problem_path",
+                count=count,
+                reason="검증 가능한 문제 후보 JSON 경로가 정확히 하나여야 합니다.",
+                files=problem_paths,
+                action_type=action_type,
+            )
+        expected = CREATE_PROBLEM_REQUIRED_EXACT | {valid_problem_paths[0]}
+        actual = set(normalized_files)
+        if count > 3:
+            return _change_result(
+                "too_many_files",
+                count=count,
+                reason="문제 후보 생성은 정확히 세 파일만 변경할 수 있습니다.",
+                files=sorted(actual - expected),
+                action_type=action_type,
+            )
+        if actual != expected:
+            rejected = sorted(actual.symmetric_difference(expected))
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="문제 후보 생성 허용 목록과 변경 파일이 일치하지 않습니다.",
+                files=rejected,
+                action_type=action_type,
+            )
+        match = PROBLEM_PATH.fullmatch(valid_problem_paths[0])
+        return _change_result(
+            "valid",
+            count=count,
+            action_type=action_type,
+            problem_id=match.group("problem_id") if match else None,
+        )
+
+    rejected = [
+        path
+        for path in normalized_files
+        if path not in AGENT_ALLOWED_EXACT and not path.startswith(AGENT_ALLOWED_PREFIXES)
+    ]
+    if rejected:
+        return _change_result(
+            "disallowed_file",
+            count=count,
+            reason="현재 agent 행동에서 허용되지 않은 파일이 포함됐습니다.",
+            files=rejected,
+            action_type=action_type,
+        )
+    return _change_result("valid", count=count, action_type=action_type)
+
+
+def candidate_change_paths_allowed(branch: str, files: list[dict[str, object]]) -> bool:
+    return validate_changed_file_contract(branch, files).status == "valid"
 
 
 def classify_pull_target(
@@ -121,7 +282,7 @@ def classify_pull_target(
         return "closed_pr", actual_sha if SHA.fullmatch(actual_sha) else ""
     changed_files = pull.get("changed_files")
     if isinstance(changed_files, int) and changed_files > 100:
-        return "invalid_pr", actual_sha if SHA.fullmatch(actual_sha) else ""
+        return "too_many_files", actual_sha if SHA.fullmatch(actual_sha) else ""
     if head.get("ref") != branch:
         return "branch_mismatch", actual_sha if SHA.fullmatch(actual_sha) else ""
     if actual_sha != commit_sha:
@@ -148,6 +309,12 @@ def finalize_validation_status(
         "sha_mismatch": "pr_head_verification",
         "repository_mismatch": "pr_repository_verification",
         "closed_pr": "pr_state_verification",
+        "disallowed_file": "disallowed_file",
+        "deleted_file": "deleted_file",
+        "too_many_files": "too_many_files",
+        "invalid_checkpoint_change": "invalid_checkpoint_change",
+        "invalid_state_change": "invalid_state_change",
+        "invalid_problem_path": "invalid_problem_path",
     }
     if verification_status in verification_failures:
         return verification_status, verification_failures[verification_status]  # type: ignore[return-value]
@@ -179,5 +346,11 @@ def review_status(validation_status: str) -> ReviewStatus:
         "sha_mismatch": "sha_mismatch",
         "repository_mismatch": "repository_mismatch",
         "closed_pr": "invalid_pr",
+        "disallowed_file": "disallowed_file",
+        "deleted_file": "deleted_file",
+        "too_many_files": "too_many_files",
+        "invalid_checkpoint_change": "invalid_checkpoint_change",
+        "invalid_state_change": "invalid_state_change",
+        "invalid_problem_path": "invalid_problem_path",
         "quality_check_not_started": "quality_check_not_started",
     }.get(validation_status, "quality_check_not_started")

@@ -18,7 +18,7 @@ on:
         default: false
     outputs:
       validation_status:
-        description: passed, failed, invalid_pr, branch_mismatch, sha_mismatch, repository_mismatch, closed_pr, quality_check_not_started
+        description: passed, failed 또는 세부 정책 거부 상태
         value: ${{ jobs.finalize.outputs.validation_status }}
       verified_sha:
         description: 실제 검증한 SHA
@@ -29,6 +29,18 @@ on:
       quality_run_url:
         description: 품질검사 실행 URL
         value: ${{ jobs.finalize.outputs.quality_run_url }}
+      rejection_code:
+        description: 규칙 기반 거부 코드
+        value: ${{ jobs.finalize.outputs.rejection_code }}
+      rejection_reason:
+        description: 민감정보를 제외한 거부 사유
+        value: ${{ jobs.finalize.outputs.rejection_reason }}
+      rejected_files:
+        description: 거부된 파일 경로 JSON 배열
+        value: ${{ jobs.finalize.outputs.rejected_files }}
+      changed_files_count:
+        description: PR 변경 파일 수
+        value: ${{ jobs.finalize.outputs.changed_files_count }}
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -57,6 +69,10 @@ jobs:
     outputs:
       validation_status: ${{ steps.verify.outputs.validation_status }}
       verified_sha: ${{ steps.verify.outputs.sha }}
+      rejection_code: ${{ steps.verify.outputs.rejection_code }}
+      rejection_reason: ${{ steps.verify.outputs.rejection_reason }}
+      rejected_files: ${{ steps.verify.outputs.rejected_files }}
+      changed_files_count: ${{ steps.verify.outputs.changed_files_count }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v6
@@ -88,8 +104,8 @@ jobs:
 
   quality:
     name: 정확한 candidate commit 제품 검사
-    needs: verify-head
-    if: needs.verify-head.outputs.validation_status == 'valid'
+    needs: [verify-head, policy]
+    if: needs.verify-head.outputs.validation_status == 'valid' && needs.policy.outputs.validation_status == 'valid'
     permissions:
       contents: read
     runs-on: ubuntu-latest
@@ -188,6 +204,12 @@ jobs:
       contents: read
     runs-on: ubuntu-latest
     outputs:
+      validation_status: ${{ steps.candidate_validation.outputs.validation_status }}
+      verified_sha: ${{ steps.candidate_validation.outputs.verified_sha }}
+      rejection_code: ${{ steps.candidate_validation.outputs.rejection_code }}
+      rejection_reason: ${{ steps.candidate_validation.outputs.rejection_reason }}
+      rejected_files: ${{ steps.candidate_validation.outputs.rejected_files }}
+      changed_files_count: ${{ steps.candidate_validation.outputs.changed_files_count }}
       workflow_result: ${{ steps.workflow.outcome }}
       security_result: ${{ steps.security.outcome }}
     steps:
@@ -211,8 +233,29 @@ jobs:
       - name: 제어 코드 의존성 설치
         working-directory: control
         run: python -m pip install -r requirements.txt
+      - id: candidate_validation
+        name: action별 candidate 변경 검증
+        working-directory: control
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pull_request_number }}
+          AGENT_BRANCH: ${{ inputs.agent_branch }}
+          COMMIT_SHA: ${{ inputs.commit_sha }}
+          PYTHONPATH: ${{ github.workspace }}/control
+          PYTHONNOUSERSITE: "1"
+          PYTHONSAFEPATH: "1"
+        run: >-
+          python -m scripts.validate_candidate_change
+          --pr "$PR_NUMBER"
+          --branch "$AGENT_BRANCH"
+          --sha "$COMMIT_SHA"
+          --control-root "$GITHUB_WORKSPACE/control"
+          --candidate-root "$GITHUB_WORKSPACE/candidate"
+          --output "$GITHUB_WORKSPACE/runtime/candidate-validation.json"
       - id: workflow
         name: candidate YAML 및 workflow 권한 검사
+        if: steps.candidate_validation.outputs.validation_status == 'valid'
         continue-on-error: true
         working-directory: control
         env:
@@ -222,6 +265,7 @@ jobs:
         run: python -m scripts.check_candidate_workflows --root "$GITHUB_WORKSPACE/candidate"
       - id: security
         name: candidate 비밀값 및 금지 경로 검사
+        if: steps.candidate_validation.outputs.validation_status == 'valid'
         continue-on-error: true
         working-directory: control
         env:
@@ -242,6 +286,10 @@ jobs:
       verified_sha: ${{ steps.result.outputs.verified_sha }}
       failed_check: ${{ steps.result.outputs.failed_check }}
       quality_run_url: ${{ steps.result.outputs.quality_run_url }}
+      rejection_code: ${{ steps.result.outputs.rejection_code }}
+      rejection_reason: ${{ steps.result.outputs.rejection_reason }}
+      rejected_files: ${{ steps.result.outputs.rejected_files }}
+      changed_files_count: ${{ steps.result.outputs.changed_files_count }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v6
@@ -276,15 +324,28 @@ jobs:
           PIP_AUDIT_RESULT: ${{ needs.quality.outputs.pip_audit_result }}
           NPM_AUDIT_RESULT: ${{ needs.quality.outputs.npm_audit_result }}
           SECURITY_RESULT: ${{ needs.policy.outputs.security_result }}
+          VERIFICATION_STATUS: ${{ needs.policy.outputs.validation_status || needs.verify-head.outputs.validation_status }}
+          VERIFIED_SHA: ${{ needs.policy.outputs.verified_sha || needs.verify-head.outputs.verified_sha }}
+          QUALITY_JOB_RESULT: ${{ needs.quality.result }}
+          POLICY_JOB_RESULT: ${{ needs.policy.result }}
+          QUALITY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REJECTION_CODE: ${{ needs.policy.outputs.rejection_code || needs.verify-head.outputs.rejection_code }}
+          REJECTION_REASON: ${{ needs.policy.outputs.rejection_reason || needs.verify-head.outputs.rejection_reason }}
+          REJECTED_FILES: ${{ needs.policy.outputs.rejected_files || needs.verify-head.outputs.rejected_files || '[]' }}
+          CHANGED_FILES_COUNT: ${{ needs.policy.outputs.changed_files_count || needs.verify-head.outputs.changed_files_count || '0' }}
         run: >-
           python -m scripts.summarize_quality_checks
           --results-dir "$GITHUB_WORKSPACE/runtime/quality-results"
           --output "$GITHUB_WORKSPACE/runtime/quality-summary.json"
-          --verification-status '${{ needs.verify-head.outputs.validation_status }}'
-          --verified-sha '${{ needs.verify-head.outputs.verified_sha }}'
-          --quality-job-result '${{ needs.quality.result }}'
-          --policy-job-result '${{ needs.policy.result }}'
-          --run-url '${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'
+          --verification-status "$VERIFICATION_STATUS"
+          --verified-sha "$VERIFIED_SHA"
+          --quality-job-result "$QUALITY_JOB_RESULT"
+          --policy-job-result "$POLICY_JOB_RESULT"
+          --run-url "$QUALITY_RUN_URL"
+          --rejection-code "$REJECTION_CODE"
+          --rejection-reason "$REJECTION_REASON"
+          --rejected-files "$REJECTED_FILES"
+          --changed-files-count "$CHANGED_FILES_COUNT"
 
   manual-result:
     name: 수동 품질검사 결과 저장
@@ -314,6 +375,10 @@ jobs:
           VERIFIED_SHA: ${{ needs.finalize.outputs.verified_sha }}
           FAILED_CHECK: ${{ needs.finalize.outputs.failed_check }}
           QUALITY_RUN_URL: ${{ needs.finalize.outputs.quality_run_url }}
+          REJECTION_CODE: ${{ needs.finalize.outputs.rejection_code }}
+          REJECTION_REASON: ${{ needs.finalize.outputs.rejection_reason }}
+          REJECTED_FILES: ${{ needs.finalize.outputs.rejected_files }}
+          CHANGED_FILES_COUNT: ${{ needs.finalize.outputs.changed_files_count }}
           QUALITY_RESULT_PATH: ${{ github.workspace }}/runtime/quality-result.json
         run: python -m scripts.write_quality_result
       - name: 수동 실행 결과 요약
@@ -359,6 +424,10 @@ jobs:
           VERIFIED_SHA: ${{ needs.finalize.outputs.verified_sha }}
           FAILED_CHECK: ${{ needs.finalize.outputs.failed_check }}
           QUALITY_RUN_URL: ${{ needs.finalize.outputs.quality_run_url }}
+          REJECTION_CODE: ${{ needs.finalize.outputs.rejection_code }}
+          REJECTION_REASON: ${{ needs.finalize.outputs.rejection_reason }}
+          REJECTED_FILES: ${{ needs.finalize.outputs.rejected_files }}
+          CHANGED_FILES_COUNT: ${{ needs.finalize.outputs.changed_files_count }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"
