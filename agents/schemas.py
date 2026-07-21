@@ -469,7 +469,9 @@ class ModelInferenceDiagnostic(StrictModel):
     context_chars: int = Field(default=0, ge=0)
     estimated_input_tokens: int = Field(default=0, ge=0)
     initial_estimated_tokens: int = Field(default=0, ge=0)
+    initial_target_tokens: int = Field(default=0, ge=0)
     correction_estimated_tokens: int = Field(default=0, ge=0)
+    correction_target_tokens: int = Field(default=0, ge=0)
     reserved_correction_tokens: int = Field(default=0, ge=0)
     compacted_context: bool = False
     removed_context_sections: list[str] = Field(default_factory=list, max_length=20)

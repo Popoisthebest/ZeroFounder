@@ -523,6 +523,79 @@ def test_create_idea_correction_retry_uses_compact_prompt_and_accepts_fix():
     assert json.dumps(invalid, ensure_ascii=False) not in correction_text
 
 
+def test_initial_idea_context_compacts_below_reserved_budget_before_http():
+    requests: list[dict] = []
+    active_problem = {
+        "problem_id": "problem-001",
+        "title": "Repeated manual navigation",
+        "description": "Operators repeatedly lose position in long lists." + " detail" * 600,
+        "target_users": ["operators"],
+        "evidence_ids": ["signal-001", "signal-002"],
+    }
+    context = {
+        "lifecycle_stage": "IDEA_EVALUATION",
+        "mission": "m" * 3000,
+        "safety_constraints": "s" * 3000,
+        "active_problem_id": "problem-001",
+        "active_problem": active_problem,
+        "existing_idea_candidates": [],
+        "included_signal_records": [
+            {
+                "signal_id": "signal-001",
+                "title": "Repeated list navigation",
+                "summary": "Operators repeatedly return to the same list rows." + " x" * 800,
+            },
+            {
+                "signal_id": "signal-002",
+                "title": "Manual position tracking",
+                "summary": "Teams manually remember row positions while working." + " y" * 800,
+            },
+        ],
+        "validation_metadata": "v" * 4000,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=_completion(json.dumps(VALID_IDEAS)))
+
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": json.dumps(context)},
+        ],
+        response_model=ActionEnvelope,
+        active_problem_id="problem-001",
+        problem_loaded=True,
+        problem_evidence_count=2,
+        resolved_evidence_count=2,
+        idea_context_ready=True,
+        existing_idea_candidate_count=0,
+        included_signal_count=2,
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.diagnostic.completed_inference_calls == 1
+    assert result.diagnostic.reserved_correction_tokens == 1000
+    assert result.diagnostic.initial_target_tokens == 5000
+    assert result.diagnostic.initial_estimated_tokens <= 5000
+    assert result.diagnostic.correction_target_tokens == 6000
+    assert result.diagnostic.compacted_context
+    assert {"mission", "full_signal_records", "unused_action_type_schema"}.issubset(
+        set(result.diagnostic.removed_context_sections)
+    )
+    prompt_text = "\n".join(item["content"] for item in requests[0]["messages"])
+    assert "problem-001" in prompt_text
+    assert "Repeated manual navigation" in prompt_text
+    assert "signal-001" in prompt_text
+    assert "signal-002" in prompt_text
+    assert "mission" not in prompt_text
+    assert result.action.action_type == ActionType.CREATE_IDEA_CANDIDATES
+
+
 def test_second_schema_failure_returns_safe_no_op_with_diagnostics():
     invalid = {key: value for key, value in VALID_PROBLEM.items() if key != "problem_candidate"}
     client = _client(_single_response(_completion(json.dumps(invalid))))

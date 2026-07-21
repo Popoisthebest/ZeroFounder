@@ -330,6 +330,19 @@ def _short_value(value: Any, *, max_chars: int = 500) -> Any:
     return value
 
 
+def _latest_user_json(messages: list[dict[str, str]]) -> dict[str, Any]:
+    for message in reversed(messages):
+        if message.get("role") != "user":
+            continue
+        try:
+            loaded = json.loads(message.get("content", ""))
+        except json.JSONDecodeError:
+            continue
+        if isinstance(loaded, dict):
+            return loaded
+    return {}
+
+
 def _failed_action_fragment(
     parsed: dict[str, Any],
     validation_errors: list[PydanticErrorDiagnostic],
@@ -596,9 +609,15 @@ class GitHubModelsClient:
                 0 if diagnostic_mode else correction_token_reserve(applied_input_budget)
             ),
         )
+        diagnostic.initial_target_tokens = max(
+            1,
+            applied_input_budget - diagnostic.reserved_correction_tokens,
+        )
+        diagnostic.correction_target_tokens = applied_input_budget
         current_mode = request_mode
         calls = 0
         call_limit = 1 if diagnostic_mode else min(2, self.limiter.max_run_calls)
+        initial_minimized = False
         last_error = ModelPipelineError(
             FailureStage.REQUEST_BUILD,
             "model request was not completed",
@@ -642,15 +661,13 @@ class GitHubModelsClient:
                 schema_in_messages=current_mode == ModelRequestMode.JSON_ONLY,
                 variant=active_variant,
             )
-            if (
-                diagnostic.initial_estimated_tokens == 0
-                and not active_variant.is_validation_correction
-            ):
+            if not active_variant.is_validation_correction:
                 diagnostic.initial_estimated_tokens = diagnostic.estimated_input_tokens
             if active_variant.is_validation_correction:
                 diagnostic.correction_estimated_tokens = diagnostic.estimated_input_tokens
             diagnostic.compacted_context = diagnostic.compacted_context or (
-                using_compact or active_variant.compacted_context
+                active_variant.compacted_context
+                or bool(active_variant.removed_context_sections)
             )
             removed = [
                 *diagnostic.removed_context_sections,
@@ -659,14 +676,21 @@ class GitHubModelsClient:
             diagnostic.removed_context_sections = list(dict.fromkeys(removed))[:20]
             attempt_budget = applied_input_budget
             if calls == 0 and not active_variant.is_validation_correction:
-                attempt_budget = max(
-                    1,
-                    applied_input_budget - diagnostic.reserved_correction_tokens,
-                )
+                attempt_budget = diagnostic.initial_target_tokens
             if diagnostic.estimated_input_tokens > attempt_budget:
                 if compact_variant is not None and not using_compact:
                     active_variant = compact_variant
                     using_compact = True
+                    continue
+                if (
+                    not active_variant.is_validation_correction
+                    and not initial_minimized
+                    and active_variant.idea_context_ready
+                    and active_variant.existing_idea_candidate_count == 0
+                ):
+                    active_variant = self._minimal_initial_variant(active_variant)
+                    initial_minimized = True
+                    current_mode = ModelRequestMode.JSON_ONLY
                     continue
                 if active_variant.is_validation_correction:
                     active_variant = self._minimal_validation_correction_variant(active_variant)
@@ -697,7 +721,7 @@ class GitHubModelsClient:
                         *active_variant.removed_context_sections,
                     ]
                     diagnostic.removed_context_sections = list(dict.fromkeys(removed))[:20]
-                    if diagnostic.estimated_input_tokens <= applied_input_budget:
+                    if diagnostic.estimated_input_tokens <= diagnostic.correction_target_tokens:
                         continue
                 last_error = ModelPipelineError(
                     FailureStage.REQUEST_BUILD,
@@ -1078,6 +1102,105 @@ class GitHubModelsClient:
             is_validation_correction=True,
             compacted_context=variant.compacted_context,
             removed_context_sections=variant.removed_context_sections or [],
+        )
+
+    @staticmethod
+    def _minimal_initial_variant(variant: PromptVariant) -> PromptVariant:
+        payload = _latest_user_json(variant.messages)
+        problem = payload.get("active_problem")
+        compact_problem: dict[str, Any]
+        if isinstance(problem, dict):
+            compact_problem = {
+                "problem_id": problem.get("problem_id") or variant.active_problem_id,
+                "title": _short_value(problem.get("title"), max_chars=160),
+                "description": _short_value(problem.get("description"), max_chars=500),
+                "target_users": _short_value(problem.get("target_users", []), max_chars=160),
+                "evidence_ids": problem.get("evidence_ids")
+                or variant.allowed_evidence_ids,
+            }
+        else:
+            compact_problem = {
+                "problem_id": variant.active_problem_id,
+                "title": None,
+                "description": None,
+                "target_users": [],
+                "evidence_ids": variant.allowed_evidence_ids,
+            }
+        raw_records = payload.get("included_signal_records", [])
+        evidence_records = []
+        if isinstance(raw_records, list):
+            for record in raw_records[:8]:
+                if not isinstance(record, dict):
+                    continue
+                evidence_id = (
+                    record.get("signal_id")
+                    or record.get("evidence_id")
+                    or record.get("id")
+                )
+                evidence_records.append(
+                    {
+                        "evidence_id": evidence_id,
+                        "title": _short_value(record.get("title"), max_chars=120),
+                        "summary": _short_value(record.get("summary"), max_chars=280),
+                    }
+                )
+        if not evidence_records:
+            evidence_records = [
+                {"evidence_id": evidence_id, "summary": None}
+                for evidence_id in variant.allowed_evidence_ids[:8]
+            ]
+        compact_payload = {
+            "lifecycle_stage": "IDEA_EVALUATION",
+            "active_problem_id": variant.active_problem_id,
+            "active_problem": compact_problem,
+            "validated_evidence": evidence_records,
+            "required_action": "create_idea_candidates",
+            "allowed_evidence_ids": variant.allowed_evidence_ids[:20],
+            "output_rules": {
+                "candidate_count": "2..8",
+                "forbidden_fields": ["files", "state_transition"],
+                "candidate_evidence_ids": "Use only allowed_evidence_ids.",
+                "no_urls_or_metrics": True,
+            },
+        }
+        user_content = json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":"))
+        return PromptVariant(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Create IDEA_EVALUATION idea candidates as one JSON object. "
+                        "Use only create_idea_candidates. Do not include files or "
+                        "state_transition."
+                    ),
+                },
+                {"role": "user", "content": user_content},
+            ],
+            response_model=CreateIdeaCandidatesCorrectionEnvelope,
+            context_chars=len(user_content),
+            active_problem_id=variant.active_problem_id,
+            candidate_evidence_id_count=variant.candidate_evidence_id_count,
+            resolved_evidence_count=variant.resolved_evidence_count,
+            unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
+            new_signal_count=variant.new_signal_count,
+            problem_loaded=variant.problem_loaded,
+            problem_evidence_count=variant.problem_evidence_count,
+            existing_idea_candidate_count=variant.existing_idea_candidate_count,
+            idea_context_ready=variant.idea_context_ready,
+            included_signal_count=len(evidence_records),
+            excluded_signal_count=variant.excluded_signal_count,
+            allowed_evidence_ids=variant.allowed_evidence_ids,
+            compacted_context=True,
+            removed_context_sections=[
+                "mission",
+                "safety_constraints",
+                "full_signal_records",
+                "other_lifecycle_instructions",
+                "unused_action_type_schema",
+                "general_safety_policy_duplicates",
+                "validation_metadata",
+                "empty_existing_idea_candidates",
+            ],
         )
 
     @staticmethod
