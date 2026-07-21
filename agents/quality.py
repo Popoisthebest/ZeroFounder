@@ -65,6 +65,7 @@ AGENT_ALLOWED_PREFIXES = (
 )
 AGENT_ALLOWED_EXACT = {
     "company/state.json",
+    "company/checkpoints.json",
     "company/strategy.json",
     "company/metrics.json",
     "company/task-board.json",
