@@ -1,5 +1,5 @@
 {
-  "lifecycle_stage": "IDEA_EVALUATION",
+  "lifecycle_stage": "DISTRIBUTION_CHECK",
   "autonomy_level": 1,
   "active_problem_id": "problem-navigation-inefficiency",
   "selected_venture": null,
@@ -7,7 +7,7 @@
   "infrastructure_provider": "unselected",
   "sleep_mode": false,
   "consecutive_failures": 0,
-  "last_agent_run": "2026-07-21T01:52:15.108145Z",
+  "last_agent_run": "2026-07-21T12:23:23.671300Z",
   "paused_from": null,
   "validation_started_at": null,
   "deployed_at": null
