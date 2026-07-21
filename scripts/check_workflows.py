@@ -88,6 +88,7 @@ def main() -> int:
         "rejection_code",
         "rejection_reason",
         "rejected_files",
+        "allowed_files",
         "changed_files_count",
     }
     if not required_outputs.issubset(call_outputs):

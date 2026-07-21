@@ -19,6 +19,16 @@ def _rejected_files() -> list[str]:
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
+def _allowed_files() -> list[str]:
+    import json
+
+    try:
+        value = json.loads(os.getenv("ALLOWED_FILES", "[]"))
+    except json.JSONDecodeError:
+        return []
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pr", type=int, required=True)
@@ -36,6 +46,7 @@ def main() -> int:
         rejection_code=os.getenv("REJECTION_CODE", ""),
         rejection_reason=os.getenv("REJECTION_REASON", ""),
         rejected_files=_rejected_files(),
+        allowed_files=_allowed_files(),
         changed_files_count=int(os.getenv("CHANGED_FILES_COUNT", "0") or 0),
     )
     client.update_pull_request_body(args.pr, body)

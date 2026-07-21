@@ -19,6 +19,7 @@ def main() -> int:
 - 거부 코드: `{result.get('rejection_code') or '없음'}`
 - 거부 사유: {result.get('rejection_reason') or '없음'}
 - 거부 파일: {', '.join(result.get('rejected_files', [])) or '없음'}
+- 허용 파일: {', '.join(result.get('allowed_files', [])) or '없음'}
 - 변경 파일 수: {result.get('changed_files_count', 0)}
 - 실행 URL: {result['quality_run_url'] or '확인 불가'}
 

@@ -5,7 +5,10 @@ import json
 import os
 from pathlib import Path
 
-from agents.candidate_validator import validate_create_problem_candidate_content
+from agents.candidate_validator import (
+    validate_create_problem_candidate_content,
+    validate_validate_evidence_content,
+)
 from agents.github_client import GitHubAPIError, GitHubClient
 from agents.quality import (
     ChangeValidation,
@@ -71,6 +74,12 @@ def validate_candidate(
             candidate_root=candidate_root,
             contract=contract,
         )
+    elif contract.action_type == "validate_evidence":
+        contract = validate_validate_evidence_content(
+            control_root=control_root,
+            candidate_root=candidate_root,
+            contract=contract,
+        )
     return contract, verified_sha
 
 
@@ -81,6 +90,7 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
         "rejection_code": result.rejection_code,
         "rejection_reason": result.rejection_reason,
         "rejected_files": list(result.rejected_files),
+        "allowed_files": list(result.allowed_files),
         "changed_files_count": result.changed_files_count,
         "action_type": result.action_type,
         "problem_id": result.problem_id,
@@ -101,6 +111,11 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
             handle.write(
                 "rejected_files="
                 + json.dumps(payload["rejected_files"], ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
+            handle.write(
+                "allowed_files="
+                + json.dumps(payload["allowed_files"], ensure_ascii=False, separators=(",", ":"))
                 + "\n"
             )
 

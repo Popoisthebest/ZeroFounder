@@ -91,6 +91,10 @@ CREATE_PROBLEM_REQUIRED_EXACT = {
     "company/checkpoints.json",
     "company/state.json",
 }
+VALIDATE_EVIDENCE_ALLOWED_EXACT = (
+    "company/checkpoints.json",
+    "company/state.json",
+)
 PROBLEM_PATH = re.compile(
     r"^research/problems/(?P<problem_id>problem-[a-z0-9][a-z0-9._-]{0,100})\.json$"
 )
@@ -109,6 +113,7 @@ class ChangeValidation:
     changed_files_count: int
     action_type: str | None = None
     problem_id: str | None = None
+    allowed_files: tuple[str, ...] = ()
 
 
 def _change_result(
@@ -117,6 +122,7 @@ def _change_result(
     count: int,
     reason: str = "",
     files: list[str] | tuple[str, ...] = (),
+    allowed_files: list[str] | tuple[str, ...] = (),
     action_type: str | None = None,
     problem_id: str | None = None,
 ) -> ChangeValidation:
@@ -128,6 +134,7 @@ def _change_result(
         changed_files_count=count,
         action_type=action_type,
         problem_id=problem_id,
+        allowed_files=tuple(sorted(set(allowed_files))),
     )
 
 
@@ -202,6 +209,10 @@ def validate_changed_file_contract(
                 count=count,
                 reason="검증 가능한 문제 후보 JSON 경로가 정확히 하나여야 합니다.",
                 files=problem_paths,
+                allowed_files=[
+                    *CREATE_PROBLEM_REQUIRED_EXACT,
+                    "research/problems/<problem_id>.json",
+                ],
                 action_type=action_type,
             )
         expected = CREATE_PROBLEM_REQUIRED_EXACT | {valid_problem_paths[0]}
@@ -212,6 +223,7 @@ def validate_changed_file_contract(
                 count=count,
                 reason="문제 후보 생성은 정확히 세 파일만 변경할 수 있습니다.",
                 files=sorted(actual - expected),
+                allowed_files=sorted(expected),
                 action_type=action_type,
             )
         if actual != expected:
@@ -221,6 +233,7 @@ def validate_changed_file_contract(
                 count=count,
                 reason="문제 후보 생성 허용 목록과 변경 파일이 일치하지 않습니다.",
                 files=rejected,
+                allowed_files=sorted(expected),
                 action_type=action_type,
             )
         match = PROBLEM_PATH.fullmatch(valid_problem_paths[0])
@@ -229,6 +242,30 @@ def validate_changed_file_contract(
             count=count,
             action_type=action_type,
             problem_id=match.group("problem_id") if match else None,
+            allowed_files=sorted(expected),
+        )
+
+    if action_type == "validate_evidence":
+        expected = set(VALIDATE_EVIDENCE_ALLOWED_EXACT)
+        actual = set(normalized_files)
+        if actual != expected:
+            rejected = sorted(actual - expected)
+            missing = sorted(expected - actual)
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason=(
+                    "validate_evidence는 상태와 checkpoint 파일만 변경할 수 있습니다."
+                ),
+                files=[*rejected, *missing],
+                allowed_files=VALIDATE_EVIDENCE_ALLOWED_EXACT,
+                action_type=action_type,
+            )
+        return _change_result(
+            "valid",
+            count=count,
+            action_type=action_type,
+            allowed_files=VALIDATE_EVIDENCE_ALLOWED_EXACT,
         )
 
     rejected = [

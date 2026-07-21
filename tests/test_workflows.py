@@ -114,6 +114,7 @@ def test_reusable_quality_workflow_contract_and_exact_sha_checkout():
         "rejection_code",
         "rejection_reason",
         "rejected_files",
+        "allowed_files",
         "changed_files_count",
     }
 
@@ -232,6 +233,7 @@ def test_quality_result_is_recorded_after_failure_and_final_gate_is_present():
     assert "needs.quality-check.outputs.quality_run_url" in record_env["QUALITY_RUN_URL"]
     assert "needs.quality-check.outputs.rejection_code" in record_env["REJECTION_CODE"]
     assert "needs.quality-check.outputs.rejected_files" in record_env["REJECTED_FILES"]
+    assert "needs.quality-check.outputs.allowed_files" in record_env["ALLOWED_FILES"]
     assert next(step for step in record["steps"] if step.get("id") == "record")[
         "working-directory"
     ] == "control"

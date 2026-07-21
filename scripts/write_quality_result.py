@@ -15,6 +15,16 @@ def _rejected_files() -> list[str]:
     return [item for item in value if isinstance(item, str)]
 
 
+def _allowed_files() -> list[str]:
+    try:
+        value = json.loads(os.getenv("ALLOWED_FILES", "[]"))
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, str)]
+
+
 def main() -> int:
     target = Path(os.environ["QUALITY_RESULT_PATH"])
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -30,6 +40,7 @@ def main() -> int:
                 "rejection_code": os.getenv("REJECTION_CODE", ""),
                 "rejection_reason": os.getenv("REJECTION_REASON", ""),
                 "rejected_files": _rejected_files(),
+                "allowed_files": _allowed_files(),
                 "changed_files_count": int(os.getenv("CHANGED_FILES_COUNT", "0") or 0),
             },
             ensure_ascii=False,

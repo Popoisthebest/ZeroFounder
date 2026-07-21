@@ -35,6 +35,7 @@ def _reject(
         changed_files_count=contract.changed_files_count,
         action_type=contract.action_type,
         problem_id=contract.problem_id,
+        allowed_files=contract.allowed_files,
     )
 
 
@@ -44,6 +45,118 @@ def _monotonic_list(old: list[object], new: list[object]) -> bool:
 
 def _valid_optional_hash(value: str | None, pattern: re.Pattern[str]) -> bool:
     return value is None or bool(pattern.fullmatch(value))
+
+
+def _checkpoint_updated_with_one_idempotency_key_only(
+    old: RepositoryCheckpoint,
+    new: RepositoryCheckpoint,
+) -> bool:
+    old_stable = old.model_dump(mode="json", exclude={"idempotency_keys", "updated_at"})
+    new_stable = new.model_dump(mode="json", exclude={"idempotency_keys", "updated_at"})
+    return all(
+        (
+            old_stable == new_stable,
+            new.idempotency_keys[:-1] == old.idempotency_keys,
+            len(new.idempotency_keys) == len(old.idempotency_keys) + 1,
+            len(new.idempotency_keys) == len(set(new.idempotency_keys)),
+            all(HEX_64.fullmatch(value) for value in new.idempotency_keys),
+            new.updated_at is not None,
+            old.updated_at is None
+            or (new.updated_at is not None and new.updated_at >= old.updated_at),
+        )
+    )
+
+
+def validate_validate_evidence_content(
+    *,
+    control_root: Path,
+    candidate_root: Path,
+    contract: ChangeValidation,
+) -> ChangeValidation:
+    if contract.action_type != "validate_evidence":
+        return _reject(
+            contract,
+            "disallowed_file",
+            "branch 행동이 validate_evidence가 아닙니다.",
+            [],
+        )
+    checkpoint_path = Path("company/checkpoints.json")
+    state_path = Path("company/state.json")
+    required = [checkpoint_path, state_path]
+    if any((candidate_root / path).is_symlink() for path in required):
+        return _reject(
+            contract,
+            "disallowed_file",
+            "검증 대상 파일에 심볼릭 링크가 포함됐습니다.",
+            [path.as_posix() for path in required if (candidate_root / path).is_symlink()],
+        )
+    try:
+        old_state = CompanyState.model_validate_json(
+            (control_root / state_path).read_text(encoding="utf-8")
+        )
+        new_state = CompanyState.model_validate_json(
+            (candidate_root / state_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return _reject(
+            contract,
+            "invalid_state_change",
+            "회사 상태 JSON 구조를 안전하게 검증할 수 없습니다.",
+            [state_path.as_posix()],
+        )
+    state_mutable_fields = {"lifecycle_stage", "last_agent_run"}
+    old_stable = old_state.model_dump(mode="json", exclude=state_mutable_fields)
+    new_stable = new_state.model_dump(mode="json", exclude=state_mutable_fields)
+    if (
+        old_state.lifecycle_stage != LifecycleStage.EVIDENCE_VALIDATION
+        or new_state.lifecycle_stage != LifecycleStage.IDEA_EVALUATION
+        or old_state.active_problem_id != new_state.active_problem_id
+        or new_state.last_agent_run is None
+        or (
+            old_state.last_agent_run is not None
+            and new_state.last_agent_run < old_state.last_agent_run
+        )
+        or old_stable != new_stable
+    ):
+        return _reject(
+            contract,
+            "invalid_state_change",
+            "validate_evidence에 허용된 상태 전환 범위를 벗어났습니다.",
+            [state_path.as_posix()],
+        )
+
+    try:
+        old_checkpoint = RepositoryCheckpoint.model_validate_json(
+            (control_root / checkpoint_path).read_text(encoding="utf-8")
+        )
+        new_checkpoint = RepositoryCheckpoint.model_validate_json(
+            (candidate_root / checkpoint_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            "checkpoint JSON 구조를 안전하게 검증할 수 없습니다.",
+            [checkpoint_path.as_posix()],
+        )
+    if not _checkpoint_updated_with_one_idempotency_key_only(old_checkpoint, new_checkpoint):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            (
+                "validate_evidence checkpoint는 현재 실행 idempotency key와 "
+                "updated_at만 변경할 수 있습니다."
+            ),
+            [checkpoint_path.as_posix()],
+        )
+    if abs(new_checkpoint.updated_at - new_state.last_agent_run) > timedelta(minutes=5):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            "checkpoint와 상태 변경 시각이 동일 실행으로 보기 어렵습니다.",
+            [checkpoint_path.as_posix(), state_path.as_posix()],
+        )
+    return contract
 
 
 def _checkpoint_fingerprint_is_valid(

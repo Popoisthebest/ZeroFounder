@@ -438,6 +438,7 @@ jobs:
           REJECTION_CODE: ${{ needs.quality-check.outputs.rejection_code }}
           REJECTION_REASON: ${{ needs.quality-check.outputs.rejection_reason }}
           REJECTED_FILES: ${{ needs.quality-check.outputs.rejected_files }}
+          ALLOWED_FILES: ${{ needs.quality-check.outputs.allowed_files }}
           CHANGED_FILES_COUNT: ${{ needs.quality-check.outputs.changed_files_count }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"

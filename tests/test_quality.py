@@ -117,6 +117,39 @@ def test_pr_one_create_problem_candidate_file_contract_is_valid():
     assert result.status == "valid"
     assert result.problem_id == "problem-navigation-inefficiency"
     assert result.changed_files_count == 3
+    assert result.allowed_files == (
+        "company/checkpoints.json",
+        "company/state.json",
+        "research/problems/problem-navigation-inefficiency.json",
+    )
+
+
+def test_validate_evidence_file_contract_allows_only_state_and_checkpoint():
+    result = validate_changed_file_contract(
+        "agent/29757293893-validate-evidence",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "company/state.json", "status": "modified"},
+        ],
+    )
+    assert result.status == "valid"
+    assert result.action_type == "validate_evidence"
+    assert result.allowed_files == ("company/checkpoints.json", "company/state.json")
+
+    extra = validate_changed_file_contract(
+        "agent/29757293893-validate-evidence",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "company/state.json", "status": "modified"},
+            {
+                "filename": "research/problems/problem-navigation-inefficiency.json",
+                "status": "added",
+            },
+        ],
+    )
+    assert extra.status == "disallowed_file"
+    assert extra.rejected_files == ("research/problems/problem-navigation-inefficiency.json",)
+    assert extra.allowed_files == ("company/checkpoints.json", "company/state.json")
 
 
 def test_create_problem_candidate_rejects_any_extra_file():
@@ -260,11 +293,13 @@ def test_trusted_aggregator_preserves_safe_rejection_diagnostics(tmp_path: Path)
         rejection_code="invalid_checkpoint_change",
         rejection_reason="checkpoint 변경 검증에 실패했습니다.",
         rejected_files=["company/checkpoints.json"],
+        allowed_files=["company/checkpoints.json", "company/state.json"],
         changed_files_count=3,
     )
     assert result["validation_status"] == "invalid_checkpoint_change"
     assert result["rejection_code"] == "invalid_checkpoint_change"
     assert result["rejected_files"] == ["company/checkpoints.json"]
+    assert result["allowed_files"] == ["company/checkpoints.json", "company/state.json"]
     assert result["changed_files_count"] == 3
 
 
@@ -278,6 +313,7 @@ def test_quality_status_body_is_korean_and_keeps_machine_status():
         rejection_code="invalid_state_change",
         rejection_reason="상태 변경이 허용 범위를 벗어났습니다.",
         rejected_files=["company/state.json"],
+        allowed_files=["company/checkpoints.json", "company/state.json"],
         changed_files_count=3,
     )
     assert "## 품질검사 상태" in body
@@ -286,6 +322,7 @@ def test_quality_status_body_is_korean_and_keeps_machine_status():
     assert "pytest" in body
     assert "invalid_state_change" in body
     assert "company/state.json" in body
+    assert "company/checkpoints.json" in body
 
 
 def test_quality_result_json_contains_only_safe_rejection_diagnostics(
@@ -301,6 +338,7 @@ def test_quality_result_json_contains_only_safe_rejection_diagnostics(
         "REJECTION_CODE": "disallowed_file",
         "REJECTION_REASON": "허용되지 않은 파일이 포함됐습니다.",
         "REJECTED_FILES": '["scripts/unsafe.py"]',
+        "ALLOWED_FILES": '["company/checkpoints.json","company/state.json"]',
         "CHANGED_FILES_COUNT": "4",
     }
     for key, value in values.items():
@@ -309,6 +347,7 @@ def test_quality_result_json_contains_only_safe_rejection_diagnostics(
     result = json.loads(target.read_text(encoding="utf-8"))
     assert result["validation_status"] == "disallowed_file"
     assert result["rejected_files"] == ["scripts/unsafe.py"]
+    assert result["allowed_files"] == ["company/checkpoints.json", "company/state.json"]
     assert result["changed_files_count"] == 4
     assert set(result) == {
         "validation_status",
@@ -318,5 +357,6 @@ def test_quality_result_json_contains_only_safe_rejection_diagnostics(
         "rejection_code",
         "rejection_reason",
         "rejected_files",
+        "allowed_files",
         "changed_files_count",
     }

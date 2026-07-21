@@ -33,6 +33,7 @@ def render_status_body(
     rejection_code: str = "",
     rejection_reason: str = "",
     rejected_files: list[str] | None = None,
+    allowed_files: list[str] | None = None,
     changed_files_count: int = 0,
 ) -> str:
     if status not in STATUS_LABELS:
@@ -48,6 +49,7 @@ def render_status_body(
         f"- 거부 코드: `{rejection_code or '없음'}`",
         f"- 거부 사유: {rejection_reason or '없음'}",
         f"- 거부 파일: {', '.join(rejected_files or []) or '없음'}",
+        f"- 허용 파일: {', '.join(allowed_files or []) or '없음'}",
         f"- 변경 파일 수: {changed_files_count}",
         f"- 검사 실행: {run_url or '확인 불가'}",
         "",
@@ -70,6 +72,7 @@ def main() -> int:
     parser.add_argument("--rejection-code", default="")
     parser.add_argument("--rejection-reason", default="")
     parser.add_argument("--rejected-file", action="append", default=[])
+    parser.add_argument("--allowed-file", action="append", default=[])
     parser.add_argument("--changed-files-count", type=int, default=0)
     args = parser.parse_args()
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
@@ -84,6 +87,7 @@ def main() -> int:
         rejection_code=args.rejection_code,
         rejection_reason=args.rejection_reason,
         rejected_files=args.rejected_file,
+        allowed_files=args.allowed_file,
         changed_files_count=args.changed_files_count,
     )
     client.update_pull_request_body(args.pr, updated)

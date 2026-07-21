@@ -38,6 +38,9 @@ on:
       rejected_files:
         description: 거부된 파일 경로 JSON 배열
         value: ${{ jobs.finalize.outputs.rejected_files }}
+      allowed_files:
+        description: 허용된 파일 경로 JSON 배열
+        value: ${{ jobs.finalize.outputs.allowed_files }}
       changed_files_count:
         description: PR 변경 파일 수
         value: ${{ jobs.finalize.outputs.changed_files_count }}
@@ -72,6 +75,7 @@ jobs:
       rejection_code: ${{ steps.verify.outputs.rejection_code }}
       rejection_reason: ${{ steps.verify.outputs.rejection_reason }}
       rejected_files: ${{ steps.verify.outputs.rejected_files }}
+      allowed_files: ${{ '[]' }}
       changed_files_count: ${{ steps.verify.outputs.changed_files_count }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
@@ -209,6 +213,7 @@ jobs:
       rejection_code: ${{ steps.candidate_validation.outputs.rejection_code }}
       rejection_reason: ${{ steps.candidate_validation.outputs.rejection_reason }}
       rejected_files: ${{ steps.candidate_validation.outputs.rejected_files }}
+      allowed_files: ${{ steps.candidate_validation.outputs.allowed_files }}
       changed_files_count: ${{ steps.candidate_validation.outputs.changed_files_count }}
       workflow_result: ${{ steps.workflow.outcome }}
       security_result: ${{ steps.security.outcome }}
@@ -289,6 +294,7 @@ jobs:
       rejection_code: ${{ steps.result.outputs.rejection_code }}
       rejection_reason: ${{ steps.result.outputs.rejection_reason }}
       rejected_files: ${{ steps.result.outputs.rejected_files }}
+      allowed_files: ${{ steps.result.outputs.allowed_files }}
       changed_files_count: ${{ steps.result.outputs.changed_files_count }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
@@ -332,6 +338,7 @@ jobs:
           REJECTION_CODE: ${{ needs.policy.outputs.rejection_code || needs.verify-head.outputs.rejection_code }}
           REJECTION_REASON: ${{ needs.policy.outputs.rejection_reason || needs.verify-head.outputs.rejection_reason }}
           REJECTED_FILES: ${{ needs.policy.outputs.rejected_files || needs.verify-head.outputs.rejected_files || '[]' }}
+          ALLOWED_FILES: ${{ needs.policy.outputs.allowed_files || needs.verify-head.outputs.allowed_files || '[]' }}
           CHANGED_FILES_COUNT: ${{ needs.policy.outputs.changed_files_count || needs.verify-head.outputs.changed_files_count || '0' }}
         run: >-
           python -m scripts.summarize_quality_checks
@@ -345,6 +352,7 @@ jobs:
           --rejection-code "$REJECTION_CODE"
           --rejection-reason "$REJECTION_REASON"
           --rejected-files "$REJECTED_FILES"
+          --allowed-files "$ALLOWED_FILES"
           --changed-files-count "$CHANGED_FILES_COUNT"
 
   manual-result:
@@ -378,6 +386,7 @@ jobs:
           REJECTION_CODE: ${{ needs.finalize.outputs.rejection_code }}
           REJECTION_REASON: ${{ needs.finalize.outputs.rejection_reason }}
           REJECTED_FILES: ${{ needs.finalize.outputs.rejected_files }}
+          ALLOWED_FILES: ${{ needs.finalize.outputs.allowed_files }}
           CHANGED_FILES_COUNT: ${{ needs.finalize.outputs.changed_files_count }}
           QUALITY_RESULT_PATH: ${{ github.workspace }}/runtime/quality-result.json
         run: python -m scripts.write_quality_result
@@ -427,6 +436,7 @@ jobs:
           REJECTION_CODE: ${{ needs.finalize.outputs.rejection_code }}
           REJECTION_REASON: ${{ needs.finalize.outputs.rejection_reason }}
           REJECTED_FILES: ${{ needs.finalize.outputs.rejected_files }}
+          ALLOWED_FILES: ${{ needs.finalize.outputs.allowed_files }}
           CHANGED_FILES_COUNT: ${{ needs.finalize.outputs.changed_files_count }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"

@@ -36,6 +36,7 @@ def aggregate_quality_results(
     rejection_code: str = "",
     rejection_reason: str = "",
     rejected_files: list[str] | None = None,
+    allowed_files: list[str] | None = None,
     changed_files_count: int = 0,
 ) -> dict[str, object]:
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -61,6 +62,7 @@ def aggregate_quality_results(
         "rejection_code": rejection_code,
         "rejection_reason": rejection_reason,
         "rejected_files": rejected_files or [],
+        "allowed_files": allowed_files or [],
         "changed_files_count": changed_files_count,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,7 @@ def main() -> int:
     parser.add_argument("--rejection-code", default="")
     parser.add_argument("--rejection-reason", default="")
     parser.add_argument("--rejected-files", default="[]")
+    parser.add_argument("--allowed-files", default="[]")
     parser.add_argument("--changed-files-count", type=int, default=0)
     args = parser.parse_args()
     try:
@@ -90,6 +93,14 @@ def main() -> int:
         isinstance(item, str) for item in rejected_files
     ):
         rejected_files = []
+    try:
+        allowed_files = json.loads(args.allowed_files)
+    except json.JSONDecodeError:
+        allowed_files = []
+    if not isinstance(allowed_files, list) or not all(
+        isinstance(item, str) for item in allowed_files
+    ):
+        allowed_files = []
     result = aggregate_quality_results(
         results_dir=args.results_dir,
         output=args.output,
@@ -102,6 +113,7 @@ def main() -> int:
         rejection_code=args.rejection_code,
         rejection_reason=args.rejection_reason,
         rejected_files=rejected_files,
+        allowed_files=allowed_files,
         changed_files_count=args.changed_files_count,
     )
     github_output = os.getenv("GITHUB_OUTPUT")
@@ -123,9 +135,15 @@ def main() -> int:
                 + json.dumps(result["rejected_files"], ensure_ascii=False, separators=(",", ":"))
                 + "\n"
             )
+            handle.write(
+                "allowed_files="
+                + json.dumps(result["allowed_files"], ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
     if summary_path:
         rejected_text = ", ".join(rejected_files) if rejected_files else "없음"
+        allowed_text = ", ".join(allowed_files) if allowed_files else "없음"
         with Path(summary_path).open("a", encoding="utf-8") as handle:
             handle.write(
                 "## 품질검사 검증 결과\n\n"
@@ -133,6 +151,7 @@ def main() -> int:
                 f"- 거부 코드: `{result['rejection_code'] or '없음'}`\n"
                 f"- 거부 사유: {result['rejection_reason'] or '없음'}\n"
                 f"- 거부 파일: {rejected_text}\n"
+                f"- 허용 파일: {allowed_text}\n"
                 f"- 변경 파일 수: {result['changed_files_count']}\n"
                 f"- 검증 SHA: `{result['verified_sha'] or '없음'}`\n"
             )

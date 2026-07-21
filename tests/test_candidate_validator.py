@@ -5,7 +5,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from agents.bootstrap import initial_company_state
-from agents.candidate_validator import validate_create_problem_candidate_content
+from agents.candidate_validator import (
+    validate_create_problem_candidate_content,
+    validate_validate_evidence_content,
+)
 from agents.quality import ChangeValidation, validate_changed_file_contract
 from agents.schemas import (
     LifecycleStage,
@@ -17,6 +20,7 @@ from agents.schemas import (
 
 RUN_AT = datetime(2026, 7, 20, 15, 56, 5, tzinfo=UTC)
 BRANCH = "agent/29757293892-create-problem-candidate"
+VALIDATE_BRANCH = "agent/29757293893-validate-evidence"
 PROBLEM_ID = "problem-navigation-inefficiency"
 
 
@@ -134,6 +138,53 @@ def _prepare_candidate(tmp_path: Path) -> tuple[Path, Path, ChangeValidation]:
     return control, candidate, contract
 
 
+def _prepare_validate_evidence_candidate(
+    tmp_path: Path,
+) -> tuple[Path, Path, ChangeValidation]:
+    control = tmp_path / "control"
+    candidate = tmp_path / "candidate"
+    (control / "company").mkdir(parents=True)
+    state = initial_company_state().model_copy(
+        update={
+            "lifecycle_stage": LifecycleStage.EVIDENCE_VALIDATION,
+            "active_problem_id": PROBLEM_ID,
+            "last_agent_run": datetime(2026, 7, 20, 12, 0, tzinfo=UTC),
+        }
+    )
+    (control / "company/state.json").write_text(
+        state.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    checkpoint = RepositoryCheckpoint(idempotency_keys=["a" * 64])
+    (control / "company/checkpoints.json").write_text(
+        checkpoint.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    shutil.copytree(control, candidate)
+
+    updated_state = state.model_copy(
+        update={
+            "lifecycle_stage": LifecycleStage.IDEA_EVALUATION,
+            "last_agent_run": RUN_AT,
+        }
+    )
+    (candidate / "company/state.json").write_text(
+        updated_state.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    updated_checkpoint = checkpoint.model_copy(
+        update={"idempotency_keys": ["a" * 64, "b" * 64], "updated_at": RUN_AT}
+    )
+    (candidate / "company/checkpoints.json").write_text(
+        updated_checkpoint.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    contract = validate_changed_file_contract(
+        VALIDATE_BRANCH,
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "company/state.json", "status": "modified"},
+        ],
+    )
+    return control, candidate, contract
+
+
 def test_pr_one_candidate_content_contract_is_valid(tmp_path: Path):
     control, candidate, contract = _prepare_candidate(tmp_path)
     result = validate_create_problem_candidate_content(
@@ -187,3 +238,51 @@ def test_create_problem_candidate_rejects_problem_id_or_evidence_forgery(tmp_pat
     )
     assert result.status == "invalid_problem_path"
     assert result.rejected_files == (f"research/problems/{PROBLEM_ID}.json",)
+
+
+def test_validate_evidence_content_contract_is_valid_for_state_and_checkpoint_only(
+    tmp_path: Path,
+):
+    control, candidate, contract = _prepare_validate_evidence_candidate(tmp_path)
+
+    result = validate_validate_evidence_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+
+    assert result.status == "valid"
+    assert result.changed_files_count == 2
+    assert result.allowed_files == ("company/checkpoints.json", "company/state.json")
+
+
+def test_validate_evidence_rejects_active_problem_or_checkpoint_record_changes(
+    tmp_path: Path,
+):
+    control, candidate, contract = _prepare_validate_evidence_candidate(tmp_path)
+    state_path = candidate / "company/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["active_problem_id"] = "problem-other"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = validate_validate_evidence_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_state_change"
+    assert result.rejected_files == ("company/state.json",)
+
+    control, candidate, contract = _prepare_validate_evidence_candidate(tmp_path / "checkpoint")
+    checkpoint_path = candidate / "company/checkpoints.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["processed_issue_ids"] = [123]
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    result = validate_validate_evidence_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_checkpoint_change"
+    assert result.rejected_files == ("company/checkpoints.json",)
