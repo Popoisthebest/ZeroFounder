@@ -110,17 +110,18 @@ def test_create_problem_candidate_applies_file_and_exact_state_transition(tmp_pa
 
     state = CompanyState.model_validate_json((tmp_path / "company/state.json").read_text())
     assert state.lifecycle_stage == LifecycleStage.EVIDENCE_VALIDATION
+    assert state.active_problem_id == "problem-001"
     assert state.selected_venture is None
     assert state.last_agent_run == APPLIED_AT
     unchanged = {
         key: value
         for key, value in state.model_dump(mode="json").items()
-        if key not in {"lifecycle_stage", "last_agent_run"}
+        if key not in {"lifecycle_stage", "last_agent_run", "active_problem_id"}
     }
     initial_unchanged = {
         key: value
         for key, value in initial.model_dump(mode="json").items()
-        if key not in {"lifecycle_stage", "last_agent_run"}
+        if key not in {"lifecycle_stage", "last_agent_run", "active_problem_id"}
     }
     assert unchanged == initial_unchanged
 

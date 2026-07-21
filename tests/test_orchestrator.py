@@ -1,12 +1,18 @@
 import json
 from pathlib import Path
 
+import agents.orchestrator as orchestrator
 from agents.context_builder import build_context
 from agents.orchestrator import build_model_instruction, validate_model_action
 from agents.schemas import (
     ActionEnvelope,
     ActionRejectionCode,
     CompanyState,
+    LifecycleStage,
+    ModelCallResult,
+    ModelInferenceDiagnostic,
+    ModelRequestMode,
+    ModelSelection,
     PreflightDecision,
 )
 from scripts.write_model_summary import render_summary
@@ -173,6 +179,11 @@ def test_job_summary_masks_tokens_and_omits_model_text():
         "estimated_input_tokens",
         "selected_model_max_input_tokens",
         "applied_input_budget",
+        "active_problem_id",
+        "candidate_evidence_id_count",
+        "resolved_evidence_count",
+        "unresolved_evidence_ids",
+        "new_signal_count",
         "included_signal_count",
         "excluded_signal_count",
         "failure_stage",
@@ -180,3 +191,92 @@ def test_job_summary_masks_tokens_and_omits_model_text():
         "pydantic_validation_error_paths",
     }:
         assert f"| {field} |" in summary
+
+
+def test_run_model_diagnostics_include_evidence_validation_context(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _write_strategy(tmp_path)
+    _write_signals(tmp_path, 2)
+    (tmp_path / "agents/prompts").mkdir(parents=True)
+    (tmp_path / "agents/prompts/core.md").write_text("Return JSON.")
+    (tmp_path / "company/state.json").write_text(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.EVIDENCE_VALIDATION,
+            active_problem_id="problem-001",
+        ).model_dump_json()
+    )
+    (tmp_path / "research/problems").mkdir(parents=True)
+    problem = {
+        "problem_id": "problem-001",
+        "title": "Repeated manual navigation",
+        "target_users": ["operators"],
+        "description": "Operators repeatedly navigate long lists manually.",
+        "current_workaround": "They scroll and search by hand.",
+        "evidence_ids": ["signal-000"],
+        "evidence": [
+            {
+                "evidence_id": "signal-000",
+                "source_type": "rss",
+                "url": "https://example.test/signal-000",
+                "summary": "A repeated manual workflow problem.",
+            }
+        ],
+        "frequency_score": 5,
+        "severity_score": 5,
+        "buildability_score": 7,
+        "confidence": 0.7,
+    }
+    (tmp_path / "research/problems/problem-001.json").write_text(json.dumps(problem))
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, token, limiter):
+            pass
+
+        def catalog(self):
+            return [{"id": "fake/model"}]
+
+        def select_chat_model(self, catalog, *, required_input_tokens):
+            return ModelSelection(
+                selected_model="fake/model",
+                request_mode=ModelRequestMode.JSON_ONLY,
+                max_input_tokens=8000,
+                applied_input_budget=6000,
+            )
+
+        def chat_action(self, **kwargs):
+            captured.update(kwargs)
+            diagnostic = ModelInferenceDiagnostic(
+                active_problem_id=kwargs["active_problem_id"],
+                candidate_evidence_id_count=kwargs["candidate_evidence_id_count"],
+                resolved_evidence_count=kwargs["resolved_evidence_count"],
+                unresolved_evidence_ids=kwargs["unresolved_evidence_ids"],
+                new_signal_count=kwargs["new_signal_count"],
+                included_signal_count=kwargs["included_signal_count"],
+            )
+            return ModelCallResult(
+                action=_action(
+                    "validate_evidence",
+                    evidence_ids=["signal-000"],
+                    state_transition={
+                        "from": "EVIDENCE_VALIDATION",
+                        "to": "IDEA_EVALUATION",
+                    },
+                ),
+                diagnostic=diagnostic,
+            )
+
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeClient)
+
+    outcome = orchestrator.run_model(tmp_path, _decision(["signal-000", "signal-001"]))
+
+    assert outcome.diagnostic.accepted
+    assert captured["active_problem_id"] == "problem-001"
+    assert captured["candidate_evidence_id_count"] == 1
+    assert captured["resolved_evidence_count"] == 1
+    assert captured["unresolved_evidence_ids"] == []
+    assert captured["new_signal_count"] == 2
+    assert captured["included_signal_count"] == 2

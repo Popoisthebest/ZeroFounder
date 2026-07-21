@@ -22,7 +22,7 @@ from agents.lifecycle import (
     validate_action_transition,
 )
 from agents.preflight import build_preflight_decision, usage_allows_run
-from agents.safety import validate_evidence_references
+from agents.safety import load_evidence_index, validate_evidence_references
 from agents.schemas import (
     ActionEnvelope,
     ActionRejectionCode,
@@ -245,6 +245,38 @@ def build_model_instruction(
             ActionType.WRITE_REPORT.value: "omit state_transition",
             ActionType.NO_OP.value: "state_transition is forbidden",
         }
+    elif state.lifecycle_stage.value == "EVIDENCE_VALIDATION":
+        evidence_context = build_context_bundle(
+            root,
+            lifecycle_stage=state.lifecycle_stage,
+            compact=compact,
+            max_chars=1000,
+            new_signal_ids=decision.new_signal_ids if decision else [],
+        )
+        preferred = [
+            ActionType.VALIDATE_EVIDENCE,
+            ActionType.WRITE_REPORT,
+            ActionType.NO_OP,
+        ]
+        if evidence_context.resolved_evidence_count > 0:
+            guidance = (
+                "Validate the active problem candidate using the supplied stored evidence "
+                "records. new_signal_ids are supplemental only; do not ignore existing "
+                "candidate evidence when no new signals were collected."
+            )
+        else:
+            guidance = (
+                "Do not hide missing stored evidence as no_op. If evidence records cannot be "
+                "resolved, return a clear validation outcome grounded in unresolved_evidence_ids."
+            )
+        transition_policy = {
+            ActionType.VALIDATE_EVIDENCE.value: (
+                "omit it, keep EVIDENCE_VALIDATION, or transition EVIDENCE_VALIDATION to "
+                "IDEA_EVALUATION"
+            ),
+            ActionType.WRITE_REPORT.value: "omit state_transition",
+            ActionType.NO_OP.value: "state_transition is forbidden",
+        }
     payload = {
         "orchestration_policy": {
             "operating_language": operating_language(),
@@ -264,6 +296,17 @@ def build_model_instruction(
             "state_transition_policy": transition_policy,
         }
     }
+    if state.lifecycle_stage.value == "EVIDENCE_VALIDATION":
+        payload["orchestration_policy"]["active_problem_id"] = evidence_context.active_problem_id
+        payload["orchestration_policy"]["candidate_evidence_id_count"] = (
+            evidence_context.candidate_evidence_id_count
+        )
+        payload["orchestration_policy"]["resolved_evidence_count"] = (
+            evidence_context.resolved_evidence_count
+        )
+        payload["orchestration_policy"]["unresolved_evidence_ids"] = (
+            evidence_context.unresolved_evidence_ids or []
+        )
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -342,10 +385,26 @@ def validate_model_action(
     try:
         validate_evidence_references(action, root)
     except ValueError:
+        missing = [
+            evidence_id
+            for evidence_id in action.evidence_ids
+            if evidence_id not in load_evidence_index(root)
+        ]
+        if missing and inference is None:
+            inference = ModelInferenceDiagnostic()
+        if missing and inference is not None:
+            inference = inference.model_copy(
+                update={"unresolved_evidence_ids": sorted(set(missing))}
+            )
         return _rejected_outcome(
             state,
             code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
-            reason="one or more evidence_ids do not exist in stored signal records",
+            reason=(
+                "missing_evidence_record: one or more evidence_ids do not exist in "
+                f"stored signal records: {', '.join(missing)}"
+                if missing
+                else "one or more evidence_ids do not exist in stored signal records"
+            ),
             original_action_type=action.action_type,
             inference=inference,
             failure_stage=FailureStage.LIFECYCLE_VALIDATION,
@@ -420,13 +479,39 @@ def run_model(
             lifecycle_stage=state.lifecycle_stage,
             compact=False,
             max_chars=max_context_chars,
+            new_signal_ids=decision.new_signal_ids if decision else [],
         )
         compact_context = build_context_bundle(
             root,
             lifecycle_stage=state.lifecycle_stage,
             compact=True,
             max_chars=max(1000, max_context_chars // 2),
+            new_signal_ids=decision.new_signal_ids if decision else [],
         )
+        if (
+            state.lifecycle_stage.value == "EVIDENCE_VALIDATION"
+            and context.candidate_evidence_id_count > 0
+            and context.resolved_evidence_count == 0
+        ):
+            inference = ModelInferenceDiagnostic(
+                active_problem_id=context.active_problem_id,
+                candidate_evidence_id_count=context.candidate_evidence_id_count,
+                resolved_evidence_count=context.resolved_evidence_count,
+                unresolved_evidence_ids=context.unresolved_evidence_ids or [],
+                new_signal_count=context.new_signal_count,
+                included_signal_count=context.included_signal_count,
+                excluded_signal_count=context.excluded_signal_count,
+            )
+            return _rejected_outcome(
+                state,
+                code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
+                reason=(
+                    "missing_evidence_record: active problem evidence_ids could not be "
+                    "resolved from stored signal records"
+                ),
+                inference=inference,
+                failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+            )
         instruction = build_model_instruction(root, state, decision)
         compact_instruction = build_model_instruction(
             root, state, decision, compact=True
@@ -453,6 +538,11 @@ def run_model(
             context_chars=len(compact_context.content),
             included_signal_count=compact_context.included_signal_count,
             excluded_signal_count=compact_context.excluded_signal_count,
+            active_problem_id=compact_context.active_problem_id,
+            candidate_evidence_id_count=compact_context.candidate_evidence_id_count,
+            resolved_evidence_count=compact_context.resolved_evidence_count,
+            unresolved_evidence_ids=compact_context.unresolved_evidence_ids or [],
+            new_signal_count=compact_context.new_signal_count,
         )
         context_chars = len(context.content)
         included_signal_count = context.included_signal_count
@@ -488,6 +578,15 @@ def run_model(
         context_chars=context_chars,
         included_signal_count=included_signal_count,
         excluded_signal_count=excluded_signal_count,
+        active_problem_id=context.active_problem_id if not diagnostic_mode else None,
+        candidate_evidence_id_count=(
+            context.candidate_evidence_id_count if not diagnostic_mode else 0
+        ),
+        resolved_evidence_count=context.resolved_evidence_count if not diagnostic_mode else 0,
+        unresolved_evidence_ids=(
+            (context.unresolved_evidence_ids or []) if not diagnostic_mode else []
+        ),
+        new_signal_count=context.new_signal_count if not diagnostic_mode else 0,
         model_max_input_tokens=selection.max_input_tokens,
         applied_input_budget=selection.applied_input_budget,
     )

@@ -1,6 +1,7 @@
 {
   "lifecycle_stage": "EVIDENCE_VALIDATION",
   "autonomy_level": 1,
+  "active_problem_id": "problem-navigation-inefficiency",
   "selected_venture": null,
   "active_experiment": null,
   "infrastructure_provider": "unselected",

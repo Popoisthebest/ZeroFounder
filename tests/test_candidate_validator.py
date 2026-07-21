@@ -79,6 +79,7 @@ def _prepare_candidate(tmp_path: Path) -> tuple[Path, Path, ChangeValidation]:
     state = initial_company_state().model_copy(
         update={
             "lifecycle_stage": LifecycleStage.EVIDENCE_VALIDATION,
+            "active_problem_id": PROBLEM_ID,
             "last_agent_run": RUN_AT,
         }
     )

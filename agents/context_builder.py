@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from agents.schemas import CompanyState, LifecycleStage
+from agents.safety import load_evidence_index
+from agents.schemas import CompanyState, LifecycleStage, MarketSignal, ProblemCandidate
 from agents.signal_context import build_discovery_signal_context
 
 
@@ -14,6 +15,11 @@ class ContextBundle:
     content: str
     included_signal_count: int = 0
     excluded_signal_count: int = 0
+    active_problem_id: str | None = None
+    candidate_evidence_id_count: int = 0
+    resolved_evidence_count: int = 0
+    unresolved_evidence_ids: list[str] | None = None
+    new_signal_count: int = 0
 
 
 def _read(path: Path, limit: int) -> str:
@@ -66,6 +72,62 @@ def _fit_payload(payload: dict[str, Any], max_chars: int) -> str:
     return json.dumps(minimal, ensure_ascii=False, separators=(",", ":"))
 
 
+def _ordered_unique(values: list[str] | tuple[str, ...]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _signal_payload(evidence_id: str, record: dict[str, Any], *, compact: bool) -> dict[str, Any]:
+    try:
+        signal = MarketSignal.model_validate(record)
+        return {
+            "signal_id": signal.signal_id,
+            "title_or_summary": (signal.korean_title or signal.title)[: (90 if compact else 180)],
+            "summary": (signal.korean_summary or signal.summary)[: (240 if compact else 500)],
+            "source_type": signal.source_type,
+            "url": signal.url,
+            "published_at": (signal.published_at or signal.collected_at).isoformat(),
+            "original_language": signal.original_language,
+            "market_region": signal.market_region,
+        }
+    except ValueError:
+        return {
+            "signal_id": evidence_id,
+            "title_or_summary": str(record.get("title") or evidence_id)[: (90 if compact else 180)],
+            "summary": str(record.get("summary") or "")[: (240 if compact else 500)],
+            "source_type": str(record.get("source_type") or "unknown"),
+            "url": str(record.get("url") or record.get("source_url") or ""),
+        }
+
+
+def _active_problem_context(
+    root: Path,
+) -> tuple[str | None, ProblemCandidate | None, list[str]]:
+    state_path = root / "company/state.json"
+    if not state_path.exists():
+        return None, None, []
+    try:
+        state = CompanyState.model_validate_json(state_path.read_text())
+    except ValueError:
+        return None, None, []
+    active_problem_id = state.active_problem_id
+    if not active_problem_id:
+        return None, None, []
+    problem_path = root / f"research/problems/{active_problem_id}.json"
+    if not problem_path.exists():
+        return active_problem_id, None, []
+    try:
+        problem = ProblemCandidate.model_validate_json(problem_path.read_text())
+    except ValueError:
+        return active_problem_id, None, []
+    return active_problem_id, problem, list(problem.evidence_ids)
+
+
 def _discovery_context(root: Path, *, compact: bool, max_chars: int) -> ContextBundle:
     signals = build_discovery_signal_context(root, compact=compact)
     strategy = _json(root / "company/strategy.json")
@@ -92,6 +154,61 @@ def _discovery_context(root: Path, *, compact: bool, max_chars: int) -> ContextB
         content=_fit_payload(payload, max_chars),
         included_signal_count=signals.included_signal_count,
         excluded_signal_count=signals.excluded_signal_count,
+    )
+
+
+def _evidence_validation_context(
+    root: Path,
+    *,
+    compact: bool,
+    max_chars: int,
+    new_signal_ids: list[str],
+) -> ContextBundle:
+    active_problem_id, problem, candidate_evidence_ids = _active_problem_context(root)
+    candidate_evidence_ids = _ordered_unique(candidate_evidence_ids)
+    new_signal_ids = _ordered_unique(new_signal_ids)
+    evidence_index = load_evidence_index(root)
+    included_ids = _ordered_unique([*candidate_evidence_ids, *new_signal_ids])
+    resolved_candidate_ids = [
+        evidence_id for evidence_id in candidate_evidence_ids if evidence_id in evidence_index
+    ]
+    included_records = [
+        _signal_payload(evidence_id, evidence_index[evidence_id], compact=compact)
+        for evidence_id in included_ids
+        if evidence_id in evidence_index
+    ]
+    unresolved_ids = [
+        evidence_id for evidence_id in included_ids if evidence_id not in evidence_index
+    ]
+    payload: dict[str, Any] = {
+        "lifecycle_stage": LifecycleStage.EVIDENCE_VALIDATION.value,
+        "mission": _read(root / "company/mission.md", 1200 if compact else 2000),
+        "safety_constraints": _read(
+            root / "company/constitution.md", 900 if compact else 1600
+        ),
+        "active_problem_id": active_problem_id,
+        "active_problem_candidate": problem.model_dump(mode="json") if problem else None,
+        "candidate_evidence_ids": candidate_evidence_ids,
+        "new_signal_ids": new_signal_ids,
+        "included_signal_records": included_records,
+        "unresolved_evidence_ids": unresolved_ids,
+        "signal_stats": {
+            "candidate_evidence_id_count": len(candidate_evidence_ids),
+            "resolved_evidence_count": len(resolved_candidate_ids),
+            "new_signal_count": len(new_signal_ids),
+            "included": len(included_records),
+            "unresolved": len(unresolved_ids),
+        },
+    }
+    return ContextBundle(
+        content=_fit_payload(payload, max_chars),
+        included_signal_count=len(included_records),
+        excluded_signal_count=0,
+        active_problem_id=active_problem_id,
+        candidate_evidence_id_count=len(candidate_evidence_ids),
+        resolved_evidence_count=len(resolved_candidate_ids),
+        unresolved_evidence_ids=unresolved_ids,
+        new_signal_count=len(new_signal_ids),
     )
 
 
@@ -128,6 +245,7 @@ def build_context_bundle(
     lifecycle_stage: LifecycleStage | None = None,
     compact: bool = False,
     max_chars: int | None = None,
+    new_signal_ids: list[str] | None = None,
 ) -> ContextBundle:
     if lifecycle_stage is None:
         state_path = root / "company/state.json"
@@ -139,6 +257,13 @@ def build_context_bundle(
     configured_max = int(max_chars or (12_000 if compact else 24_000))
     if lifecycle_stage == LifecycleStage.DISCOVERY:
         return _discovery_context(root, compact=compact, max_chars=configured_max)
+    if lifecycle_stage == LifecycleStage.EVIDENCE_VALIDATION:
+        return _evidence_validation_context(
+            root,
+            compact=compact,
+            max_chars=configured_max,
+            new_signal_ids=new_signal_ids or [],
+        )
     return _general_context(root, compact=compact, max_chars=configured_max)
 
 
@@ -148,10 +273,12 @@ def build_context(
     *,
     lifecycle_stage: LifecycleStage | None = None,
     compact: bool = False,
+    new_signal_ids: list[str] | None = None,
 ) -> str:
     return build_context_bundle(
         root,
         lifecycle_stage=lifecycle_stage,
         compact=compact,
         max_chars=max_chars,
+        new_signal_ids=new_signal_ids,
     ).content

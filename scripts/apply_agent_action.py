@@ -34,6 +34,8 @@ def apply_validated_action(
         state_path = root / "company/state.json"
         state = CompanyState.model_validate_json(state_path.read_text())
         state.lifecycle_stage = action.state_transition.to_stage
+        if action.action_type == ActionType.CREATE_PROBLEM_CANDIDATE and action.problem_candidate:
+            state.active_problem_id = action.problem_candidate.problem_id
         state.last_agent_run = applied_at or datetime.now(UTC)
         state_path.write_text(state.model_dump_json(indent=2) + "\n")
     if material:

@@ -309,6 +309,11 @@ class ModelInferenceDiagnostic(StrictModel):
     estimated_input_tokens: int = Field(default=0, ge=0)
     selected_model_max_input_tokens: int = Field(default=0, ge=0)
     applied_input_budget: int = Field(default=0, ge=0)
+    active_problem_id: StrictId | None = None
+    candidate_evidence_id_count: int = Field(default=0, ge=0)
+    resolved_evidence_count: int = Field(default=0, ge=0)
+    unresolved_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    new_signal_count: int = Field(default=0, ge=0)
     included_signal_count: int = Field(default=0, ge=0)
     excluded_signal_count: int = Field(default=0, ge=0)
     compact_retry_attempted: bool = False
@@ -374,6 +379,7 @@ class ModelRunOutcome(StrictModel):
 class CompanyState(StrictModel):
     lifecycle_stage: LifecycleStage = LifecycleStage.DISCOVERY
     autonomy_level: int = Field(default=1, ge=0, le=2)
+    active_problem_id: StrictId | None = None
     selected_venture: str | None = None
     active_experiment: str | None = None
     infrastructure_provider: InfrastructureProvider = InfrastructureProvider.UNSELECTED
