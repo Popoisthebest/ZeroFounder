@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 from agents.candidate_validator import (
+    validate_create_idea_candidates_content,
     validate_create_problem_candidate_content,
     validate_validate_evidence_content,
 )
@@ -76,6 +77,12 @@ def validate_candidate(
         )
     elif contract.action_type == "validate_evidence":
         contract = validate_validate_evidence_content(
+            control_root=control_root,
+            candidate_root=candidate_root,
+            contract=contract,
+        )
+    elif contract.action_type == "create_idea_candidates":
+        contract = validate_create_idea_candidates_content(
             control_root=control_root,
             candidate_root=candidate_root,
             contract=contract,

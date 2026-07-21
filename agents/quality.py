@@ -95,8 +95,12 @@ VALIDATE_EVIDENCE_ALLOWED_EXACT = (
     "company/checkpoints.json",
     "company/state.json",
 )
+CREATE_IDEA_REQUIRED_EXACT = {"company/checkpoints.json"}
 PROBLEM_PATH = re.compile(
     r"^research/problems/(?P<problem_id>problem-[a-z0-9][a-z0-9._-]{0,100})\.json$"
+)
+IDEA_PATH = re.compile(
+    r"^research/ideas/(?P<problem_id>problem-[a-z0-9][a-z0-9._-]{0,100})\.json$"
 )
 AGENT_ACTION_BRANCH = re.compile(
     r"^agent/(?P<run_id>[0-9]{1,30})-(?P<action>[a-z][a-z0-9-]{1,80})$"
@@ -266,6 +270,38 @@ def validate_changed_file_contract(
             count=count,
             action_type=action_type,
             allowed_files=VALIDATE_EVIDENCE_ALLOWED_EXACT,
+        )
+
+    if action_type == "create_idea_candidates":
+        idea_paths = [path for path in normalized_files if path.startswith("research/ideas/")]
+        valid_idea_paths = [path for path in idea_paths if IDEA_PATH.fullmatch(path)]
+        if len(idea_paths) != 1 or len(valid_idea_paths) != 1:
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="아이디어 후보 JSON 경로가 정확히 하나여야 합니다.",
+                files=idea_paths,
+                allowed_files=[*CREATE_IDEA_REQUIRED_EXACT, "research/ideas/<problem_id>.json"],
+                action_type=action_type,
+            )
+        expected = CREATE_IDEA_REQUIRED_EXACT | {valid_idea_paths[0]}
+        actual = set(normalized_files)
+        if actual != expected:
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="아이디어 후보 생성 허용 목록과 변경 파일이 일치하지 않습니다.",
+                files=sorted(actual.symmetric_difference(expected)),
+                allowed_files=sorted(expected),
+                action_type=action_type,
+            )
+        match = IDEA_PATH.fullmatch(valid_idea_paths[0])
+        return _change_result(
+            "valid",
+            count=count,
+            action_type=action_type,
+            problem_id=match.group("problem_id") if match else None,
+            allowed_files=sorted(expected),
         )
 
     rejected = [

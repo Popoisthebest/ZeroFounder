@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agents.bootstrap import initial_company_state
 from agents.candidate_validator import (
+    validate_create_idea_candidates_content,
     validate_create_problem_candidate_content,
     validate_validate_evidence_content,
 )
@@ -21,6 +22,7 @@ from agents.schemas import (
 RUN_AT = datetime(2026, 7, 20, 15, 56, 5, tzinfo=UTC)
 BRANCH = "agent/29757293892-create-problem-candidate"
 VALIDATE_BRANCH = "agent/29757293893-validate-evidence"
+IDEA_BRANCH = "agent/29757293894-create-idea-candidates"
 PROBLEM_ID = "problem-navigation-inefficiency"
 
 
@@ -185,6 +187,104 @@ def _prepare_validate_evidence_candidate(
     return control, candidate, contract
 
 
+def _idea_candidate(idea_id: str, evidence_ids: list[str]) -> dict[str, object]:
+    return {
+        "idea_id": idea_id,
+        "name": f"Candidate {idea_id}",
+        "summary": "긴 목록 반복 탐색을 줄이는 후보입니다.",
+        "target_users": ["operators"],
+        "proposed_solution": "목록 위치 이동과 복귀를 단순하게 제공합니다.",
+        "value_proposition": "반복 스크롤과 수동 위치 기억을 줄입니다.",
+        "differentiation": "범용 검색 대신 반복 목록 탐색 문제만 다룹니다.",
+        "revenue_model": "팀 공유 설정을 유료 기능으로 둘 수 있습니다.",
+        "feasibility": "정적 브라우저 MVP로 검증할 수 있습니다.",
+        "evidence_ids": evidence_ids,
+        "risks": ["기존 방식에 머물 수 있습니다."],
+        "evaluation_dimensions": ["반복 사용 가능성", "무료 MVP 구현성"],
+    }
+
+
+def _prepare_create_idea_candidate(
+    tmp_path: Path,
+) -> tuple[Path, Path, ChangeValidation]:
+    control = tmp_path / "control"
+    candidate = tmp_path / "candidate"
+    (control / "company").mkdir(parents=True)
+    (control / "research/problems").mkdir(parents=True)
+    state = initial_company_state().model_copy(
+        update={
+            "lifecycle_stage": LifecycleStage.IDEA_EVALUATION,
+            "active_problem_id": PROBLEM_ID,
+        }
+    )
+    (control / "company/state.json").write_text(
+        state.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    checkpoint = RepositoryCheckpoint(idempotency_keys=["a" * 64])
+    (control / "company/checkpoints.json").write_text(
+        checkpoint.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    problem = ProblemCandidate(
+        problem_id=PROBLEM_ID,
+        title="긴 목록 탐색 과정의 반복 낭비",
+        target_users=["재고 관리자"],
+        description="긴 목록에서 항목을 찾는 과정이 반복적으로 느립니다.",
+        current_workaround="스크롤과 키보드 단축키를 반복 사용합니다.",
+        evidence_ids=["signal-new", "signal-old"],
+        evidence=[
+            ProblemEvidenceReference(
+                evidence_id="signal-new",
+                source_type="github_issue",
+                url="https://example.test/new",
+                summary="반복 탐색이 느립니다.",
+            ),
+            ProblemEvidenceReference(
+                evidence_id="signal-old",
+                source_type="github_issue",
+                url="https://example.test/old",
+                summary="목록 이동이 번거롭습니다.",
+            ),
+        ],
+        frequency_score=3,
+        severity_score=4,
+        buildability_score=7,
+        confidence=0.6,
+    )
+    (control / f"research/problems/{PROBLEM_ID}.json").write_text(
+        problem.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    shutil.copytree(control, candidate)
+    updated_checkpoint = checkpoint.model_copy(
+        update={"idempotency_keys": ["a" * 64, "c" * 64], "updated_at": RUN_AT}
+    )
+    (candidate / "company/checkpoints.json").write_text(
+        updated_checkpoint.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    (candidate / "research/ideas").mkdir(parents=True)
+    (candidate / f"research/ideas/{PROBLEM_ID}.json").write_text(
+        json.dumps(
+            {
+                "problem_id": PROBLEM_ID,
+                "lifecycle_stage": "IDEA_EVALUATION",
+                "idea_candidates": [
+                    _idea_candidate("idea-001", ["signal-new"]),
+                    _idea_candidate("idea-002", ["signal-new", "signal-old"]),
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    contract = validate_changed_file_contract(
+        IDEA_BRANCH,
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": f"research/ideas/{PROBLEM_ID}.json", "status": "added"},
+        ],
+    )
+    return control, candidate, contract
+
+
 def test_pr_one_candidate_content_contract_is_valid(tmp_path: Path):
     control, candidate, contract = _prepare_candidate(tmp_path)
     result = validate_create_problem_candidate_content(
@@ -286,3 +386,48 @@ def test_validate_evidence_rejects_active_problem_or_checkpoint_record_changes(
     )
     assert result.status == "invalid_checkpoint_change"
     assert result.rejected_files == ("company/checkpoints.json",)
+
+
+def test_create_idea_candidates_content_contract_is_valid(tmp_path: Path):
+    control, candidate, contract = _prepare_create_idea_candidate(tmp_path)
+
+    result = validate_create_idea_candidates_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+
+    assert result.status == "valid"
+    assert result.allowed_files == (
+        "company/checkpoints.json",
+        f"research/ideas/{PROBLEM_ID}.json",
+    )
+
+
+def test_create_idea_candidates_rejects_bad_evidence_or_state_change(tmp_path: Path):
+    control, candidate, contract = _prepare_create_idea_candidate(tmp_path)
+    idea_path = candidate / f"research/ideas/{PROBLEM_ID}.json"
+    payload = json.loads(idea_path.read_text(encoding="utf-8"))
+    payload["idea_candidates"][0]["evidence_ids"] = ["signal-invented"]
+    idea_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_create_idea_candidates_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_problem_path"
+    assert result.rejected_files == (f"research/ideas/{PROBLEM_ID}.json",)
+
+    control, candidate, contract = _prepare_create_idea_candidate(tmp_path / "state")
+    state_path = candidate / "company/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["lifecycle_stage"] = "DISTRIBUTION_CHECK"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    result = validate_create_idea_candidates_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_state_change"

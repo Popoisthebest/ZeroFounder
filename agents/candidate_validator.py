@@ -10,6 +10,7 @@ from agents.quality import ChangeValidation, VerificationStatus
 from agents.safety import load_evidence_index
 from agents.schemas import (
     CompanyState,
+    IdeaCandidateProposal,
     LifecycleStage,
     ProblemCandidate,
     RepositoryCheckpoint,
@@ -155,6 +156,135 @@ def validate_validate_evidence_content(
             "invalid_checkpoint_change",
             "checkpoint와 상태 변경 시각이 동일 실행으로 보기 어렵습니다.",
             [checkpoint_path.as_posix(), state_path.as_posix()],
+        )
+    return contract
+
+
+def validate_create_idea_candidates_content(
+    *,
+    control_root: Path,
+    candidate_root: Path,
+    contract: ChangeValidation,
+) -> ChangeValidation:
+    if contract.action_type != "create_idea_candidates" or not contract.problem_id:
+        return _reject(
+            contract,
+            "disallowed_file",
+            "branch 행동과 아이디어 후보 경로를 연결할 수 없습니다.",
+            [],
+        )
+    checkpoint_path = Path("company/checkpoints.json")
+    idea_path = Path(f"research/ideas/{contract.problem_id}.json")
+    state_path = Path("company/state.json")
+    if any((candidate_root / path).is_symlink() for path in (checkpoint_path, idea_path)):
+        return _reject(
+            contract,
+            "disallowed_file",
+            "검증 대상 파일에 심볼릭 링크가 포함됐습니다.",
+            [
+                path.as_posix()
+                for path in (checkpoint_path, idea_path)
+                if (candidate_root / path).is_symlink()
+            ],
+        )
+    try:
+        old_state = CompanyState.model_validate_json(
+            (control_root / state_path).read_text(encoding="utf-8")
+        )
+        new_state = CompanyState.model_validate_json(
+            (candidate_root / state_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return _reject(
+            contract,
+            "invalid_state_change",
+            "회사 상태 JSON 구조를 안전하게 검증할 수 없습니다.",
+            [state_path.as_posix()],
+        )
+    if old_state != new_state or new_state.lifecycle_stage != LifecycleStage.IDEA_EVALUATION:
+        return _reject(
+            contract,
+            "invalid_state_change",
+            "create_idea_candidates는 회사 상태를 변경할 수 없습니다.",
+            [state_path.as_posix()],
+        )
+    if new_state.active_problem_id != contract.problem_id:
+        return _reject(
+            contract,
+            "invalid_problem_path",
+            "아이디어 후보 파일 경로가 active_problem_id와 일치하지 않습니다.",
+            [idea_path.as_posix()],
+        )
+    try:
+        old_checkpoint = RepositoryCheckpoint.model_validate_json(
+            (control_root / checkpoint_path).read_text(encoding="utf-8")
+        )
+        new_checkpoint = RepositoryCheckpoint.model_validate_json(
+            (candidate_root / checkpoint_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            "checkpoint JSON 구조를 안전하게 검증할 수 없습니다.",
+            [checkpoint_path.as_posix()],
+        )
+    if not _checkpoint_updated_with_one_idempotency_key_only(old_checkpoint, new_checkpoint):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            "create_idea_candidates checkpoint는 현재 실행 idempotency key와 "
+            "updated_at만 변경할 수 있습니다.",
+            [checkpoint_path.as_posix()],
+        )
+    try:
+        payload = json.loads((candidate_root / idea_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _reject(
+            contract,
+            "invalid_problem_path",
+            "아이디어 후보 JSON 구조가 올바르지 않습니다.",
+            [idea_path.as_posix()],
+        )
+    if not isinstance(payload, dict) or payload.get("problem_id") != contract.problem_id:
+        return _reject(
+            contract,
+            "invalid_problem_path",
+            "아이디어 후보 파일의 problem_id가 경로와 일치하지 않습니다.",
+            [idea_path.as_posix()],
+        )
+    raw_candidates = payload.get("idea_candidates")
+    if not isinstance(raw_candidates, list) or not 2 <= len(raw_candidates) <= 8:
+        return _reject(
+            contract,
+            "invalid_problem_path",
+            "아이디어 후보 수가 허용 범위를 벗어났습니다.",
+            [idea_path.as_posix()],
+        )
+    try:
+        candidates = [IdeaCandidateProposal.model_validate(item) for item in raw_candidates]
+        problem = ProblemCandidate.model_validate_json(
+            (control_root / f"research/problems/{contract.problem_id}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+    except (OSError, ValueError):
+        return _reject(
+            contract,
+            "invalid_problem_path",
+            "아이디어 후보 또는 활성 문제 기록을 검증할 수 없습니다.",
+            [idea_path.as_posix()],
+        )
+    ids = [item.idea_id for item in candidates]
+    allowed_evidence = set(problem.evidence_ids)
+    if len(ids) != len(set(ids)) or any(
+        not set(item.evidence_ids).issubset(allowed_evidence) for item in candidates
+    ):
+        return _reject(
+            contract,
+            "invalid_problem_path",
+            "아이디어 후보 ID 또는 evidence 참조가 허용 범위를 벗어났습니다.",
+            [idea_path.as_posix()],
         )
     return contract
 

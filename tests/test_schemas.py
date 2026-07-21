@@ -190,6 +190,82 @@ def test_no_op_cannot_modify_state():
         )
 
 
+def idea_candidate(idea_id: str = "idea-001", evidence_ids: list[str] | None = None):
+    return {
+        "idea_id": idea_id,
+        "name": "List jump helper",
+        "summary": "긴 목록의 반복 탐색을 줄이는 작은 조작 도구입니다.",
+        "target_users": ["operators"],
+        "proposed_solution": "목록에서 일정 간격 이동과 위치 복귀를 제공합니다.",
+        "value_proposition": "반복 스크롤과 수동 위치 기억을 줄입니다.",
+        "differentiation": "범용 검색이 아니라 반복 탐색 마찰만 직접 줄입니다.",
+        "revenue_model": "팀 공유 설정을 유료 기능으로 둘 수 있습니다.",
+        "feasibility": "정적 브라우저 MVP로 구현할 수 있습니다.",
+        "evidence_ids": evidence_ids or ["signal-001"],
+        "risks": ["사용자가 기존 방식에 머물 수 있습니다."],
+        "evaluation_dimensions": ["무료 MVP 구현성", "반복 사용 가능성"],
+    }
+
+
+def test_create_idea_candidates_action_accepts_valid_candidates():
+    action = valid_action(
+        action_type="create_idea_candidates",
+        files=[],
+        evidence_ids=[],
+        idea_candidates=[idea_candidate("idea-001"), idea_candidate("idea-002")],
+    )
+    assert action.idea_candidates is not None
+    assert [item.idea_id for item in action.idea_candidates] == ["idea-001", "idea-002"]
+    candidate = idea_candidate("idea-003")
+    candidate["revenue_model"] = "Recurring team subscription revenue can fund maintenance."
+    assert valid_action(
+        action_type="create_idea_candidates",
+        files=[],
+        idea_candidates=[candidate, idea_candidate("idea-004")],
+    )
+
+
+def test_idea_candidates_are_rejected_on_other_actions_or_bad_shape():
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="write_report",
+            files=[],
+            idea_candidates=[idea_candidate("idea-001"), idea_candidate("idea-002")],
+        )
+    with pytest.raises(ValidationError):
+        valid_action(action_type="write_report", files=[], idea_candidates=[])
+    with pytest.raises(ValidationError):
+        valid_action(action_type="no_op", files=[], idea_candidates=[])
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="create_idea_candidates",
+            files=[],
+            idea_candidates=[idea_candidate("idea-001"), idea_candidate("idea-001")],
+        )
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="create_idea_candidates",
+            files=[],
+            idea_candidates=[idea_candidate(f"idea-{index:03}") for index in range(9)],
+        )
+    invented_url = idea_candidate("idea-001")
+    invented_url["summary"] = "https://example.test 에서 가져온 검증되지 않은 아이디어입니다."
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="create_idea_candidates",
+            files=[],
+            idea_candidates=[invented_url, idea_candidate("idea-002")],
+        )
+    invented_metric = idea_candidate("idea-001")
+    invented_metric["value_proposition"] = "사용자 1000명을 확보할 수 있다는 수치 주장입니다."
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="create_idea_candidates",
+            files=[],
+            idea_candidates=[invented_metric, idea_candidate("idea-002")],
+        )
+
+
 @pytest.mark.parametrize("action_type", ["create_problem_candidate", "validate_evidence"])
 def test_discovery_analysis_requires_evidence_and_material_output(action_type: str):
     with pytest.raises(ValidationError):

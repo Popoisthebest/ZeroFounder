@@ -78,6 +78,39 @@ def _action(action_type: str, **overrides) -> ActionEnvelope:
     return ActionEnvelope.model_validate(payload)
 
 
+def _idea_candidates() -> list[dict[str, object]]:
+    return [
+        {
+            "idea_id": "idea-001",
+            "name": "List jump helper",
+            "summary": "긴 목록에서 반복 탐색을 줄이는 점프형 조작 도구입니다.",
+            "target_users": ["operators"],
+            "proposed_solution": "사용자가 검증된 간격으로 목록을 이동하고 위치를 보존합니다.",
+            "value_proposition": "반복 스크롤과 수동 위치 기억을 줄여 작업 흐름을 단순화합니다.",
+            "differentiation": "대시보드가 아니라 기존 목록 조작의 마찰을 직접 줄입니다.",
+            "revenue_model": "팀 단위 고급 설정을 유료화할 수 있습니다.",
+            "feasibility": "정적 MVP에서 목록 상태와 단축 조작만 구현하면 됩니다.",
+            "evidence_ids": ["signal-000", "signal-001"],
+            "risks": ["기존 단축키 습관을 바꾸지 않을 수 있습니다."],
+            "evaluation_dimensions": ["반복 사용 가능성", "무료 MVP 구현성"],
+        },
+        {
+            "idea_id": "idea-002",
+            "name": "Saved list positions",
+            "summary": "반복 작업 위치를 저장해 긴 목록 재탐색을 줄이는 도구입니다.",
+            "target_users": ["operators"],
+            "proposed_solution": "사용자가 작업 묶음별 위치와 필터를 저장하고 다시 엽니다.",
+            "value_proposition": "같은 목록 위치를 매번 다시 찾는 시간을 줄입니다.",
+            "differentiation": "검색 결과보다 작업 맥락의 복귀 지점을 보존합니다.",
+            "revenue_model": "공유 위치 묶음 기능을 유료 팀 기능으로 확장할 수 있습니다.",
+            "feasibility": "브라우저 저장소 기반의 정적 MVP로 검증할 수 있습니다.",
+            "evidence_ids": ["signal-000"],
+            "risks": ["사용자가 저장 위치를 관리하는 부담을 느낄 수 있습니다."],
+            "evaluation_dimensions": ["전환 비용", "작업 빈도"],
+        },
+    ]
+
+
 def test_discovery_prompt_prefers_problem_creation_after_signal_collection(tmp_path: Path):
     _write_strategy(tmp_path)
     ids = _write_signals(tmp_path)
@@ -120,7 +153,7 @@ def test_disallowed_discovery_action_becomes_diagnostic_no_op(tmp_path: Path):
     outcome = validate_model_action(
         tmp_path,
         CompanyState(),
-        _action("create_idea_candidates"),
+        _action("create_idea_candidates", idea_candidates=_idea_candidates()),
     )
     assert outcome.action.action_type.value == "no_op"
     assert outcome.diagnostic.original_action_type.value == "create_idea_candidates"
@@ -155,7 +188,7 @@ def test_job_summary_masks_tokens_and_omits_model_text():
     diagnostic = validate_model_action(
         Path("."),
         CompanyState(),
-        _action("create_idea_candidates"),
+        _action("no_op"),
     ).diagnostic
     diagnostic.rejection_reason = "blocked ghp_123456789012345678901234567890"
     summary = render_summary(diagnostic)
@@ -386,6 +419,7 @@ def test_idea_evaluation_context_allows_idea_creation_without_new_signals(
                 action=_action(
                     "create_idea_candidates",
                     evidence_ids=["signal-000", "signal-001"],
+                    idea_candidates=_idea_candidates(),
                 ),
                 diagnostic=diagnostic,
             )
@@ -451,13 +485,12 @@ def test_idea_evaluation_missing_problem_record_is_rejected(
 
 def test_idea_evaluation_prefers_evaluation_when_candidates_exist(tmp_path: Path):
     _write_idea_evaluation_problem(tmp_path)
-    (tmp_path / "ideas/candidates").mkdir(parents=True)
-    (tmp_path / "ideas/candidates/ideas.json").write_text(
+    (tmp_path / "research/ideas").mkdir(parents=True)
+    (tmp_path / "research/ideas/problem-001.json").write_text(
         json.dumps(
             {
-                "idea_id": "idea-001",
                 "problem_id": "problem-001",
-                "name": "List jump helper",
+                "idea_candidates": [_idea_candidates()[0]],
             }
         )
     )
@@ -475,3 +508,37 @@ def test_idea_evaluation_prefers_evaluation_when_candidates_exist(tmp_path: Path
 
     assert instruction["preferred_action_types"][0] == "evaluate_ideas"
     assert instruction["existing_idea_candidate_count"] == 1
+
+
+def test_create_idea_candidates_rejects_unvalidated_evidence(tmp_path: Path):
+    _write_idea_evaluation_problem(tmp_path)
+    candidates = _idea_candidates()
+    candidates[0]["evidence_ids"] = ["signal-invented"]
+    action = _action(
+        "create_idea_candidates",
+        evidence_ids=["signal-000", "signal-001"],
+        idea_candidates=candidates,
+    )
+    diagnostic = ModelInferenceDiagnostic(
+        active_problem_id="problem-001",
+        problem_loaded=True,
+        problem_evidence_count=2,
+        resolved_evidence_count=2,
+        included_signal_count=2,
+        idea_context_ready=True,
+    )
+
+    outcome = validate_model_action(
+        tmp_path,
+        CompanyState(
+            lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+            active_problem_id="problem-001",
+        ),
+        action,
+        diagnostic,
+    )
+
+    assert not outcome.diagnostic.accepted
+    assert outcome.diagnostic.rejection_code == ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED
+    assert outcome.diagnostic.inference.rejected_idea_candidate_count == 1
+    assert outcome.diagnostic.inference.accepted_idea_candidate_count == 0

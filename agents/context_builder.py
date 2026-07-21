@@ -142,7 +142,16 @@ def _idea_candidates_for_problem(root: Path, active_problem_id: str | None) -> l
     if not active_problem_id:
         return []
     records: list[dict[str, Any]] = []
-    for item in _recent_json_records(root / "ideas/candidates", limit=100):
+    for item in _recent_json_records(root / "research/ideas", limit=100):
+        if item.get("problem_id") == active_problem_id and isinstance(
+            item.get("idea_candidates"), list
+        ):
+            records.extend(
+                candidate
+                for candidate in item["idea_candidates"]
+                if isinstance(candidate, dict)
+            )
+            continue
         try:
             candidate = IdeaCandidate.model_validate(item)
         except ValueError:

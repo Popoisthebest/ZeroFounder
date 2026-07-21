@@ -41,14 +41,20 @@ def _initialize_runtime(root: Path) -> str:
     return signal_id
 
 
-def _write_preflight(root: Path, signal_id: str, suffix: str = "a") -> Path:
+def _write_preflight(
+    root: Path,
+    signal_id: str | None,
+    suffix: str = "a",
+    signal_ids: list[str] | None = None,
+) -> Path:
+    ids = signal_ids if signal_ids is not None else ([signal_id] if signal_id else [])
     path = root / "runtime/preflight.json"
     path.write_text(
         json.dumps(
             {
                 "should_call_model": True,
-                "reasons": ["new_signals"],
-                "new_signal_ids": [signal_id],
+                "reasons": ["new_signals"] if ids else ["manual"],
+                "new_signal_ids": ids,
                 "idempotency_key": suffix * 64,
             }
         )
@@ -83,6 +89,23 @@ def _create_problem_payload(signal_id: str) -> dict:
             "current_workaround": "They combine spreadsheets, screenshots, and messages.",
         },
         "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
+    }
+
+
+def _idea_candidate(idea_id: str, evidence_ids: list[str]) -> dict:
+    return {
+        "idea_id": idea_id,
+        "name": "List jump helper",
+        "summary": "긴 목록에서 반복 탐색을 줄이는 점프형 조작 도구입니다.",
+        "target_users": ["operators"],
+        "proposed_solution": "검증된 간격 이동과 위치 복귀를 기존 목록 흐름에 추가합니다.",
+        "value_proposition": "반복 스크롤과 수동 위치 기억을 줄여 작업 흐름을 단순화합니다.",
+        "differentiation": "대시보드가 아니라 기존 목록 조작의 마찰을 직접 줄입니다.",
+        "revenue_model": "팀 단위 고급 설정을 유료화할 수 있습니다.",
+        "feasibility": "정적 MVP에서 목록 상태와 단축 조작만 구현하면 됩니다.",
+        "evidence_ids": evidence_ids,
+        "risks": ["기존 단축키 습관을 바꾸지 않을 수 있습니다."],
+        "evaluation_dimensions": ["반복 사용 가능성", "무료 MVP 구현성"],
     }
 
 
@@ -159,6 +182,105 @@ def test_validate_evidence_can_advance_from_validation_to_idea_evaluation(tmp_pa
     state = CompanyState.model_validate_json((tmp_path / "company/state.json").read_text())
     assert state.lifecycle_stage == LifecycleStage.IDEA_EVALUATION
     assert state.selected_venture is None
+
+
+def test_create_idea_candidates_applies_file_without_advancing_lifecycle(tmp_path: Path):
+    _initialize_runtime(tmp_path)
+    signal_two = {
+        "signal_id": "signal-002",
+        "source_pack": "small-business",
+        "source_type": "rss",
+        "url": "https://evidence.example/signal-002",
+        "title": "Repeated list row returns",
+        "summary": "Operators repeatedly return to the same list rows.",
+        "collected_at": "2026-07-20T00:00:00Z",
+        "published_at": "2026-07-19T00:00:00Z",
+        "content_hash": "b" * 64,
+    }
+    with (tmp_path / "signals/raw/signals.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(signal_two) + "\n")
+    state = CompanyState(
+        lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+        active_problem_id="problem-001",
+    )
+    (tmp_path / "company/state.json").write_text(state.model_dump_json(indent=2) + "\n")
+    (tmp_path / "research/problems").mkdir(parents=True)
+    (tmp_path / "research/problems/problem-001.json").write_text(
+        json.dumps(
+            {
+                "problem_id": "problem-001",
+                "title": "Repeated manual navigation",
+                "target_users": ["operators"],
+                "description": "Operators repeatedly lose position in long lists.",
+                "current_workaround": "They scroll and manually remember positions.",
+                "evidence_ids": ["signal-001", "signal-002"],
+                "evidence": [
+                    {
+                        "evidence_id": "signal-001",
+                        "source_type": "rss",
+                        "url": "https://evidence.example/signal-001",
+                        "summary": "Teams manually reconcile list positions.",
+                    },
+                    {
+                        "evidence_id": "signal-002",
+                        "source_type": "rss",
+                        "url": "https://evidence.example/signal-002",
+                        "summary": "Operators repeatedly return to the same list rows.",
+                    },
+                ],
+                "frequency_score": 4,
+                "severity_score": 4,
+                "buildability_score": 7,
+                "confidence": 0.7,
+            }
+        )
+        + "\n"
+    )
+    action_path = _write_action(
+        tmp_path,
+        {
+            "role": "researcher",
+            "action_type": "create_idea_candidates",
+            "title": "Create idea candidates",
+            "summary": "Generate evidence-backed ideas for the active problem.",
+            "rationale": "The active problem has validated evidence.",
+            "risk_level": "low",
+            "requires_approval": False,
+            "evidence_ids": ["signal-001", "signal-002"],
+            "idea_candidates": [
+                _idea_candidate("idea-001", ["signal-001"]),
+                _idea_candidate("idea-002", ["signal-001", "signal-002"]),
+            ],
+        },
+    )
+
+    action, changed = apply_validated_action(
+        tmp_path,
+        action_path,
+        _write_preflight(tmp_path, None, "c", signal_ids=[]),
+        applied_at=APPLIED_AT,
+    )
+
+    assert changed
+    assert action.action_type.value == "create_idea_candidates"
+    assert action.files is not None
+    assert [file.path for file in action.files] == ["research/ideas/problem-001.json"]
+    ideas = json.loads((tmp_path / "research/ideas/problem-001.json").read_text())
+    assert ideas["problem_id"] == "problem-001"
+    assert [item["idea_id"] for item in ideas["idea_candidates"]] == [
+        "idea-001",
+        "idea-002",
+    ]
+    current_state = CompanyState.model_validate_json(
+        (tmp_path / "company/state.json").read_text()
+    )
+    assert current_state.lifecycle_stage == LifecycleStage.IDEA_EVALUATION
+    assert current_state.active_problem_id == "problem-001"
+    checkpoint = RepositoryCheckpoint.model_validate_json(
+        (tmp_path / "company/checkpoints.json").read_text()
+    )
+    assert checkpoint.idempotency_keys == ["c" * 64]
+    assert checkpoint.updated_at == APPLIED_AT
 
 
 def test_pause_and_resume_restore_the_runtime_stage():

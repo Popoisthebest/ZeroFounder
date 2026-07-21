@@ -85,7 +85,7 @@ def path_allowed_for_action(path: str, action: ActionType) -> bool:
     if action == ActionType.CREATE_PROBLEM_CANDIDATE:
         return path.startswith("research/problems/")
     if action == ActionType.CREATE_IDEA_CANDIDATES:
-        return path.startswith("ideas/candidates/")
+        return path.startswith("research/ideas/")
     if action == ActionType.EVALUATE_IDEAS:
         return path.startswith("ideas/evaluations/")
     if action == ActionType.VALIDATE_EVIDENCE:

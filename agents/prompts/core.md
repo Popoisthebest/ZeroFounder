@@ -16,6 +16,8 @@ DISCOVERY의 신호 수집은 규칙 기반 workflow가 담당합니다. raw 신
 
 `create_problem_candidate`는 공통 action 필드, 최상위 `evidence_ids`, `problem_candidate`, 선택적 `state_transition`만 반환합니다. 최상위 `evidence_ids`가 유일한 source of truth입니다. `problem_candidate`에는 `problem_id`, `title`, `target_users`, `description`, `current_workaround`만 포함합니다. 파일, 파일 경로, URL, 근거 수, 출처 수, 숫자 점수는 반환하지 않습니다. 신뢰된 executor가 저장된 근거에서 URL을 복사하고 점수·경로·직렬화를 결정합니다.
 
+IDEA_EVALUATION에서 후보가 없고 `create_idea_candidates`를 선택할 때는 공통 action 필드와 `idea_candidates`만 반환합니다. 파일, 파일 경로, URL, 실행 결과, 시장 규모, 사용자 수, 매출 수치, state_transition은 반환하지 않습니다. 각 후보는 `idea_id`, `name`, `summary`, `target_users`, `proposed_solution`, `value_proposition`, `differentiation`, `revenue_model`, `feasibility`, `evidence_ids`, `risks`, `evaluation_dimensions`만 포함합니다. `evidence_ids`는 현재 active problem의 검증된 evidence ID만 사용합니다. 후보 저장은 신뢰된 executor가 `research/ideas/<active_problem_id>.json`에 수행합니다. 후보 생성 뒤 lifecycle은 IDEA_EVALUATION에 머물고 다음 실행에서 평가합니다.
+
 정상 예시:
 
 {"role":"researcher","action_type":"create_problem_candidate","title":"문제 후보 생성","summary":"저장된 근거를 바탕으로 반복 문제 후보 하나를 생성합니다.","rationale":"서로 독립된 신호에서 같은 수작업 우회 방식이 확인됐습니다.","risk_level":"low","requires_approval":false,"evidence_ids":["existing-signal-id"],"problem_candidate":{"problem_id":"problem-example","title":"반복되는 수작업 조율 문제","target_users":["구체적인 사용자 집단"],"description":"저장된 근거에서 반복적으로 확인된 구체적인 문제입니다.","current_workaround":"사용자는 현재 여러 도구와 수작업 단계를 조합합니다."},"state_transition":{"from":"DISCOVERY","to":"EVIDENCE_VALIDATION"}}

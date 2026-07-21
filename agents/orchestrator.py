@@ -472,6 +472,61 @@ def validate_model_action(
             inference=inference,
             failure_stage=FailureStage.LIFECYCLE_VALIDATION,
         )
+    if action.action_type == ActionType.CREATE_IDEA_CANDIDATES and action.idea_candidates:
+        if inference is None:
+            inference = ModelInferenceDiagnostic()
+        ids = [item.idea_id for item in action.idea_candidates]
+        inference = inference.model_copy(
+            update={
+                "generated_idea_candidate_count": len(action.idea_candidates),
+                "accepted_idea_candidate_count": len(action.idea_candidates),
+                "rejected_idea_candidate_count": 0,
+                "idea_candidate_ids": ids,
+            }
+        )
+        try:
+            state_record = CompanyState.model_validate_json(
+                (root / "company/state.json").read_text()
+            )
+            if not state_record.active_problem_id:
+                raise ValueError("missing active problem")
+            problem = json.loads(
+                (root / f"research/problems/{state_record.active_problem_id}.json").read_text()
+            )
+            allowed_evidence = set(problem.get("evidence_ids", []))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return _rejected_outcome(
+                state,
+                code=ActionRejectionCode.MISSING_PROBLEM_RECORD,
+                reason="missing_problem_record: active problem file could not be loaded",
+                original_action_type=action.action_type,
+                inference=inference.model_copy(
+                    update={
+                        "accepted_idea_candidate_count": 0,
+                        "rejected_idea_candidate_count": len(action.idea_candidates),
+                    }
+                ),
+                failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+            )
+        invalid = [
+            item.idea_id
+            for item in action.idea_candidates
+            if not set(item.evidence_ids).issubset(allowed_evidence)
+        ]
+        if invalid:
+            return _rejected_outcome(
+                state,
+                code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
+                reason="idea candidate references evidence outside active problem",
+                original_action_type=action.action_type,
+                inference=inference.model_copy(
+                    update={
+                        "accepted_idea_candidate_count": 0,
+                        "rejected_idea_candidate_count": len(invalid),
+                    }
+                ),
+                failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+            )
     return ModelRunOutcome(
         action=action,
         diagnostic=ModelActionDiagnostic(

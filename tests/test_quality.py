@@ -152,6 +152,33 @@ def test_validate_evidence_file_contract_allows_only_state_and_checkpoint():
     assert extra.allowed_files == ("company/checkpoints.json", "company/state.json")
 
 
+def test_create_idea_candidates_file_contract_allows_only_ideas_and_checkpoint():
+    result = validate_changed_file_contract(
+        "agent/29757293894-create-idea-candidates",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "research/ideas/problem-navigation-inefficiency.json", "status": "added"},
+        ],
+    )
+    assert result.status == "valid"
+    assert result.problem_id == "problem-navigation-inefficiency"
+    assert result.allowed_files == (
+        "company/checkpoints.json",
+        "research/ideas/problem-navigation-inefficiency.json",
+    )
+
+    extra = validate_changed_file_contract(
+        "agent/29757293894-create-idea-candidates",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "research/ideas/problem-navigation-inefficiency.json", "status": "added"},
+            {"filename": "company/state.json", "status": "modified"},
+        ],
+    )
+    assert extra.status == "disallowed_file"
+    assert extra.rejected_files == ("company/state.json",)
+
+
 def test_create_problem_candidate_rejects_any_extra_file():
     files = [
         {"filename": "company/checkpoints.json", "status": "modified"},

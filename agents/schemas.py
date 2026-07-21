@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from enum import StrEnum
 from typing import Annotated, Literal
@@ -161,6 +162,65 @@ class ProblemCandidateProposal(StrictModel):
     current_workaround: str = Field(min_length=3, max_length=2000)
 
 
+class IdeaCandidateProposal(StrictModel):
+    idea_id: StrictId
+    name: str = Field(min_length=2, max_length=100)
+    summary: str = Field(min_length=10, max_length=600)
+    target_users: list[str] = Field(min_length=1, max_length=8)
+    proposed_solution: str = Field(min_length=10, max_length=1200)
+    value_proposition: str = Field(min_length=10, max_length=1000)
+    differentiation: str = Field(min_length=10, max_length=1000)
+    revenue_model: str = Field(min_length=2, max_length=500)
+    feasibility: str = Field(min_length=5, max_length=800)
+    evidence_ids: list[StrictId] = Field(min_length=1, max_length=20)
+    risks: list[str] = Field(min_length=1, max_length=8)
+    evaluation_dimensions: list[str] = Field(min_length=2, max_length=10)
+
+    @model_validator(mode="after")
+    def reject_invented_external_claims(self) -> IdeaCandidateProposal:
+        text_fields = [
+            self.name,
+            self.summary,
+            self.proposed_solution,
+            self.value_proposition,
+            self.differentiation,
+            self.revenue_model,
+            self.feasibility,
+            *self.target_users,
+            *self.risks,
+            *self.evaluation_dimensions,
+        ]
+        if any("http://" in value.lower() or "https://" in value.lower() for value in text_fields):
+            raise ValueError("idea candidates cannot contain URLs")
+        metric_claim = re.compile(
+            r"\d[\d,._%]*(?:\s*(?:users|customers|revenue|sales|visits|downloads|"
+            r"사용자|고객|매출|시장|방문|다운로드|달러|억원|만원|원|명|개))",
+            re.IGNORECASE,
+        )
+        metric_claim_reverse = re.compile(
+            r"(?:users|customers|revenue|sales|visits|downloads|"
+            r"사용자|고객|매출|시장|방문|다운로드)\s*\d[\d,._%]*",
+            re.IGNORECASE,
+        )
+        result_terms = (
+            "validated with",
+            "conversion rate",
+            "retention rate",
+            "실행 결과",
+            "검증 결과",
+            "전환율",
+            "유지율",
+        )
+        if any(
+            metric_claim.search(value) or metric_claim_reverse.search(value)
+            for value in text_fields
+        ) or any(
+            any(term in value.lower() for term in result_terms) for value in text_fields
+        ):
+            raise ValueError("idea candidates cannot invent market figures or execution results")
+        return self
+
+
 class DependencyProposal(StrictModel):
     proposal_id: StrictId
     ecosystem: Literal["npm", "python"]
@@ -189,6 +249,9 @@ class ActionEnvelope(StrictModel):
     files: list[FileChange] = Field(default_factory=list, max_length=50)
     dependency_proposal: DependencyProposal | None = None
     problem_candidate: ProblemCandidateProposal | None = None
+    idea_candidates: list[IdeaCandidateProposal] | None = Field(default=None, max_length=8)
+    idea_candidate_ids: list[StrictId] | None = Field(default=None, max_length=20)
+    idea_evaluations: list[dict[str, object]] | None = Field(default=None, max_length=20)
 
     @model_validator(mode="after")
     def enforce_action_shape(self) -> ActionEnvelope:
@@ -197,6 +260,9 @@ class ActionEnvelope(StrictModel):
             or self.state_transition
             or self.dependency_proposal
             or self.problem_candidate
+            or self.idea_candidates is not None
+            or self.idea_candidate_ids is not None
+            or self.idea_evaluations is not None
         ):
             raise ValueError("no_op cannot mutate files, problem data, dependencies, or state")
         if self.action_type == ActionType.PROPOSE_DEPENDENCY and not self.dependency_proposal:
@@ -205,11 +271,38 @@ class ActionEnvelope(StrictModel):
             raise ValueError("dependency proposal is only valid for propose_dependency")
         if self.problem_candidate and self.action_type != ActionType.CREATE_PROBLEM_CANDIDATE:
             raise ValueError("problem_candidate is only valid for create_problem_candidate")
+        if (
+            self.idea_candidates is not None
+            and self.action_type != ActionType.CREATE_IDEA_CANDIDATES
+        ):
+            raise ValueError("idea_candidates is only valid for create_idea_candidates")
+        if (
+            self.idea_candidate_ids is not None
+            and self.action_type != ActionType.EVALUATE_IDEAS
+        ):
+            raise ValueError("idea_candidate_ids is only valid for evaluate_ideas")
+        if (
+            self.idea_evaluations is not None
+            and self.action_type != ActionType.EVALUATE_IDEAS
+        ):
+            raise ValueError("idea_evaluations is only valid for evaluate_ideas")
         if self.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
             if not self.evidence_ids:
                 raise ValueError("discovery analysis actions require stored evidence_ids")
             if not self.problem_candidate:
                 raise ValueError("create_problem_candidate requires problem_candidate")
+        if self.action_type == ActionType.CREATE_IDEA_CANDIDATES:
+            if self.idea_candidates is None or len(self.idea_candidates) < 2:
+                raise ValueError("create_idea_candidates requires at least two idea_candidates")
+            if self.files or self.state_transition:
+                raise ValueError("create_idea_candidates cannot provide files or state_transition")
+            ids = [item.idea_id for item in self.idea_candidates]
+            if len(ids) != len(set(ids)):
+                raise ValueError("idea_candidate idea_id values must be unique")
+        if self.action_type == ActionType.EVALUATE_IDEAS and not (
+            self.idea_candidate_ids or self.idea_evaluations
+        ):
+            raise ValueError("evaluate_ideas requires idea_candidate_ids or idea_evaluations")
         if self.action_type == ActionType.VALIDATE_EVIDENCE and not self.evidence_ids:
             raise ValueError("discovery analysis actions require stored evidence_ids")
         return self
@@ -321,6 +414,10 @@ class ModelInferenceDiagnostic(StrictModel):
     problem_evidence_count: int = Field(default=0, ge=0)
     existing_idea_candidate_count: int = Field(default=0, ge=0)
     idea_context_ready: bool = False
+    generated_idea_candidate_count: int = Field(default=0, ge=0)
+    accepted_idea_candidate_count: int = Field(default=0, ge=0)
+    rejected_idea_candidate_count: int = Field(default=0, ge=0)
+    idea_candidate_ids: list[StrictId] = Field(default_factory=list, max_length=20)
     included_signal_count: int = Field(default=0, ge=0)
     excluded_signal_count: int = Field(default=0, ge=0)
     compact_retry_attempted: bool = False
