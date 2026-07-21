@@ -1,0 +1,32 @@
+{
+  "problem_id": "problem-navigation-inefficiency",
+  "title": "Inefficient List Navigation in Inventory Systems",
+  "target_users": [
+    "Inventory managers",
+    "Warehouse operators"
+  ],
+  "description": "Users experience inefficiency when navigating through lists in inventory systems, particularly when trying to move by specific increments like 5 or 10 lines.",
+  "current_workaround": "Users manually scroll or use keyboard shortcuts, which is time-consuming and error-prone.",
+  "evidence_ids": [
+    "signal-d38b3b6e3daaa7fc",
+    "signal-34ca38432fa50f4d"
+  ],
+  "evidence": [
+    {
+      "evidence_id": "signal-d38b3b6e3daaa7fc",
+      "source_type": "github_issue",
+      "url": "https://github.com/CleverRaven/Cataclysm-DDA/issues/87662",
+      "summary": "### Is your feature request related to a problem? Please describe. I have a habit of doing a lot of unloading - reloading while storing loot, to optimize space. That makes moving through lists pretty tedious - it can be easy to move if you want to find 1 item, but if you do it for 20 or more items simultaneously - it is very frustrating. You either have to open 'U' screen, then up or down arrow until you find what you need, of maybe use pgup or pgdn, or 't' to move to the right item type and the"
+    },
+    {
+      "evidence_id": "signal-34ca38432fa50f4d",
+      "source_type": "github_issue",
+      "url": "https://github.com/Playabl-io/playabl/issues/290",
+      "summary": "**Is your feature request related to a problem? Please describe.** Whey you try to select community on browse games page. the drop down is not in alphabetical order and when you try to type the name of the community you are trying to select it only moves you to the first community starting with that letter, but since it is not alphabetical the community you are actually looking for can be anywhere. If you try to type the second letter it moves you to a community starting with that letter, which"
+    }
+  ],
+  "frequency_score": 5,
+  "severity_score": 6,
+  "buildability_score": 7,
+  "confidence": 0.702
+}
