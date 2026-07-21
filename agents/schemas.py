@@ -308,6 +308,67 @@ class ActionEnvelope(StrictModel):
         return self
 
 
+class MaterializedActionEnvelope(StrictModel):
+    source: Literal["trusted_materializer"] = "trusted_materializer"
+    role: AgentRole
+    action_type: ActionType
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    state_transition: StateTransition | None = None
+    files: list[FileChange] = Field(default_factory=list, max_length=50)
+    dependency_proposal: DependencyProposal | None = None
+    problem_candidate: ProblemCandidateProposal | None = None
+
+    @classmethod
+    def from_model_action(
+        cls,
+        action: ActionEnvelope,
+        *,
+        files: list[FileChange] | None = None,
+        state_transition: StateTransition | None = None,
+    ) -> MaterializedActionEnvelope:
+        return cls.model_validate(
+            {
+                "role": action.role,
+                "action_type": action.action_type,
+                "title": action.title,
+                "summary": action.summary,
+                "rationale": action.rationale,
+                "risk_level": action.risk_level,
+                "requires_approval": action.requires_approval,
+                "evidence_ids": action.evidence_ids,
+                "state_transition": (
+                    action.state_transition if state_transition is None else state_transition
+                ),
+                "files": action.files if files is None else files,
+                "dependency_proposal": action.dependency_proposal,
+                "problem_candidate": action.problem_candidate,
+            }
+        )
+
+    @model_validator(mode="after")
+    def enforce_materialized_shape(self) -> MaterializedActionEnvelope:
+        if self.action_type == ActionType.NO_OP and (self.files or self.state_transition):
+            raise ValueError("no_op materialized action cannot mutate files or state")
+        if self.action_type == ActionType.CREATE_IDEA_CANDIDATES:
+            if self.state_transition is not None:
+                raise ValueError("create_idea_candidates cannot provide state_transition")
+            if len(self.files) != 1:
+                raise ValueError("create_idea_candidates materialization requires one file")
+            if not re.fullmatch(
+                r"research/ideas/problem-[a-z0-9][a-z0-9._-]{0,100}\.json",
+                self.files[0].path,
+            ):
+                raise ValueError("create_idea_candidates materialized path is invalid")
+        if any(change.path == "company/checkpoints.json" for change in self.files):
+            raise ValueError("checkpoint changes are trusted commit metadata, not action files")
+        return self
+
+
 class DiscoveryStateTransition(StrictModel):
     from_stage: Literal[LifecycleStage.DISCOVERY] = Field(alias="from")
     to_stage: Literal[

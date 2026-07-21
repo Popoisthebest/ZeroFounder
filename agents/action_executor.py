@@ -13,7 +13,7 @@ from agents.safety import (
     validate_evidence_references,
     validate_model_urls,
 )
-from agents.schemas import ActionEnvelope, ActionType, CompanyState
+from agents.schemas import ActionEnvelope, ActionType, CompanyState, MaterializedActionEnvelope
 
 
 class ActionExecutionError(RuntimeError):
@@ -24,7 +24,7 @@ class ActionExecutor:
     def __init__(self, root: Path) -> None:
         self.root = root.resolve()
 
-    def validate(self, action: ActionEnvelope) -> None:
+    def validate(self, action: MaterializedActionEnvelope) -> None:
         validate_action_files(action, workspace=self.root)
         evidence = validate_evidence_references(action, self.root)
         validate_model_urls(action, evidence)
@@ -38,15 +38,15 @@ class ActionExecutor:
                 action.state_transition.from_stage, action.state_transition.to_stage
             )
 
-    def prepare(self, action: ActionEnvelope) -> ActionEnvelope:
-        prepared = action.model_copy(deep=True)
-        if prepared.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
-            prepared.files = [materialize_problem_candidate(prepared, self.root)]
-        if prepared.action_type == ActionType.CREATE_IDEA_CANDIDATES:
-            prepared.files = [materialize_idea_candidates(prepared, self.root)]
-        return prepared
+    def prepare(self, action: ActionEnvelope) -> MaterializedActionEnvelope:
+        files = action.files
+        if action.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
+            files = [materialize_problem_candidate(action, self.root)]
+        if action.action_type == ActionType.CREATE_IDEA_CANDIDATES:
+            files = [materialize_idea_candidates(action, self.root)]
+        return MaterializedActionEnvelope.from_model_action(action, files=files)
 
-    def apply_files(self, action: ActionEnvelope) -> list[Path]:
+    def apply_files(self, action: MaterializedActionEnvelope) -> list[Path]:
         self.validate(action)
         changed: list[Path] = []
         backups: dict[Path, bytes | None] = {}

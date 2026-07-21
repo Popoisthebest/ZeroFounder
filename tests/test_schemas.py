@@ -17,6 +17,7 @@ from agents.schemas import (
     CompanyState,
     DiscoveryActionEnvelope,
     LifecycleStage,
+    MaterializedActionEnvelope,
     ModelActionDiagnostic,
     ModelInferenceDiagnostic,
 )
@@ -263,6 +264,78 @@ def test_idea_candidates_are_rejected_on_other_actions_or_bad_shape():
             action_type="create_idea_candidates",
             files=[],
             idea_candidates=[invented_metric, idea_candidate("idea-002")],
+        )
+
+
+def test_create_idea_candidates_raw_and_materialized_schema_are_separate():
+    raw_payload = {
+        "role": "researcher",
+        "action_type": "create_idea_candidates",
+        "title": "Create idea candidates",
+        "summary": "Generate evidence-backed ideas.",
+        "rationale": "Validated evidence is available.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": ["signal-001"],
+        "idea_candidates": [idea_candidate("idea-001"), idea_candidate("idea-002")],
+    }
+    assert ActionEnvelope.model_validate(raw_payload)
+    with pytest.raises(ValidationError):
+        ActionEnvelope.model_validate(
+            {
+                **raw_payload,
+                "files": [
+                    {
+                        "path": "research/ideas/problem-001.json",
+                        "content": "{}\n",
+                    }
+                ],
+            }
+        )
+    with pytest.raises(ValidationError):
+        ActionEnvelope.model_validate(
+            {
+                **raw_payload,
+                "state_transition": {"from": "IDEA_EVALUATION", "to": "IDEA_SELECTED"},
+            }
+        )
+
+    materialized_payload = {
+        key: value
+        for key, value in raw_payload.items()
+        if key not in {"idea_candidates"}
+    } | {
+        "source": "trusted_materializer",
+        "files": [
+            {
+                "path": "research/ideas/problem-001.json",
+                "content": '{"problem_id":"problem-001","idea_candidates":[]}\n',
+            }
+        ],
+    }
+    assert MaterializedActionEnvelope.model_validate(materialized_payload)
+    with pytest.raises(ValidationError):
+        MaterializedActionEnvelope.model_validate(
+            materialized_payload
+            | {
+                "files": [
+                    {
+                        "path": "research/ideas/problem-other.json",
+                        "content": "{}\n",
+                    },
+                    {"path": "reports/extra.md", "content": "extra\n"},
+                ]
+            }
+        )
+    with pytest.raises(ValidationError):
+        MaterializedActionEnvelope.model_validate(
+            materialized_payload
+            | {
+                "state_transition": {
+                    "from": "IDEA_EVALUATION",
+                    "to": "IDEA_SELECTED",
+                }
+            }
         )
 
 

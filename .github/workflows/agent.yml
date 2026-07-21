@@ -97,7 +97,7 @@ jobs:
         run: |
           python -m agents.orchestrator model \
             --preflight runtime/preflight.json \
-            --output runtime/action.json \
+            --output runtime/model-action.json \
             --diagnostics runtime/model-diagnostic.json
       - name: 모델 호출 1 확인 [inference-confirm-1]
         if: ${{ always() && fromJSON(steps.model_run.outputs.completed_inference_calls || '0') >= 1 }}
@@ -127,7 +127,7 @@ jobs:
         with:
           name: validated-action
           path: |
-            runtime/action.json
+            runtime/model-action.json
             runtime/model-diagnostic.json
           retention-days: 1
 
@@ -152,7 +152,7 @@ jobs:
       - env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python -m scripts.create_dependency_issue --action runtime/action.json
+        run: python -m scripts.create_dependency_issue --action runtime/model-action.json
 
   issue-command:
     name: Issue 승인 명령 검증
@@ -341,9 +341,19 @@ jobs:
         id: prepare_branch
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: python -m scripts.create_agent_branch --action runtime/action.json --run-id "$GITHUB_RUN_ID"
+        run: python -m scripts.create_agent_branch --action runtime/model-action.json --run-id "$GITHUB_RUN_ID"
       - id: apply
-        run: python -m scripts.apply_agent_action --action runtime/action.json --preflight runtime/preflight.json
+        run: |
+          python -m scripts.apply_agent_action \
+            --action runtime/model-action.json \
+            --preflight runtime/preflight.json \
+            --materialized-output runtime/materialized-action.json
+      - uses: actions/upload-artifact@v4
+        if: steps.apply.outputs.changed == 'true'
+        with:
+          name: materialized-action
+          path: runtime/materialized-action.json
+          retention-days: 1
       - if: steps.apply.outputs.changed == 'true'
         run: python -m pytest
       - if: steps.apply.outputs.changed == 'true'
@@ -362,7 +372,7 @@ jobs:
         if: steps.apply.outputs.changed == 'true'
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
-        run: python -m scripts.commit_agent_changes --action runtime/action.json --run-id "$GITHUB_RUN_ID"
+        run: python -m scripts.commit_agent_changes --action runtime/materialized-action.json --run-id "$GITHUB_RUN_ID"
 
   create-pr:
     name: 에이전트 변경 PR 생성
@@ -383,13 +393,13 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - uses: actions/download-artifact@v4
         with:
-          name: validated-action
+          name: materialized-action
           path: runtime
       - id: pr
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python -m scripts.create_agent_pr --action runtime/action.json --branch '${{ needs.create-branch.outputs.branch }}' --sha '${{ needs.create-branch.outputs.sha }}'
+        run: python -m scripts.create_agent_pr --action runtime/materialized-action.json --branch '${{ needs.create-branch.outputs.branch }}' --sha '${{ needs.create-branch.outputs.sha }}'
 
   quality-check:
     name: 변경사항 품질 검사

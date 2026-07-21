@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from agents.schemas import ActionEnvelope, ActionType
+from agents.schemas import ActionEnvelope, ActionType, MaterializedActionEnvelope
 
 ACTION_TITLES = {
     ActionType.CREATE_PROBLEM_CANDIDATE: "문제 후보 생성 및 근거 검증 단계 전환",
@@ -17,7 +17,7 @@ ACTION_TITLES = {
 }
 
 
-def action_commit_message(action: ActionEnvelope, run_id: str) -> str:
+def action_commit_message(action: ActionEnvelope | MaterializedActionEnvelope, run_id: str) -> str:
     description = ACTION_TITLES.get(action.action_type, "에이전트 운영 산출물 갱신")
     scope = "discovery" if action.action_type in {
         ActionType.CREATE_PROBLEM_CANDIDATE,
@@ -29,7 +29,10 @@ def action_commit_message(action: ActionEnvelope, run_id: str) -> str:
     return f"{prefix}({scope}): {description} [run:{run_id}]"
 
 
-def render_agent_pull_request(action: ActionEnvelope, sha: str) -> tuple[str, str]:
+def render_agent_pull_request(
+    action: ActionEnvelope | MaterializedActionEnvelope,
+    sha: str,
+) -> tuple[str, str]:
     description = ACTION_TITLES.get(action.action_type, "에이전트 운영 변경")
     title = f"feat(agent): {description}"
     evidence = ", ".join(f"`{item}`" for item in action.evidence_ids) or "없음"

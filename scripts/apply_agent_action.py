@@ -10,6 +10,7 @@ from agents.schemas import (
     ActionEnvelope,
     ActionType,
     CompanyState,
+    MaterializedActionEnvelope,
     PreflightDecision,
     RepositoryCheckpoint,
 )
@@ -20,22 +21,36 @@ def apply_validated_action(
     action_path: Path,
     preflight_path: Path,
     *,
+    materialized_output_path: Path | None = None,
     applied_at: datetime | None = None,
-) -> tuple[ActionEnvelope, bool]:
+) -> tuple[MaterializedActionEnvelope, bool]:
     action = ActionEnvelope.model_validate_json(action_path.read_text())
     if action.action_type == ActionType.NO_OP:
-        return action, False
+        materialized = MaterializedActionEnvelope.from_model_action(action)
+        if materialized_output_path:
+            materialized_output_path.parent.mkdir(parents=True, exist_ok=True)
+            materialized_output_path.write_text(
+                materialized.model_dump_json(indent=2, by_alias=True) + "\n"
+            )
+        return materialized, False
     executor = ActionExecutor(root)
-    action = executor.prepare(action)
-    action_path.write_text(action.model_dump_json(indent=2, by_alias=True) + "\n")
-    executor.apply_files(action)
-    material = bool(action.files or action.state_transition)
-    if action.state_transition:
+    materialized = executor.prepare(action)
+    if materialized_output_path:
+        materialized_output_path.parent.mkdir(parents=True, exist_ok=True)
+        materialized_output_path.write_text(
+            materialized.model_dump_json(indent=2, by_alias=True) + "\n"
+        )
+    executor.apply_files(materialized)
+    material = bool(materialized.files or materialized.state_transition)
+    if materialized.state_transition:
         state_path = root / "company/state.json"
         state = CompanyState.model_validate_json(state_path.read_text())
-        state.lifecycle_stage = action.state_transition.to_stage
-        if action.action_type == ActionType.CREATE_PROBLEM_CANDIDATE and action.problem_candidate:
-            state.active_problem_id = action.problem_candidate.problem_id
+        state.lifecycle_stage = materialized.state_transition.to_stage
+        if (
+            materialized.action_type == ActionType.CREATE_PROBLEM_CANDIDATE
+            and materialized.problem_candidate
+        ):
+            state.active_problem_id = materialized.problem_candidate.problem_id
         state.last_agent_run = applied_at or datetime.now(UTC)
         state_path.write_text(state.model_dump_json(indent=2) + "\n")
     if material:
@@ -45,7 +60,7 @@ def apply_validated_action(
         updated = checkpoint_after_material_work(checkpoint, decision)
         updated.updated_at = applied_at or datetime.now(UTC)
         checkpoint_path.write_text(updated.model_dump_json(indent=2) + "\n")
-    return action, material
+    return materialized, material
 
 
 def write_output(name: str, value: str) -> None:
@@ -62,9 +77,15 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=Path("."))
     parser.add_argument("--action", type=Path, required=True)
     parser.add_argument("--preflight", type=Path, required=True)
+    parser.add_argument("--materialized-output", type=Path, required=True)
     args = parser.parse_args()
     root = args.root.resolve()
-    action, material = apply_validated_action(root, args.action, args.preflight)
+    action, material = apply_validated_action(
+        root,
+        args.action,
+        args.preflight,
+        materialized_output_path=args.materialized_output,
+    )
     write_output("changed", str(material).lower())
     write_output("action_type", action.action_type.value)
     return 0

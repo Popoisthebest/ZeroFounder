@@ -7,10 +7,16 @@ import subprocess
 from pathlib import Path
 
 from agents.operating_output import action_commit_message
-from agents.schemas import ActionEnvelope
+from agents.safety import SafetyViolation, validate_action_files
+from agents.schemas import (
+    ActionEnvelope,
+    ActionType,
+    CompanyState,
+    MaterializedActionEnvelope,
+)
 
 
-def agent_branch_name(action: ActionEnvelope, run_id: str) -> str:
+def agent_branch_name(action: ActionEnvelope | MaterializedActionEnvelope, run_id: str) -> str:
     if not re.fullmatch(r"[0-9]{1,30}", run_id):
         raise ValueError("invalid run id")
     return f"agent/{run_id}-{action.action_type.value.replace('_', '-')}"
@@ -29,16 +35,33 @@ def output(name: str, value: str) -> None:
         handle.write(f"{name}={value}\n")
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=Path("."))
-    parser.add_argument("--action", type=Path, required=True)
-    parser.add_argument("--run-id", required=True)
-    args = parser.parse_args()
-    root = args.root.resolve()
-    action = ActionEnvelope.model_validate_json(args.action.read_text())
+def validate_materialized_action_for_commit(
+    action: MaterializedActionEnvelope,
+    root: Path,
+) -> None:
     try:
-        branch = agent_branch_name(action, args.run_id)
+        validate_action_files(action, workspace=root)
+    except SafetyViolation as exc:
+        raise ValueError(str(exc)) from exc
+    if any(change.path == "company/checkpoints.json" for change in action.files):
+        raise ValueError("checkpoint cannot be provided by materialized action files")
+    if action.action_type == ActionType.CREATE_IDEA_CANDIDATES:
+        if action.state_transition is not None:
+            raise ValueError("create_idea_candidates cannot change lifecycle stage")
+        state = CompanyState.model_validate_json((root / "company/state.json").read_text())
+        if not state.active_problem_id:
+            raise ValueError("active_problem_id is required for idea candidate commit")
+        expected = f"research/ideas/{state.active_problem_id}.json"
+        paths = [change.path for change in action.files]
+        if paths != [expected]:
+            raise ValueError("create_idea_candidates materialized file path is not allowed")
+
+
+def commit_agent_changes(root: Path, action_path: Path, run_id: str) -> tuple[bool, str, str]:
+    try:
+        action = MaterializedActionEnvelope.model_validate_json(action_path.read_text())
+        branch = agent_branch_name(action, run_id)
+        validate_materialized_action_for_commit(action, root)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     run(["git", "config", "user.name", "github-actions[bot]"], root)
@@ -56,14 +79,27 @@ def main() -> int:
     run(["git", "add", "--", *sorted(set(paths))], root)
     staged = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=root, check=False)
     if staged.returncode == 0:
-        output("changed", "false")
-        return 0
-    message = action_commit_message(action, args.run_id)
+        return False, branch, ""
+    message = action_commit_message(action, run_id)
     run(["git", "commit", "-m", message], root)
     run(["git", "push", "--set-upstream", "origin", branch], root)
     sha = run(["git", "rev-parse", "HEAD"], root, capture=True)
     if not re.fullmatch(r"[0-9a-f]{40}", sha):
         raise SystemExit("git returned an invalid commit SHA")
+    return True, branch, sha
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path("."))
+    parser.add_argument("--action", type=Path, required=True)
+    parser.add_argument("--run-id", required=True)
+    args = parser.parse_args()
+    root = args.root.resolve()
+    changed, branch, sha = commit_agent_changes(root, args.action, args.run_id)
+    if not changed:
+        output("changed", "false")
+        return 0
     output("changed", "true")
     output("branch", branch)
     output("sha", sha)

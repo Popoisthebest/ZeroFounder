@@ -146,7 +146,9 @@ python scripts/reconcile_usage.py --date today --apply
 
 PR 전에 agent workflow 자체가 lint, typecheck, Python·TypeScript 테스트, build, audit, security 검사를 수행합니다. PR 생성 후 부모 workflow가 `quality-check.yml`을 `workflow_call`로 직접 호출합니다. 별도 workflow run의 artifact를 기다리거나 이름으로 조회하지 않습니다.
 
-quality workflow는 기본 브랜치의 신뢰된 코드를 `control/`, 검증된 PR head SHA를 `candidate/`에 각각 checkout합니다. PR 존재 여부, open 상태, 현재 저장소, head branch와 SHA가 모두 일치한 뒤에만 candidate를 실행합니다. 제어 helper·결과 집계·상태 기록은 항상 control에서 실행하고 제품 테스트만 candidate에서 실행합니다. `create_problem_candidate` PR은 `company/checkpoints.json`, `company/state.json`, `research/problems/<검증된 problem_id>.json` 정확히 세 파일만 허용하며 checkpoint의 기존 기록 보존, 근거 ID 참조 무결성, `DISCOVERY` → `EVIDENCE_VALIDATION` 전환을 규칙 기반으로 검사합니다.
+모델 응답 artifact는 `runtime/model-action.json`이고, trusted materializer가 만든 실행용 artifact는 `runtime/materialized-action.json`입니다. 모델 원본 `create_idea_candidates`는 파일 경로와 상태 전환을 지정할 수 없고, 실행용 action만 `research/ideas/<active_problem_id>.json` 산출물을 포함합니다.
+
+quality workflow는 기본 브랜치의 신뢰된 코드를 `control/`, 검증된 PR head SHA를 `candidate/`에 각각 checkout합니다. PR 존재 여부, open 상태, 현재 저장소, head branch와 SHA가 모두 일치한 뒤에만 candidate를 실행합니다. 제어 helper·결과 집계·상태 기록은 항상 control에서 실행하고 제품 테스트만 candidate에서 실행합니다. `create_problem_candidate` PR은 `company/checkpoints.json`, `company/state.json`, `research/problems/<검증된 problem_id>.json` 정확히 세 파일만 허용하며 checkpoint의 기존 기록 보존, 근거 ID 참조 무결성, `DISCOVERY` → `EVIDENCE_VALIDATION` 전환을 규칙 기반으로 검사합니다. `create_idea_candidates` PR은 `company/checkpoints.json`, `research/ideas/<검증된 active_problem_id>.json` 정확히 두 파일만 허용하며 회사 상태 변경과 임의 후보 경로를 거부합니다.
 
 결과는 reusable workflow output으로 부모 workflow에 돌아옵니다. PR에는 성공·품질 실패 외에도 `disallowed_file`, `deleted_file`, `too_many_files`, `invalid_checkpoint_change`, `invalid_state_change`, `invalid_problem_path` 같은 구체적인 정책 거부 상태가 한국어 설명과 함께 기록됩니다. Actions summary와 수동 실행 결과에는 안전하게 제한된 거부 코드·사유·파일명·변경 파일 수만 남고 파일 본문은 출력하지 않습니다. 결과 기록 후 최종 gate가 실패 결과를 workflow 실패로 반영하며 자동 병합하지 않습니다.
 

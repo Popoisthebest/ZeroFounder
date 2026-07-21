@@ -250,6 +250,7 @@ def test_model_preflight_and_diagnostic_inputs_remain_wired():
     model_steps = agent["jobs"]["model"]["steps"]
     model_commands = "\n".join(str(step.get("run", "")) for step in model_steps)
     assert "--preflight runtime/preflight.json" in model_commands
+    assert "--output runtime/model-action.json" in model_commands
     assert "--diagnostics runtime/model-diagnostic.json" in model_commands
     assert "scripts.write_model_summary" in model_commands
     assert "모델 호출 1 확인 [inference-confirm-1]" in {
@@ -270,6 +271,40 @@ def test_model_preflight_and_diagnostic_inputs_remain_wired():
     preflight_steps = agent["jobs"]["preflight"]["steps"]
     preflight_commands = "\n".join(str(step.get("run", "")) for step in preflight_steps)
     assert "scripts.write_preflight_summary" in preflight_commands
+
+
+def test_agent_workflow_separates_model_and_materialized_action_artifacts():
+    agent = load_workflows()["agent.yml"]
+    model_upload = next(
+        step
+        for step in agent["jobs"]["model"]["steps"]
+        if step.get("with", {}).get("name") == "validated-action"
+    )
+    assert "runtime/model-action.json" in model_upload["with"]["path"]
+    assert "runtime/action.json" not in model_upload["with"]["path"]
+
+    create_branch_steps = agent["jobs"]["create-branch"]["steps"]
+    commands = "\n".join(str(step.get("run", "")) for step in create_branch_steps)
+    assert "scripts.create_agent_branch --action runtime/model-action.json" in commands
+    assert "--materialized-output runtime/materialized-action.json" in commands
+    assert "scripts.commit_agent_changes --action runtime/materialized-action.json" in commands
+    assert "runtime/action.json" not in commands
+    materialized_upload = next(
+        step
+        for step in create_branch_steps
+        if step.get("with", {}).get("name") == "materialized-action"
+    )
+    assert materialized_upload["with"]["path"] == "runtime/materialized-action.json"
+
+    create_pr_steps = agent["jobs"]["create-pr"]["steps"]
+    assert any(
+        step.get("with", {}).get("name") == "materialized-action"
+        for step in create_pr_steps
+    )
+    create_pr_commands = "\n".join(str(step.get("run", "")) for step in create_pr_steps)
+    assert "scripts.create_agent_pr --action runtime/materialized-action.json" in (
+        create_pr_commands
+    )
 
 
 def test_founder_results_is_protected_from_model_patch():

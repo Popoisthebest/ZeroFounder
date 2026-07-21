@@ -6,7 +6,7 @@ from pathlib import Path
 
 from agents.github_client import GitHubClient
 from agents.operating_output import render_agent_pull_request
-from agents.schemas import ActionEnvelope
+from agents.schemas import MaterializedActionEnvelope
 
 
 def main() -> int:
@@ -15,7 +15,9 @@ def main() -> int:
     parser.add_argument("--branch", required=True)
     parser.add_argument("--sha", required=True)
     args = parser.parse_args()
-    action = ActionEnvelope.model_validate_json(Path(args.action).read_text(encoding="utf-8"))
+    action = MaterializedActionEnvelope.model_validate_json(
+        Path(args.action).read_text(encoding="utf-8")
+    )
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
     default_branch = str(client.repository_info().get("default_branch") or "main")
     title, body = render_agent_pull_request(action, args.sha)
