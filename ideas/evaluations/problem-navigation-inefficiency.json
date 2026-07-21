@@ -1,0 +1,46 @@
+{
+  "problem_id": "problem-navigation-inefficiency",
+  "lifecycle_stage": "IDEA_EVALUATION",
+  "action_type": "evaluate_ideas",
+  "title": "아이디어 평가: 재고 시스템 목록 탐색 효율성 향상",
+  "summary": "재고 시스템에서 목록 탐색 효율성을 향상하기 위한 두 가지 아이디어 후보를 평가했습니다. '증분 탐색 버튼'은 사용자가 특정 증분(예: 5 또는 10줄)으로 목록을 탐색할 수 있는 버튼을 추가하는 것이고, '알파벳 순 정렬'은 드롭다운 목록에 알파벳 순 정렬을 구현하여 항목 선택을 용이하게 하는 것입니다.",
+  "rationale": "두 아이디어 모두 사용자의 목록 탐색 경험을 개선하는 데 중점을 두고 있습니다. '증분 탐색 버튼'은 대량 목록을 자주 탐색하는 사용자의 시간을 절약하고 불편함을 줄여 생산성을 향상할 수 있습니다. '알파벳 순 정렬'은 항목 선택 시간을 단축하고 사용자 경험을 개선하여 시스템 채택 및 유지율을 높일 수 있습니다. 두 아이디어 모두 기술적으로 실현 가능하며, 위험 요소는 적절히 관리할 수 있는 수준입니다.",
+  "evidence_ids": [
+    "signal-d38b3b6e3daaa7fc",
+    "signal-34ca38432fa50f4d"
+  ],
+  "idea_candidate_ids": [
+    "idea-nav-increment-buttons",
+    "idea-alphabetical-sorting"
+  ],
+  "idea_evaluations": [
+    {
+      "idea_id": "idea-nav-increment-buttons",
+      "reason": "사용자가 대량 목록을 탐색할 때 시간을 절약하고 불편함을 줄여 생산성을 향상할 수 있습니다.",
+      "strengths": [
+        "사용자 요구에 맞는 정밀한 목록 탐색 제공",
+        "기술적으로 실현 가능하며 개발 노력 최소화"
+      ],
+      "risks": [
+        "UI 과부하 가능성",
+        "증분 레이블이 명확하지 않을 경우 사용자 혼란"
+      ]
+    },
+    {
+      "idea_id": "idea-alphabetical-sorting",
+      "reason": "항목 선택 시간을 단축하고 사용자 경험을 개선하여 시스템 채택 및 유지율을 높일 수 있습니다.",
+      "strengths": [
+        "목록 정렬 표준화 및 사용자 기대치 충족",
+        "실현 가능하며 개발 노력 최소화"
+      ],
+      "risks": [
+        "대량 목록의 경우 성능 저하 가능성",
+        "모든 목록에 대한 일관된 정렬 필요"
+      ]
+    }
+  ],
+  "state_transition": {
+    "from": "IDEA_EVALUATION",
+    "to": "DISTRIBUTION_CHECK"
+  }
+}
