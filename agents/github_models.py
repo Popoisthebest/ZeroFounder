@@ -12,6 +12,7 @@ from typing import Any, Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from agents.language import korean_output_contract, language_mismatches, operating_language
 from agents.schemas import (
     ActionEnvelope,
     ActionRejectionCode,
@@ -439,6 +440,52 @@ def _failed_action_fragment(
     }
 
 
+def _language_failed_fragment(
+    action: ActionEnvelope,
+    mismatches: list[PydanticErrorDiagnostic],
+) -> dict[str, Any]:
+    return {
+        "action_type": action.action_type.value,
+        "evidence_ids": action.evidence_ids,
+        "language_mismatch": True,
+        "expected_language": operating_language(),
+        "mismatch_paths": [item.path for item in mismatches],
+        "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1200),
+    }
+
+
+def _validate_action_language(action: ActionEnvelope) -> None:
+    expected = operating_language()
+    payload = action.model_dump(mode="json", by_alias=True)
+    mismatches = [
+        PydanticErrorDiagnostic(
+            path=item.path,
+            error_type=ActionRejectionCode.LANGUAGE_MISMATCH.value,
+            message=(
+                "설명형 문자열이 OPERATING_LANGUAGE=ko 계약과 맞지 않습니다. "
+                "고유 ID와 코드 값은 유지하고 자연스러운 한국어로 다시 작성해야 합니다."
+            ),
+            validator_name="operating_language_contract",
+            failure_field_path=item.path,
+            expected_type="ko descriptive text",
+        )
+        for item in language_mismatches(payload, expected_language=expected)
+    ]
+    if not mismatches:
+        return
+    raise ModelPipelineError(
+        FailureStage.SCHEMA_VALIDATION,
+        "language_mismatch: model output descriptive text did not match OPERATING_LANGUAGE",
+        code=ActionRejectionCode.LANGUAGE_MISMATCH,
+        retryable=True,
+        fallback_eligible=False,
+        validation_paths=[item.path for item in mismatches],
+        validation_errors=mismatches,
+        failed_action_fragment=_language_failed_fragment(action, mismatches),
+        original_action_type=action.action_type,
+    )
+
+
 def _extract_json_object(value: str) -> tuple[dict[str, Any], ActionType | None]:
     raw = strip_markdown_fence(value)
     start = raw.find("{")
@@ -522,7 +569,8 @@ class RequestBudgetManager:
             response_model=CreateProblemCandidateActionEnvelope,
             system_instruction=(
                 "Return one create_problem_candidate JSON object only. Use stored signal "
-                "summaries as evidence. Do not include unrelated lifecycle actions."
+                "summaries as evidence. Do not include unrelated lifecycle actions. "
+                + korean_output_contract()
             ),
             removed_sections=[
                 "full_action_schema",
@@ -537,7 +585,8 @@ class RequestBudgetManager:
             response_model=ValidateEvidenceActionEnvelope,
             system_instruction=(
                 "Return one validate_evidence JSON object only. Validate the active "
-                "problem using the listed evidence IDs and summaries."
+                "problem using the listed evidence IDs and summaries. "
+                + korean_output_contract()
             ),
             removed_sections=[
                 "full_action_schema",
@@ -552,7 +601,8 @@ class RequestBudgetManager:
             response_model=CreateIdeaCandidatesCorrectionEnvelope,
             system_instruction=(
                 "Return one create_idea_candidates JSON object only. Keep "
-                "IDEA_EVALUATION state; do not include files or state_transition."
+                "IDEA_EVALUATION state; do not include files or state_transition. "
+                + korean_output_contract()
             ),
             removed_sections=[
                 "full_action_schema",
@@ -570,7 +620,8 @@ class RequestBudgetManager:
             response_model=EvaluateIdeasActionEnvelope,
             system_instruction=(
                 "Return one evaluate_ideas JSON object only. Compare the existing "
-                "idea candidates and include the allowed state transition."
+                "idea candidates and include the allowed state transition. "
+                + korean_output_contract()
             ),
             removed_sections=[
                 "full_action_schema",
@@ -588,7 +639,8 @@ class RequestBudgetManager:
             response_model=WriteReportActionEnvelope,
             system_instruction=(
                 "Return one write_report JSON object only. Use the report target, "
-                "required evidence, and allowed file path policy."
+                "required evidence, and allowed file path policy. "
+                + korean_output_contract()
             ),
             removed_sections=[
                 "full_action_schema",
@@ -687,6 +739,35 @@ class RequestBudgetManager:
         action_type = error.original_action_type or _known_action_type_from_object(
             {"action_type": error.failed_action_fragment.get("action_type")}
         )
+        if error.code == ActionRejectionCode.LANGUAGE_MISMATCH and action_type in self.PROFILES:
+            correction_payload = {
+                "action_type": action_type.value,
+                "language_mismatch": True,
+                "expected_language": operating_language(),
+                "output_language_contract": korean_output_contract(),
+                "preserve": [
+                    "idea_id",
+                    "evidence_id",
+                    "evidence_ids",
+                    "scores",
+                    "state_transition",
+                    "action_type",
+                    "file paths",
+                    "enum values",
+                ],
+                "rewrite_only_paths": error.failed_action_fragment.get(
+                    "mismatch_paths", []
+                ),
+                "action": error.failed_action_fragment.get("action", {}),
+                "validation_errors": safe_errors,
+            }
+            return self._correction_variant(
+                variant,
+                action_type=action_type,
+                payload=correction_payload,
+                response_model=self.PROFILES[action_type].response_model,
+                allowed_evidence_ids=variant.allowed_evidence_ids,
+            )
         if action_type == ActionType.CREATE_IDEA_CANDIDATES:
             allowed_evidence_ids = variant.allowed_evidence_ids or [
                 str(item)
@@ -1141,7 +1222,8 @@ class RequestBudgetManager:
                     "role": "system",
                     "content": (
                         f"Return one corrected {action_type.value} JSON object only. "
-                        "Do not quote the previous full response."
+                        "Do not quote the previous full response. "
+                        + korean_output_contract()
                     ),
                 },
                 {"role": "user", "content": user_content},
@@ -2078,6 +2160,7 @@ class GitHubModelsClient:
                 action = ActionEnvelope.model_validate(
                     validated.model_dump(mode="json", by_alias=True)
                 )
+            _validate_action_language(action)
         except ValidationError as exc:
             validation_errors = _validation_error_details(exc, parsed)
             raise ModelPipelineError(

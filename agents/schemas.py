@@ -126,6 +126,7 @@ class ActionRejectionCode(StrEnum):
     MODEL_REFUSAL = "model_refusal"
     REQUEST_TOO_LARGE = "request_too_large"
     INPUT_BUDGET_EXCEEDED = "input_budget_exceeded"
+    LANGUAGE_MISMATCH = "language_mismatch"
     MISSING_ACTIVE_PROBLEM = "missing_active_problem"
     MISSING_PROBLEM_RECORD = "missing_problem_record"
     INSUFFICIENT_VALIDATED_EVIDENCE = "insufficient_validated_evidence"

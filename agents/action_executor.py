@@ -5,7 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-from agents.idea_materializer import materialize_idea_candidates
+from agents.idea_materializer import materialize_idea_candidates, materialize_idea_evaluation
 from agents.lifecycle import validate_transition
 from agents.problem_materializer import materialize_problem_candidate
 from agents.safety import (
@@ -44,6 +44,8 @@ class ActionExecutor:
             files = [materialize_problem_candidate(action, self.root)]
         if action.action_type == ActionType.CREATE_IDEA_CANDIDATES:
             files = [materialize_idea_candidates(action, self.root)]
+        if action.action_type == ActionType.EVALUATE_IDEAS and not files:
+            files = [materialize_idea_evaluation(action, self.root)]
         return MaterializedActionEnvelope.from_model_action(action, files=files)
 
     def apply_files(self, action: MaterializedActionEnvelope) -> list[Path]:

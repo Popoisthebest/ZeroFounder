@@ -355,6 +355,9 @@ def _general_context(root: Path, *, compact: bool, max_chars: int) -> ContextBun
         payload["tasks"] = _read(root / "company/task-board.json", 4000)
         payload["recent_decisions"] = _read(root / "company/decisions.jsonl", 6000)
         payload["founder_results_read_only"] = _read(root / "founder/results.json", 4000)
+        payload["recent_idea_evaluations"] = _recent_json_records(
+            root / "ideas/evaluations", limit=5
+        )
     return ContextBundle(content=_fit_payload(payload, max_chars))
 
 

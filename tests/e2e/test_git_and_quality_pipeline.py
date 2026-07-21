@@ -136,9 +136,9 @@ def test_create_agent_pr_uses_branch_sha_and_quality_body(
         source="trusted_materializer",
         role=AgentRole.RESEARCHER,
         action_type=ActionType.WRITE_REPORT,
-        title="Write report",
-        summary="Write a lifecycle report.",
-        rationale="The run needs a review artifact.",
+        title="보고서 작성",
+        summary="생애주기 검토 보고서를 작성합니다.",
+        rationale="이번 실행에는 사람이 검토할 운영 산출물이 필요합니다.",
         risk_level=RiskLevel.LOW,
         requires_approval=False,
         files=[FileChange(path="reports/e2e.md", content="# E2E\n")],
@@ -169,6 +169,8 @@ def test_create_agent_pr_uses_branch_sha_and_quality_body(
     pull = captured["pull"]
     assert pull["head"] == "agent/1003-write-report"
     assert pull["base"] == "main"
+    assert "생애주기 검토 보고서" in pull["body"]
+    assert "이번 실행에는" in pull["body"]
     assert "`" + "c" * 40 + "`" in pull["body"]
     assert "quality_check_not_started" in pull["body"]
     assert captured["labels"] == {"number": 7, "labels": ["agent-generated"]}

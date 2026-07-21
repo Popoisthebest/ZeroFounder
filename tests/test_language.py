@@ -96,6 +96,22 @@ def test_korean_pull_request_keeps_english_machine_contracts():
     assert dumped["state_transition"] == {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"}
 
 
+def test_pr_body_rejects_unvalidated_english_action_text():
+    action = problem_action().model_copy(
+        update={
+            "title": "Create a problem candidate",
+            "summary": "Create one evidence-backed problem candidate.",
+            "rationale": "Stored signals show a repeated manual workflow.",
+        }
+    )
+    try:
+        render_agent_pull_request(action, "a" * 40)
+    except ValueError as exc:
+        assert "language_mismatch" in str(exc)
+    else:
+        raise AssertionError("English action text should not be rendered into a PR body")
+
+
 def test_korean_dependency_issue_and_english_commands():
     title, body = render_dependency_issue(dependency_action())
     assert title.startswith("[창업자 승인 요청]")

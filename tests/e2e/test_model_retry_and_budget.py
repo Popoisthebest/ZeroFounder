@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 import agents.orchestrator as orchestrator
+from agents.context_builder import build_context_bundle
 from agents.github_models import GitHubModelsClient
 from agents.schemas import ActionType, CompanyState, LifecycleStage
 from agents.usage_limiter import UsageLimiter
@@ -28,15 +29,39 @@ def _valid_ideas() -> dict[str, object]:
     return {
         "role": "researcher",
         "action_type": "create_idea_candidates",
-        "title": "Create idea candidates",
-        "summary": "Generate evidence-backed idea candidates.",
-        "rationale": "The active problem has validated evidence.",
+        "title": "아이디어 후보 생성",
+        "summary": "검증된 근거를 바탕으로 아이디어 후보를 생성합니다.",
+        "rationale": "활성 문제에는 검증된 근거가 있어 후보 생성을 진행할 수 있습니다.",
         "risk_level": "low",
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
         "idea_candidates": [
-            idea_candidate("idea-001", ["signal-001"]),
-            idea_candidate("idea-002", list(SIGNAL_IDS)),
+            {
+                **idea_candidate("idea-001", ["signal-001"]),
+                "name": "목록 점프 도우미",
+                "summary": "반복 탐색 위치로 빠르게 돌아가는 도구입니다.",
+                "target_users": ["운영 담당자"],
+                "proposed_solution": "목록 위치를 저장하고 한 번에 이동하게 합니다.",
+                "value_proposition": "반복 스크롤과 위치 기억 부담을 줄입니다.",
+                "differentiation": "검색이 아니라 작업 위치 복귀에 집중합니다.",
+                "revenue_model": "팀 공유 위치 묶음을 유료 기능으로 확장합니다.",
+                "feasibility": "브라우저 저장소 기반 MVP로 빠르게 검증할 수 있습니다.",
+                "risks": ["사용자가 기존 탐색 습관을 유지할 수 있습니다."],
+                "evaluation_dimensions": ["반복 사용성", "구현 용이성"],
+            },
+            {
+                **idea_candidate("idea-002", list(SIGNAL_IDS)),
+                "name": "작업 위치 저장 도구",
+                "summary": "작업별 위치와 필터를 저장해 재탐색을 줄입니다.",
+                "target_users": ["운영 담당자"],
+                "proposed_solution": "위치와 필터 묶음을 저장하고 다시 엽니다.",
+                "value_proposition": "같은 목록 위치를 다시 찾는 시간을 줄입니다.",
+                "differentiation": "검색 결과보다 작업 맥락 복귀를 보존합니다.",
+                "revenue_model": "공유 위치 묶음을 유료 팀 기능으로 제공합니다.",
+                "feasibility": "정적 MVP로 저장과 복귀 흐름을 검증할 수 있습니다.",
+                "risks": ["저장 위치 관리가 부담이 될 수 있습니다."],
+                "evaluation_dimensions": ["전환 비용", "작업 빈도"],
+            },
         ],
     }
 
@@ -45,27 +70,28 @@ def _evaluate_ideas_action() -> dict[str, object]:
     return {
         "role": "researcher",
         "action_type": "evaluate_ideas",
-        "title": "Evaluate idea candidates",
-        "summary": "Evaluate existing candidates for the active validated problem.",
-        "rationale": "Two stored candidates exist, so evaluation is the next step.",
+        "title": "아이디어 후보 평가",
+        "summary": "검증된 활성 문제에 대한 기존 후보를 평가합니다.",
+        "rationale": "저장된 후보 두 개가 있으므로 다음 단계로 평가를 수행합니다.",
         "risk_level": "low",
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
         "idea_candidate_ids": ["idea-001", "idea-002"],
-        "files": [
+        "idea_evaluations": [
             {
-                "path": f"ideas/evaluations/{PROBLEM_ID}.json",
-                "content": json.dumps(
-                    {
-                        "problem_id": PROBLEM_ID,
-                        "selected": "idea-001",
-                        "evidence_ids": list(SIGNAL_IDS),
-                    },
-                    indent=2,
-                )
-                + "\n",
-                "operation": "upsert",
-            }
+                "idea_id": "idea-001",
+                "score": 8,
+                "reason": "근거와 직접 연결되고 구현 범위가 작아 우선 평가 대상입니다.",
+                "strengths": ["반복 탐색 문제를 직접 줄입니다.", "정적 MVP로 검증할 수 있습니다."],
+                "risks": ["기존 습관을 바꾸기 어려울 수 있습니다."],
+            },
+            {
+                "idea_id": "idea-002",
+                "score": 7,
+                "reason": "작업 맥락 복귀 가치는 크지만 저장 관리 부담이 있습니다.",
+                "strengths": ["팀 단위 공유 기능으로 확장할 수 있습니다."],
+                "risks": ["저장 위치가 많아지면 관리 비용이 생길 수 있습니다."],
+            },
         ],
         "state_transition": {
             "from": "IDEA_EVALUATION",
@@ -78,18 +104,18 @@ def _problem_action() -> dict[str, object]:
     return {
         "role": "researcher",
         "action_type": "create_problem_candidate",
-        "title": "Create problem candidate",
-        "summary": "Create an evidence-backed problem candidate.",
-        "rationale": "The compacted signals show repeated manual navigation.",
+        "title": "문제 후보 생성",
+        "summary": "근거가 있는 문제 후보를 생성합니다.",
+        "rationale": "축약된 신호에서 반복되는 수동 탐색 문제가 확인됐습니다.",
         "risk_level": "low",
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
         "problem_candidate": {
             "problem_id": PROBLEM_ID,
-            "title": "Repeated manual navigation",
-            "target_users": ["operators"],
-            "description": "Operators repeatedly lose position in long operational lists.",
-            "current_workaround": "They scroll, search, and manually remember positions.",
+            "title": "반복되는 수동 목록 탐색",
+            "target_users": ["운영 담당자"],
+            "description": "운영 담당자가 긴 목록에서 위치를 반복해서 잃습니다.",
+            "current_workaround": "스크롤, 검색, 수동 기억을 조합합니다.",
         },
         "state_transition": {
             "from": "DISCOVERY",
@@ -102,9 +128,9 @@ def _validate_evidence_action() -> dict[str, object]:
     return {
         "role": "researcher",
         "action_type": "validate_evidence",
-        "title": "Validate evidence",
-        "summary": "Validate the active problem evidence.",
-        "rationale": "Both stored evidence records support the problem.",
+        "title": "근거 검증",
+        "summary": "활성 문제의 근거를 검증합니다.",
+        "rationale": "저장된 두 근거가 모두 문제를 뒷받침합니다.",
         "risk_level": "low",
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
@@ -119,16 +145,16 @@ def _write_report_action() -> dict[str, object]:
     return {
         "role": "researcher",
         "action_type": "write_report",
-        "title": "Write report",
-        "summary": "Write a compact evidence-backed report.",
-        "rationale": "The repository contains enough context for a short report.",
+        "title": "보고서 작성",
+        "summary": "근거가 있는 짧은 보고서를 작성합니다.",
+        "rationale": "저장소에 짧은 보고서를 작성할 충분한 맥락이 있습니다.",
         "risk_level": "low",
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
         "files": [
             {
                 "path": "reports/request-budget.md",
-                "content": "# Request Budget\n\nEvidence-backed report.\n",
+                "content": "# 요청 예산\n\n근거가 있는 보고서입니다.\n",
                 "operation": "upsert",
             }
         ],
@@ -534,3 +560,18 @@ def test_e2e_default_model_selection_reaches_evaluate_ideas_http_call(
     assert step.quality_result["validation_status"] == "passed"
     assert step.new_state.lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK
     assert f"ideas/evaluations/{PROBLEM_ID}.json" in step.changed_files
+    stored = json.loads(
+        (e2e_harness.repo / f"ideas/evaluations/{PROBLEM_ID}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert stored["problem_id"] == PROBLEM_ID
+    assert stored["idea_candidate_ids"] == ["idea-001", "idea-002"]
+    assert "근거와 직접 연결" in stored["idea_evaluations"][0]["reason"]
+    next_context = json.loads(
+        build_context_bundle(
+            e2e_harness.repo,
+            lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK,
+        ).content
+    )
+    assert next_context["recent_idea_evaluations"][0]["problem_id"] == PROBLEM_ID

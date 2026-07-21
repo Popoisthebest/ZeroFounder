@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from agents.language import language_mismatches, operating_language
 from agents.schemas import ActionEnvelope, ActionType, MaterializedActionEnvelope
 
 ACTION_TITLES = {
@@ -33,6 +34,12 @@ def render_agent_pull_request(
     action: ActionEnvelope | MaterializedActionEnvelope,
     sha: str,
 ) -> tuple[str, str]:
+    mismatches = language_mismatches(
+        action.model_dump(mode="json", by_alias=True),
+        expected_language=operating_language(),
+    )
+    if mismatches:
+        raise ValueError("language_mismatch: PR body requires validated Korean action text")
     description = ACTION_TITLES.get(action.action_type, "에이전트 운영 변경")
     title = f"feat(agent): {description}"
     evidence = ", ".join(f"`{item}`" for item in action.evidence_ids) or "없음"
@@ -83,6 +90,12 @@ def render_agent_pull_request(
 
 
 def render_dependency_issue(action: ActionEnvelope) -> tuple[str, str]:
+    mismatches = language_mismatches(
+        action.model_dump(mode="json", by_alias=True),
+        expected_language=operating_language(),
+    )
+    if mismatches:
+        raise ValueError("language_mismatch: approval issue requires Korean action text")
     proposal = action.dependency_proposal
     if proposal is None:
         raise ValueError("dependency proposal is required")

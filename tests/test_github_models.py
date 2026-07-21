@@ -31,9 +31,9 @@ from scripts.write_model_summary import render_summary
 VALID = {
     "role": "auditor",
     "action_type": "no_op",
-    "title": "No action",
-    "summary": "No material change",
-    "rationale": "Preflight found no safe work",
+    "title": "변경 없음",
+    "summary": "실행할 안전한 변경이 없습니다.",
+    "rationale": "사전 점검에서 모델이 수행할 필요가 있는 작업을 찾지 못했습니다.",
     "risk_level": "low",
     "requires_approval": False,
     "evidence_ids": [],
@@ -43,18 +43,18 @@ VALID = {
 VALID_PROBLEM = {
     "role": "researcher",
     "action_type": "create_problem_candidate",
-    "title": "Create a problem candidate",
-    "summary": "Create one evidence-backed problem candidate.",
-    "rationale": "Stored signals show a repeated manual workflow.",
+    "title": "문제 후보 생성",
+    "summary": "저장된 근거를 바탕으로 문제 후보 하나를 생성합니다.",
+    "rationale": "저장된 신호에서 반복되는 수작업 흐름이 확인됐습니다.",
     "risk_level": "low",
     "requires_approval": False,
     "evidence_ids": ["signal-001"],
     "problem_candidate": {
         "problem_id": "problem-001",
-        "title": "Repeated manual coordination work",
-        "target_users": ["small teams"],
-        "description": "Small teams repeatedly reconcile the same coordination details by hand.",
-        "current_workaround": "They combine spreadsheets, messages, and screenshots.",
+        "title": "반복되는 수작업 조율 문제",
+        "target_users": ["소규모 운영팀"],
+        "description": "팀이 같은 조율 정보를 여러 도구에서 반복해서 맞춰야 합니다.",
+        "current_workaround": "스프레드시트, 메시지, 스크린샷을 수동으로 대조합니다.",
     },
     "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
 }
@@ -62,18 +62,18 @@ VALID_PROBLEM = {
 VALID_IDEAS = {
     "role": "researcher",
     "action_type": "create_idea_candidates",
-    "title": "Create idea candidates",
-    "summary": "Generate evidence-backed idea candidates.",
-    "rationale": "The active problem has validated evidence.",
+    "title": "아이디어 후보 생성",
+    "summary": "검증된 문제 근거를 바탕으로 아이디어 후보를 생성합니다.",
+    "rationale": "활성 문제에는 검증된 근거가 있어 후보 생성을 진행할 수 있습니다.",
     "risk_level": "low",
     "requires_approval": False,
     "evidence_ids": ["signal-001", "signal-002"],
     "idea_candidates": [
         {
             "idea_id": "idea-001",
-            "name": "List jump helper",
+            "name": "목록 점프 도우미",
             "summary": "긴 목록에서 반복 탐색을 줄이는 점프형 조작 도구입니다.",
-            "target_users": ["operators"],
+            "target_users": ["운영 담당자"],
             "proposed_solution": "검증된 간격 이동과 위치 복귀를 기존 목록 흐름에 추가합니다.",
             "value_proposition": "반복 스크롤과 수동 위치 기억을 줄여 작업 흐름을 단순화합니다.",
             "differentiation": "대시보드가 아니라 기존 목록 조작의 마찰을 직접 줄입니다.",
@@ -85,9 +85,9 @@ VALID_IDEAS = {
         },
         {
             "idea_id": "idea-002",
-            "name": "Saved list positions",
+            "name": "목록 위치 저장 도구",
             "summary": "반복 작업 위치를 저장해 긴 목록 재탐색을 줄이는 도구입니다.",
-            "target_users": ["operators"],
+            "target_users": ["운영 담당자"],
             "proposed_solution": "작업 묶음별 위치와 필터를 저장하고 다시 열 수 있게 합니다.",
             "value_proposition": "같은 목록 위치를 매번 다시 찾는 시간을 줄입니다.",
             "differentiation": "검색 결과보다 작업 맥락의 복귀 지점을 보존합니다.",
@@ -101,6 +101,58 @@ VALID_IDEAS = {
 }
 
 DISCOVERY_NO_OP = {key: value for key, value in VALID.items() if key != "files"}
+
+KOREAN_EVALUATE_IDEAS = {
+    "role": "researcher",
+    "action_type": "evaluate_ideas",
+    "title": "아이디어 후보 평가",
+    "summary": "저장된 후보 두 개를 검증된 근거에 따라 평가합니다.",
+    "rationale": "활성 문제와 근거가 준비되어 있어 중복 생성보다 평가가 필요합니다.",
+    "risk_level": "low",
+    "requires_approval": False,
+    "evidence_ids": ["signal-001", "signal-002"],
+    "idea_candidate_ids": ["idea-001", "idea-002"],
+    "idea_evaluations": [
+        {
+            "idea_id": "idea-001",
+            "score": 8,
+            "reason": "근거와 직접 연결되고 구현 범위가 작습니다.",
+            "strengths": ["반복 탐색 문제를 직접 줄입니다."],
+            "risks": ["기존 습관을 바꾸기 어려울 수 있습니다."],
+        },
+        {
+            "idea_id": "idea-002",
+            "score": 7,
+            "reason": "작업 맥락 복귀 가치는 크지만 관리 부담이 있습니다.",
+            "strengths": ["팀 공유 기능으로 확장할 수 있습니다."],
+            "risks": ["저장 위치 관리 비용이 생길 수 있습니다."],
+        },
+    ],
+    "state_transition": {"from": "IDEA_EVALUATION", "to": "DISTRIBUTION_CHECK"},
+}
+
+ENGLISH_EVALUATE_IDEAS = {
+    **KOREAN_EVALUATE_IDEAS,
+    "title": "Evaluate idea candidates",
+    "summary": "Evaluate two existing candidates against the validated problem.",
+    "rationale": "The active problem has candidates, so evaluation should proceed.",
+    "idea_evaluations": [
+        {
+            "idea_id": "idea-001",
+            "score": 8,
+            "reason": "This candidate maps directly to the evidence and is feasible.",
+            "strengths": ["It reduces repeated navigation."],
+            "risks": ["Users may keep existing habits."],
+        },
+        {
+            "idea_id": "idea-002",
+            "score": 7,
+            "reason": "This candidate preserves task context but adds management overhead.",
+            "strengths": ["It can expand into shared team workflows."],
+            "risks": ["Saved positions can become hard to manage."],
+        },
+    ],
+}
 
 
 def _completion(
@@ -624,6 +676,66 @@ def test_create_idea_correction_retry_uses_compact_prompt_and_accepts_fix():
     assert "allowed_evidence_ids" in correction_text
     assert "idea_candidates" in correction_text
     assert json.dumps(invalid, ensure_ascii=False) not in correction_text
+
+
+def test_evaluate_ideas_language_mismatch_correction_preserves_ids_and_transition(
+    monkeypatch,
+):
+    monkeypatch.setenv("OPERATING_LANGUAGE", "ko")
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = ENGLISH_EVALUATE_IDEAS if len(requests) == 1 else KOREAN_EVALUATE_IDEAS
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "required_action": "evaluate_ideas",
+                        "lifecycle_stage": "IDEA_EVALUATION",
+                        "active_problem_id": "problem-001",
+                        "existing_idea_candidates": [
+                            {"idea_id": "idea-001"},
+                            {"idea_id": "idea-002"},
+                        ],
+                    }
+                ),
+            },
+        ],
+        active_problem_id="problem-001",
+        problem_loaded=True,
+        problem_evidence_count=2,
+        resolved_evidence_count=2,
+        idea_context_ready=True,
+        existing_idea_candidate_count=2,
+        included_signal_count=2,
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.action.action_type == ActionType.EVALUATE_IDEAS
+    assert result.original_action_type == ActionType.EVALUATE_IDEAS
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.response_validation_failed_calls == 1
+    assert result.diagnostic.pydantic_validation_error_paths
+    assert result.action.idea_candidate_ids == ["idea-001", "idea-002"]
+    assert result.action.evidence_ids == ["signal-001", "signal-002"]
+    assert result.action.state_transition is not None
+    assert result.action.state_transition.to_stage == LifecycleStage.DISTRIBUTION_CHECK
+    assert "근거와 직접 연결" in result.action.idea_evaluations[0]["reason"]
+    correction_text = "\n".join(item["content"] for item in requests[1]["messages"])
+    assert "language_mismatch" in correction_text
+    assert "idea-001" in correction_text
+    assert "DISTRIBUTION_CHECK" in correction_text
+    assert json.dumps(ENGLISH_EVALUATE_IDEAS) not in correction_text
 
 
 def test_initial_idea_context_compacts_below_reserved_budget_before_http():

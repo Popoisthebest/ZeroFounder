@@ -35,3 +35,44 @@ def materialize_idea_candidates(action: ActionEnvelope, root: Path) -> FileChang
         path=f"research/ideas/{state.active_problem_id}.json",
         content=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
     )
+
+
+def materialize_idea_evaluation(action: ActionEnvelope, root: Path) -> FileChange:
+    if action.action_type != ActionType.EVALUATE_IDEAS:
+        raise ValueError("evaluate_ideas action is required")
+    state = CompanyState.model_validate_json((root / "company/state.json").read_text())
+    if not state.active_problem_id:
+        raise ValueError("active_problem_id is required")
+    ideas_path = root / f"research/ideas/{state.active_problem_id}.json"
+    existing_candidates: list[dict[str, object]] = []
+    if ideas_path.exists():
+        loaded = json.loads(ideas_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict) and isinstance(loaded.get("idea_candidates"), list):
+            existing_candidates = [
+                item for item in loaded["idea_candidates"] if isinstance(item, dict)
+            ]
+    candidate_ids = action.idea_candidate_ids or [
+        str(item.get("idea_id"))
+        for item in existing_candidates
+        if isinstance(item.get("idea_id"), str)
+    ]
+    payload = {
+        "problem_id": state.active_problem_id,
+        "lifecycle_stage": state.lifecycle_stage.value,
+        "action_type": action.action_type.value,
+        "title": action.title,
+        "summary": action.summary,
+        "rationale": action.rationale,
+        "evidence_ids": action.evidence_ids,
+        "idea_candidate_ids": candidate_ids,
+        "idea_evaluations": action.idea_evaluations or [],
+        "state_transition": (
+            action.state_transition.model_dump(mode="json", by_alias=True)
+            if action.state_transition
+            else None
+        ),
+    }
+    return FileChange(
+        path=f"ideas/evaluations/{state.active_problem_id}.json",
+        content=json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+    )
