@@ -403,8 +403,7 @@ jobs:
       called_by_agent: true
     permissions:
       contents: read
-      pull-requests: read
-      actions: read
+      pull-requests: write
 
   record-quality-status:
     name: PR 품질 상태 기록

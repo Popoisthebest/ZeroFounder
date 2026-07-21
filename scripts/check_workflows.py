@@ -5,6 +5,23 @@ from pathlib import Path
 
 import yaml
 
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+
+
+def max_job_permissions(document: dict) -> dict[str, str]:
+    required: dict[str, str] = {}
+    for job in document.get("jobs", {}).values():
+        permissions = job.get("permissions", {})
+        if not isinstance(permissions, dict):
+            raise SystemExit("job 권한은 scope별 dict여야 합니다.")
+        for scope, level in permissions.items():
+            if level not in PERMISSION_LEVELS:
+                raise SystemExit(f"알 수 없는 job 권한 수준입니다: {scope}:{level}")
+            current = required.get(scope, "none")
+            if PERMISSION_LEVELS[level] > PERMISSION_LEVELS[current]:
+                required[scope] = level
+    return required
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -25,6 +42,8 @@ def main() -> int:
             raise SystemExit(f"workflow 기본 권한은 contents: read여야 합니다: {path.name}")
         for name, job in document.get("jobs", {}).items():
             permissions = job.get("permissions", {})
+            if not isinstance(permissions, dict):
+                raise SystemExit(f"job 권한은 scope별 dict여야 합니다: {path.name}:{name}")
             if permissions.get("actions") == "write":
                 actions_writers.append((path.name, name))
             write_scopes = {scope for scope, value in permissions.items() if value == "write"}
@@ -84,6 +103,12 @@ def main() -> int:
     }
     if not required_jobs.issubset(quality_jobs):
         raise SystemExit("quality-check control/candidate job이 불완전합니다.")
+    quality_call = agent_document["jobs"].get("quality-check", {})
+    expected_quality_permissions = max_job_permissions(quality)
+    if quality_call.get("permissions") != expected_quality_permissions:
+        raise SystemExit(
+            "agent quality-check 호출 권한은 reusable workflow job 권한 최대치와 일치해야 합니다."
+        )
     expected_conditions = {
         "policy": "needs.verify-head.outputs.validation_status == 'valid'",
         "quality": (

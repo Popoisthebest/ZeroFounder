@@ -4,6 +4,7 @@ from pathlib import Path
 import yaml
 
 ROOT = Path(__file__).parents[1]
+PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
 
 
 def load_workflows() -> dict[str, dict]:
@@ -11,6 +12,15 @@ def load_workflows() -> dict[str, dict]:
         path.name: yaml.safe_load(path.read_text(encoding="utf-8"))
         for path in (ROOT / ".github/workflows").glob("*.yml")
     }
+
+
+def reusable_workflow_job_permissions(workflow: dict) -> dict[str, str]:
+    required: dict[str, str] = {}
+    for job in workflow["jobs"].values():
+        for scope, level in job.get("permissions", {}).items():
+            if PERMISSION_LEVELS[level] > PERMISSION_LEVELS.get(required.get(scope, "none"), 0):
+                required[scope] = level
+    return required
 
 
 def test_workflow_yaml_and_job_permissions():
@@ -49,8 +59,7 @@ def test_agent_uses_reusable_quality_workflow_outputs_without_cross_run_artifact
     assert quality_job["uses"] == "./.github/workflows/quality-check.yml"
     assert quality_job["permissions"] == {
         "contents": "read",
-        "pull-requests": "read",
-        "actions": "read",
+        "pull-requests": "write",
     }
     assert set(quality_job["with"]) == {
         "pull_request_number",
@@ -67,6 +76,19 @@ def test_agent_uses_reusable_quality_workflow_outputs_without_cross_run_artifact
         "quality-check-manual-result",
     }:
         assert forbidden not in text
+
+
+def test_agent_quality_check_permissions_cover_reusable_workflow_chain():
+    workflows = load_workflows()
+    caller_permissions = workflows["agent.yml"]["jobs"]["quality-check"]["permissions"]
+    required_permissions = reusable_workflow_job_permissions(workflows["quality-check.yml"])
+
+    assert required_permissions == {
+        "contents": "read",
+        "pull-requests": "write",
+    }
+    assert caller_permissions == required_permissions
+    assert workflows["agent.yml"]["permissions"] == {"contents": "read"}
 
 
 def test_reusable_quality_workflow_contract_and_exact_sha_checkout():
