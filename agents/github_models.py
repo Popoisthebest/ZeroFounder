@@ -7,10 +7,10 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 import httpx
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agents.schemas import (
     ActionEnvelope,
@@ -18,6 +18,7 @@ from agents.schemas import (
     ActionType,
     AgentRole,
     FailureStage,
+    IdeaCandidateProposal,
     MessageContentType,
     ModelCallResult,
     ModelInferenceDiagnostic,
@@ -92,6 +93,23 @@ DISCOVERY_CORRECTION_EXAMPLE = {
 }
 
 
+class CreateIdeaCandidatesCorrectionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    action_type: Literal[ActionType.CREATE_IDEA_CANDIDATES]
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    idea_candidates: list[IdeaCandidateProposal] = Field(min_length=2, max_length=8)
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json"))
+
+
 @dataclass(frozen=True)
 class PromptVariant:
     messages: list[dict[str, str]]
@@ -108,6 +126,10 @@ class PromptVariant:
     idea_context_ready: bool = False
     included_signal_count: int = 0
     excluded_signal_count: int = 0
+    allowed_evidence_ids: list[str] = field(default_factory=list)
+    is_validation_correction: bool = False
+    compacted_context: bool = False
+    removed_context_sections: list[str] = field(default_factory=list)
 
 
 def estimate_input_tokens(messages: list[dict[str, str]], schema_text: str, *,
@@ -132,6 +154,12 @@ def model_input_budget(max_input_tokens: int) -> int:
             chars_as_tokens,
         ),
     )
+
+
+def correction_token_reserve(applied_input_budget: int) -> int:
+    if applied_input_budget < 1200:
+        return max(0, applied_input_budget // 5)
+    return min(1000, max(800, applied_input_budget // 6))
 
 
 def mask_secrets(value: str) -> str:
@@ -195,6 +223,7 @@ class ModelPipelineError(RuntimeError):
         fallback_eligible: bool = False,
         validation_paths: list[str] | None = None,
         validation_errors: list[PydanticErrorDiagnostic] | None = None,
+        failed_action_fragment: dict[str, Any] | None = None,
         original_action_type: ActionType | None = None,
     ) -> None:
         super().__init__(reason)
@@ -205,6 +234,7 @@ class ModelPipelineError(RuntimeError):
         self.fallback_eligible = fallback_eligible
         self.validation_paths = validation_paths or []
         self.validation_errors = validation_errors or []
+        self.failed_action_fragment = failed_action_fragment or {}
         self.original_action_type = original_action_type
 
 
@@ -226,24 +256,104 @@ def _expected_type(error_type: str) -> str | None:
     return mappings.get(error_type)
 
 
-def _validation_error_details(exc: ValidationError) -> list[PydanticErrorDiagnostic]:
+def _idea_validator_name(message: str) -> str | None:
+    if "market figures or execution results" in message:
+        return "IdeaCandidateProposal.reject_invented_external_claims"
+    if "cannot contain URLs" in message:
+        return "IdeaCandidateProposal.reject_invented_external_claims"
+    if "idea_candidate idea_id values must be unique" in message:
+        return "ActionEnvelope.enforce_action_shape"
+    if "create_idea_candidates requires at least two" in message:
+        return "ActionEnvelope.enforce_action_shape"
+    return None
+
+
+def _candidate_at(parsed: dict[str, Any] | None, index: int | None) -> dict[str, Any] | None:
+    if parsed is None or index is None:
+        return None
+    candidates = parsed.get("idea_candidates")
+    if not isinstance(candidates, list) or index >= len(candidates):
+        return None
+    candidate = candidates[index]
+    return candidate if isinstance(candidate, dict) else None
+
+
+def _validation_error_details(
+    exc: ValidationError,
+    parsed: dict[str, Any] | None = None,
+) -> list[PydanticErrorDiagnostic]:
     details: list[PydanticErrorDiagnostic] = []
     for error in exc.errors(include_url=False, include_context=False, include_input=False):
         location = error.get("loc", ())
         path = ".".join(str(item) for item in location) or "<root>"
         error_type = str(error.get("type") or "validation_error")[:100]
+        message = str(error.get("msg") or "validation failed")[:300]
         leaf = str(location[-1])[:200] if location else None
+        candidate_index = None
+        if len(location) >= 2 and location[0] == "idea_candidates" and isinstance(
+            location[1], int
+        ):
+            candidate_index = location[1]
+        candidate = _candidate_at(parsed, candidate_index)
+        idea_id = candidate.get("idea_id") if candidate else None
+        idea_id = idea_id if isinstance(idea_id, str) else None
+        failure_field_path = path
+        if candidate_index is not None and len(location) == 2:
+            failure_field_path = f"idea_candidates.{candidate_index}"
         details.append(
             PydanticErrorDiagnostic(
                 path=path[:300],
                 error_type=error_type,
-                message=str(error.get("msg") or "validation failed")[:300],
+                message=message,
+                candidate_index=candidate_index,
+                idea_id=idea_id[:128] if idea_id else None,
+                validator_name=_idea_validator_name(message),
+                failure_field_path=failure_field_path[:300],
                 missing_field=leaf if error_type == "missing" else None,
                 extra_field=leaf if error_type == "extra_forbidden" else None,
                 expected_type=_expected_type(error_type),
             )
         )
     return details[:50]
+
+
+def _short_value(value: Any, *, max_chars: int = 500) -> Any:
+    if isinstance(value, str):
+        return mask_secrets(value)[:max_chars]
+    if isinstance(value, list):
+        return [_short_value(item, max_chars=max_chars // 2) for item in value[:8]]
+    if isinstance(value, dict):
+        return {
+            str(key)[:80]: _short_value(item, max_chars=max_chars // 2)
+            for key, item in list(value.items())[:20]
+        }
+    return value
+
+
+def _failed_action_fragment(
+    parsed: dict[str, Any],
+    validation_errors: list[PydanticErrorDiagnostic],
+) -> dict[str, Any]:
+    failed_indexes = sorted(
+        {
+            item.candidate_index
+            for item in validation_errors
+            if item.candidate_index is not None
+        }
+    )
+    candidates = parsed.get("idea_candidates")
+    failed_candidates = []
+    if isinstance(candidates, list):
+        for index in failed_indexes[:8]:
+            candidate = candidates[index] if index < len(candidates) else None
+            if isinstance(candidate, dict):
+                failed_candidates.append({"index": index, "json": _short_value(candidate)})
+    evidence_ids = parsed.get("evidence_ids")
+    return {
+        "action_type": parsed.get("action_type"),
+        "evidence_ids": evidence_ids if isinstance(evidence_ids, list) else [],
+        "failed_candidates": failed_candidates,
+    }
 
 
 def _extract_json_object(value: str) -> tuple[dict[str, Any], ActionType | None]:
@@ -449,6 +559,7 @@ class GitHubModelsClient:
         problem_evidence_count: int = 0,
         existing_idea_candidate_count: int = 0,
         idea_context_ready: bool = False,
+        allowed_evidence_ids: list[str] | None = None,
         included_signal_count: int = 0,
         excluded_signal_count: int = 0,
         model_max_input_tokens: int | None = None,
@@ -470,6 +581,7 @@ class GitHubModelsClient:
             problem_evidence_count=problem_evidence_count,
             existing_idea_candidate_count=existing_idea_candidate_count,
             idea_context_ready=idea_context_ready,
+            allowed_evidence_ids=allowed_evidence_ids or [],
             included_signal_count=included_signal_count,
             excluded_signal_count=excluded_signal_count,
         )
@@ -480,6 +592,9 @@ class GitHubModelsClient:
             request_mode=request_mode,
             selected_model_max_input_tokens=model_max_input_tokens,
             applied_input_budget=applied_input_budget,
+            reserved_correction_tokens=(
+                0 if diagnostic_mode else correction_token_reserve(applied_input_budget)
+            ),
         )
         current_mode = request_mode
         calls = 0
@@ -527,11 +642,63 @@ class GitHubModelsClient:
                 schema_in_messages=current_mode == ModelRequestMode.JSON_ONLY,
                 variant=active_variant,
             )
-            if diagnostic.estimated_input_tokens > applied_input_budget:
+            if (
+                diagnostic.initial_estimated_tokens == 0
+                and not active_variant.is_validation_correction
+            ):
+                diagnostic.initial_estimated_tokens = diagnostic.estimated_input_tokens
+            if active_variant.is_validation_correction:
+                diagnostic.correction_estimated_tokens = diagnostic.estimated_input_tokens
+            diagnostic.compacted_context = diagnostic.compacted_context or (
+                using_compact or active_variant.compacted_context
+            )
+            removed = [
+                *diagnostic.removed_context_sections,
+                *active_variant.removed_context_sections,
+            ]
+            diagnostic.removed_context_sections = list(dict.fromkeys(removed))[:20]
+            attempt_budget = applied_input_budget
+            if calls == 0 and not active_variant.is_validation_correction:
+                attempt_budget = max(
+                    1,
+                    applied_input_budget - diagnostic.reserved_correction_tokens,
+                )
+            if diagnostic.estimated_input_tokens > attempt_budget:
                 if compact_variant is not None and not using_compact:
                     active_variant = compact_variant
                     using_compact = True
                     continue
+                if active_variant.is_validation_correction:
+                    active_variant = self._minimal_validation_correction_variant(active_variant)
+                    schema_text = self._schema_text(active_variant.response_model)
+                    payload = self._build_chat_payload(
+                        {
+                            "model": model,
+                            "messages": active_variant.messages,
+                            "temperature": 0,
+                            "max_tokens": 500 if diagnostic_mode else 6000,
+                            "stream": False,
+                        },
+                        current_mode,
+                        diagnostic_mode=diagnostic_mode,
+                        response_model=active_variant.response_model,
+                    )
+                    self._update_request_diagnostic(
+                        diagnostic,
+                        payload,
+                        schema_text=schema_text,
+                        schema_in_messages=current_mode == ModelRequestMode.JSON_ONLY,
+                        variant=active_variant,
+                    )
+                    diagnostic.correction_estimated_tokens = diagnostic.estimated_input_tokens
+                    diagnostic.compacted_context = True
+                    removed = [
+                        *diagnostic.removed_context_sections,
+                        *active_variant.removed_context_sections,
+                    ]
+                    diagnostic.removed_context_sections = list(dict.fromkeys(removed))[:20]
+                    if diagnostic.estimated_input_tokens <= applied_input_budget:
+                        continue
                 last_error = ModelPipelineError(
                     FailureStage.REQUEST_BUILD,
                     "model request exceeded the applied input budget before HTTP transport",
@@ -793,6 +960,92 @@ class GitHubModelsClient:
             }
             for item in error.validation_errors
         ]
+        if (
+            error.original_action_type == ActionType.CREATE_IDEA_CANDIDATES
+            or error.failed_action_fragment.get("action_type") == "create_idea_candidates"
+        ):
+            allowed_evidence_ids = variant.allowed_evidence_ids or [
+                str(item)
+                for item in error.failed_action_fragment.get("evidence_ids", [])
+                if isinstance(item, str)
+            ]
+            schema_requirements = {
+                "action_type": "create_idea_candidates",
+                "forbidden_fields": ["files", "state_transition"],
+                "candidate_fields": [
+                    "idea_id",
+                    "name",
+                    "summary",
+                    "target_users",
+                    "proposed_solution",
+                    "value_proposition",
+                    "differentiation",
+                    "revenue_model",
+                    "feasibility",
+                    "evidence_ids",
+                    "risks",
+                    "evaluation_dimensions",
+                ],
+                "candidate_count": {"min": 2, "max": 8},
+                "evidence_ids": "Use only allowed_evidence_ids.",
+                "idea_id": "lowercase id matching ^[a-z0-9][a-z0-9._:-]{0,127}$",
+                "string_rules": "Do not include URLs, execution results, or invented metrics.",
+            }
+            correction_payload = {
+                "action_type": "create_idea_candidates",
+                "active_problem_id": variant.active_problem_id,
+                "allowed_evidence_ids": allowed_evidence_ids[:20],
+                "failed_candidates": error.failed_action_fragment.get(
+                    "failed_candidates", []
+                ),
+                "validation_errors": safe_errors,
+                "schema_requirements": schema_requirements,
+            }
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Return one corrected JSON object only. Do not quote the previous "
+                        "full response. Keep create_idea_candidates in IDEA_EVALUATION; do "
+                        "not include files or state_transition."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        correction_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            ]
+            return PromptVariant(
+                messages=messages,
+                response_model=CreateIdeaCandidatesCorrectionEnvelope,
+                context_chars=0,
+                active_problem_id=variant.active_problem_id,
+                candidate_evidence_id_count=variant.candidate_evidence_id_count,
+                resolved_evidence_count=variant.resolved_evidence_count,
+                unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
+                new_signal_count=variant.new_signal_count,
+                problem_loaded=variant.problem_loaded,
+                problem_evidence_count=variant.problem_evidence_count,
+                existing_idea_candidate_count=variant.existing_idea_candidate_count,
+                idea_context_ready=variant.idea_context_ready,
+                included_signal_count=variant.included_signal_count,
+                excluded_signal_count=variant.excluded_signal_count,
+                allowed_evidence_ids=allowed_evidence_ids[:20],
+                is_validation_correction=True,
+                compacted_context=True,
+                removed_context_sections=[
+                    "mission",
+                    "safety_constraints",
+                    "included_signal_records",
+                    "existing_idea_candidates",
+                    "general_lifecycle_instructions",
+                    "full_action_schema",
+                ],
+            )
         correction = (
             "Your previous JSON failed schema validation. Do not repeat or quote the "
             "previous response. Return one corrected JSON object only. Allowed DISCOVERY "
@@ -821,6 +1074,80 @@ class GitHubModelsClient:
             idea_context_ready=variant.idea_context_ready,
             included_signal_count=variant.included_signal_count,
             excluded_signal_count=variant.excluded_signal_count,
+            allowed_evidence_ids=variant.allowed_evidence_ids,
+            is_validation_correction=True,
+            compacted_context=variant.compacted_context,
+            removed_context_sections=variant.removed_context_sections or [],
+        )
+
+    @staticmethod
+    def _minimal_validation_correction_variant(variant: PromptVariant) -> PromptVariant:
+        user_payload: dict[str, Any] = {}
+        if len(variant.messages) >= 2:
+            try:
+                loaded = json.loads(variant.messages[-1].get("content", "{}"))
+                if isinstance(loaded, dict):
+                    user_payload = loaded
+            except json.JSONDecodeError:
+                user_payload = {}
+        minimal_candidates = []
+        for item in user_payload.get("failed_candidates", [])[:8]:
+            if not isinstance(item, dict):
+                continue
+            candidate = item.get("json")
+            idea_id = candidate.get("idea_id") if isinstance(candidate, dict) else None
+            minimal_candidates.append(
+                {
+                    "index": item.get("index"),
+                    "idea_id": idea_id,
+                }
+            )
+        minimal_payload = {
+            "action_type": user_payload.get("action_type", "create_idea_candidates"),
+            "active_problem_id": user_payload.get("active_problem_id"),
+            "allowed_evidence_ids": user_payload.get("allowed_evidence_ids", [])[:20],
+            "failed_candidates": minimal_candidates,
+            "validation_errors": user_payload.get("validation_errors", [])[:20],
+            "schema_requirements": user_payload.get("schema_requirements", {}),
+        }
+        return PromptVariant(
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Return one corrected create_idea_candidates JSON object only. "
+                        "No files, no state_transition, no URLs, no invented metrics."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        minimal_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            response_model=variant.response_model,
+            context_chars=0,
+            active_problem_id=variant.active_problem_id,
+            candidate_evidence_id_count=variant.candidate_evidence_id_count,
+            resolved_evidence_count=variant.resolved_evidence_count,
+            unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
+            new_signal_count=variant.new_signal_count,
+            problem_loaded=variant.problem_loaded,
+            problem_evidence_count=variant.problem_evidence_count,
+            existing_idea_candidate_count=variant.existing_idea_candidate_count,
+            idea_context_ready=variant.idea_context_ready,
+            included_signal_count=variant.included_signal_count,
+            excluded_signal_count=variant.excluded_signal_count,
+            allowed_evidence_ids=variant.allowed_evidence_ids,
+            is_validation_correction=True,
+            compacted_context=True,
+            removed_context_sections=[
+                *variant.removed_context_sections,
+                "failed_candidate_json",
+            ],
         )
 
     @staticmethod
@@ -983,7 +1310,7 @@ class GitHubModelsClient:
                     validated.model_dump(mode="json", by_alias=True)
                 )
         except ValidationError as exc:
-            validation_errors = _validation_error_details(exc)
+            validation_errors = _validation_error_details(exc, parsed)
             raise ModelPipelineError(
                 FailureStage.SCHEMA_VALIDATION,
                 "model JSON did not satisfy the action schema",
@@ -991,6 +1318,7 @@ class GitHubModelsClient:
                 fallback_eligible=True,
                 validation_paths=[item.path for item in validation_errors],
                 validation_errors=validation_errors,
+                failed_action_fragment=_failed_action_fragment(parsed, validation_errors),
                 original_action_type=original_action_type,
             ) from exc
         return action, original_action_type

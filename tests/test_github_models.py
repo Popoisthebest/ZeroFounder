@@ -13,6 +13,7 @@ from agents.github_models import (
     parse_action_response,
 )
 from agents.schemas import (
+    ActionEnvelope,
     ActionRejectionCode,
     ActionType,
     CompactDiscoveryActionEnvelope,
@@ -55,6 +56,47 @@ VALID_PROBLEM = {
         "current_workaround": "They combine spreadsheets, messages, and screenshots.",
     },
     "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
+}
+
+VALID_IDEAS = {
+    "role": "researcher",
+    "action_type": "create_idea_candidates",
+    "title": "Create idea candidates",
+    "summary": "Generate evidence-backed idea candidates.",
+    "rationale": "The active problem has validated evidence.",
+    "risk_level": "low",
+    "requires_approval": False,
+    "evidence_ids": ["signal-001", "signal-002"],
+    "idea_candidates": [
+        {
+            "idea_id": "idea-001",
+            "name": "List jump helper",
+            "summary": "긴 목록에서 반복 탐색을 줄이는 점프형 조작 도구입니다.",
+            "target_users": ["operators"],
+            "proposed_solution": "검증된 간격 이동과 위치 복귀를 기존 목록 흐름에 추가합니다.",
+            "value_proposition": "반복 스크롤과 수동 위치 기억을 줄여 작업 흐름을 단순화합니다.",
+            "differentiation": "대시보드가 아니라 기존 목록 조작의 마찰을 직접 줄입니다.",
+            "revenue_model": "팀 단위 고급 설정을 유료화할 수 있습니다.",
+            "feasibility": "정적 MVP에서 목록 상태와 단축 조작만 구현하면 됩니다.",
+            "evidence_ids": ["signal-001"],
+            "risks": ["기존 단축키 습관을 바꾸지 않을 수 있습니다."],
+            "evaluation_dimensions": ["반복 사용 가능성", "무료 MVP 구현성"],
+        },
+        {
+            "idea_id": "idea-002",
+            "name": "Saved list positions",
+            "summary": "반복 작업 위치를 저장해 긴 목록 재탐색을 줄이는 도구입니다.",
+            "target_users": ["operators"],
+            "proposed_solution": "작업 묶음별 위치와 필터를 저장하고 다시 열 수 있게 합니다.",
+            "value_proposition": "같은 목록 위치를 매번 다시 찾는 시간을 줄입니다.",
+            "differentiation": "검색 결과보다 작업 맥락의 복귀 지점을 보존합니다.",
+            "revenue_model": "공유 위치 묶음을 유료 팀 기능으로 확장할 수 있습니다.",
+            "feasibility": "브라우저 저장소 기반의 정적 MVP로 검증할 수 있습니다.",
+            "evidence_ids": ["signal-001", "signal-002"],
+            "risks": ["사용자가 저장 위치를 관리하는 부담을 느낄 수 있습니다."],
+            "evaluation_dimensions": ["전환 비용", "작업 빈도"],
+        },
+    ],
 }
 
 DISCOVERY_NO_OP = {key: value for key, value in VALID.items() if key != "files"}
@@ -382,6 +424,103 @@ def test_schema_failure_correction_retry_succeeds_without_replaying_model_text()
     correction = requests[1]["messages"][-1]["content"]
     assert "problem_candidate" in correction
     assert json.dumps(invalid) not in correction
+
+
+def test_create_idea_candidate_validation_errors_include_candidate_details():
+    invalid = json.loads(json.dumps(VALID_IDEAS))
+    invalid["idea_candidates"][0]["summary"] = (
+        "https://example.test 에서 가져온 검증되지 않은 아이디어입니다."
+    )
+    invalid["idea_candidates"][1]["value_proposition"] = (
+        "사용자 1000명을 확보할 수 있다는 수치 주장입니다."
+    )
+
+    result = _run(_client(_single_response(_completion(json.dumps(invalid)))))
+
+    assert result.rejection_code == ActionRejectionCode.MODEL_RESPONSE_REJECTED
+    errors = result.diagnostic.pydantic_validation_errors
+    assert {item.candidate_index for item in errors} == {0, 1}
+    assert {item.idea_id for item in errors} == {"idea-001", "idea-002"}
+    assert all(
+        item.validator_name == "IdeaCandidateProposal.reject_invented_external_claims"
+        for item in errors
+    )
+    assert all(
+        item.failure_field_path in {"idea_candidates.0", "idea_candidates.1"}
+        for item in errors
+    )
+    assert json.dumps(invalid) not in (result.rejection_reason or "")
+
+
+def test_create_idea_correction_retry_uses_compact_prompt_and_accepts_fix():
+    requests: list[dict] = []
+    invalid = json.loads(json.dumps(VALID_IDEAS))
+    invalid["idea_candidates"][0]["summary"] = (
+        "https://example.test 에서 가져온 검증되지 않은 아이디어입니다."
+    )
+    invalid["idea_candidates"][1]["value_proposition"] = (
+        "사용자 1000명을 확보할 수 있다는 수치 주장입니다."
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else VALID_IDEAS
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "large_context_fixture": "x" * 9000,
+                        "active_problem_id": "problem-001",
+                    }
+                ),
+            },
+        ],
+        response_model=ActionEnvelope,
+        compact_variant=PromptVariant(
+            messages=[
+                {"role": "system", "content": "Return JSON."},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "active_problem_id": "problem-001",
+                            "evidence_ids": ["signal-001", "signal-002"],
+                        }
+                    ),
+                },
+            ],
+            response_model=ActionEnvelope,
+            active_problem_id="problem-001",
+            allowed_evidence_ids=["signal-001", "signal-002"],
+            compacted_context=True,
+            removed_context_sections=["large_context_fixture"],
+        ),
+        active_problem_id="problem-001",
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.action.action_type == ActionType.CREATE_IDEA_CANDIDATES
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.correction_estimated_tokens <= 6000
+    assert result.diagnostic.reserved_correction_tokens >= 800
+    assert result.diagnostic.compacted_context
+    assert "included_signal_records" in result.diagnostic.removed_context_sections
+    correction_messages = requests[1]["messages"]
+    correction_text = "\n".join(item["content"] for item in correction_messages)
+    assert "large_context_fixture" not in correction_text
+    assert "allowed_evidence_ids" in correction_text
+    assert "idea_candidates" in correction_text
+    assert json.dumps(invalid, ensure_ascii=False) not in correction_text
 
 
 def test_second_schema_failure_returns_safe_no_op_with_diagnostics():

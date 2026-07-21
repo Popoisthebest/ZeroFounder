@@ -30,6 +30,7 @@ class ContextBundle:
     problem_evidence_count: int = 0
     existing_idea_candidate_count: int = 0
     idea_context_ready: bool = False
+    allowed_evidence_ids: list[str] | None = None
 
 
 def _read(path: Path, limit: int) -> str:
@@ -326,6 +327,7 @@ def _idea_evaluation_context(
         problem_evidence_count=problem_evidence_count,
         existing_idea_candidate_count=len(idea_candidates),
         idea_context_ready=idea_context_ready,
+        allowed_evidence_ids=candidate_evidence_ids,
     )
 
 

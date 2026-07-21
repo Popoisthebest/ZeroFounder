@@ -19,10 +19,21 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
     rejection_reason = diagnostic.rejection_reason or "none"
     allowed = ", ".join(item.value for item in diagnostic.allowed_action_types)
     validation_paths = ", ".join(inference.pydantic_validation_error_paths) or "none"
-    validation_errors = "; ".join(
-        f"{item.path}: {item.error_type}"
-        for item in inference.pydantic_validation_errors
-    ) or "none"
+    validation_error_parts = []
+    for item in inference.pydantic_validation_errors:
+        candidate = (
+            f" candidate={item.candidate_index}"
+            if item.candidate_index is not None
+            else ""
+        )
+        idea_id = f" idea_id={item.idea_id}" if item.idea_id else ""
+        validator = f" validator={item.validator_name}" if item.validator_name else ""
+        field = f" field={item.failure_field_path}" if item.failure_field_path else ""
+        validation_error_parts.append(
+            f"{item.path}: {item.error_type}{candidate}{idea_id}"
+            f"{validator}{field} reason={item.message}"
+        )
+    validation_errors = "; ".join(validation_error_parts) or "none"
     missing_fields = ", ".join(
         item.missing_field
         for item in inference.pydantic_validation_errors
@@ -71,6 +82,11 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("schema_chars", inference.schema_chars),
         ("context_chars", inference.context_chars),
         ("estimated_input_tokens", inference.estimated_input_tokens),
+        ("initial_estimated_tokens", inference.initial_estimated_tokens),
+        ("correction_estimated_tokens", inference.correction_estimated_tokens),
+        ("reserved_correction_tokens", inference.reserved_correction_tokens),
+        ("compacted_context", str(inference.compacted_context).lower()),
+        ("removed_context_sections", ", ".join(inference.removed_context_sections) or "none"),
         (
             "selected_model_max_input_tokens",
             inference.selected_model_max_input_tokens,

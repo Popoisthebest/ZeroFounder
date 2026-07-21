@@ -431,6 +431,10 @@ class PydanticErrorDiagnostic(StrictModel):
     path: str = Field(min_length=1, max_length=300)
     error_type: str = Field(min_length=1, max_length=100)
     message: str = Field(min_length=1, max_length=300)
+    candidate_index: int | None = Field(default=None, ge=0, le=50)
+    idea_id: StrictId | None = None
+    validator_name: str | None = Field(default=None, max_length=120)
+    failure_field_path: str | None = Field(default=None, max_length=300)
     missing_field: str | None = Field(default=None, max_length=200)
     extra_field: str | None = Field(default=None, max_length=200)
     expected_type: str | None = Field(default=None, max_length=100)
@@ -464,6 +468,11 @@ class ModelInferenceDiagnostic(StrictModel):
     schema_chars: int = Field(default=0, ge=0)
     context_chars: int = Field(default=0, ge=0)
     estimated_input_tokens: int = Field(default=0, ge=0)
+    initial_estimated_tokens: int = Field(default=0, ge=0)
+    correction_estimated_tokens: int = Field(default=0, ge=0)
+    reserved_correction_tokens: int = Field(default=0, ge=0)
+    compacted_context: bool = False
+    removed_context_sections: list[str] = Field(default_factory=list, max_length=20)
     selected_model_max_input_tokens: int = Field(default=0, ge=0)
     applied_input_budget: int = Field(default=0, ge=0)
     active_problem_id: StrictId | None = None

@@ -705,6 +705,7 @@ def run_model(
             problem_evidence_count=compact_context.problem_evidence_count,
             existing_idea_candidate_count=compact_context.existing_idea_candidate_count,
             idea_context_ready=compact_context.idea_context_ready,
+            allowed_evidence_ids=compact_context.allowed_evidence_ids or [],
         )
         context_chars = len(context.content)
         included_signal_count = context.included_signal_count
@@ -755,6 +756,7 @@ def run_model(
             context.existing_idea_candidate_count if not diagnostic_mode else 0
         ),
         idea_context_ready=context.idea_context_ready if not diagnostic_mode else False,
+        allowed_evidence_ids=(context.allowed_evidence_ids or []) if not diagnostic_mode else [],
         model_max_input_tokens=selection.max_input_tokens,
         applied_input_budget=selection.applied_input_budget,
     )
