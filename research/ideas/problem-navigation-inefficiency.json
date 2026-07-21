@@ -1,0 +1,58 @@
+{
+  "problem_id": "problem-navigation-inefficiency",
+  "lifecycle_stage": "IDEA_EVALUATION",
+  "idea_candidates": [
+    {
+      "idea_id": "idea-incremental-navigation",
+      "name": "점진적 탐색 기능",
+      "summary": "재고 시스템에서 목록을 탐색할 때 사용자가 특정 간격(예: 5 또는 10줄)으로 쉽게 이동할 수 있는 기능을 추가합니다.",
+      "target_users": [
+        "재고 관리자",
+        "창고 운영자"
+      ],
+      "proposed_solution": "목록 탐색 인터페이스에 '점진적 이동' 버튼을 추가하여 사용자가 특정 간격으로 빠르게 이동할 수 있도록 합니다. 또한, 키보드 단축키를 지원하여 효율성을 높입니다.",
+      "value_proposition": "목록 탐색 시간을 단축하고 사용자 경험을 개선하여 업무 효율성을 향상시킵니다.",
+      "differentiation": "기존 시스템의 탐색 기능을 보완하여 특정 간격 이동을 지원하는 독특한 접근 방식입니다.",
+      "revenue_model": "무료 MVP로 시작해, 추가 기능이나 기업용 라이선스를 통해 수익을 창출합니다.",
+      "feasibility": "기존 시스템에 추가적인 UI/UX 변경만으로 구현 가능하며, 기술적 난이도가 낮습니다.",
+      "evidence_ids": [
+        "signal-d38b3b6e3daaa7fc"
+      ],
+      "risks": [
+        "사용자 인터페이스 복잡성 증가",
+        "기존 시스템과의 호환성 문제"
+      ],
+      "evaluation_dimensions": [
+        "사용자 경험 개선",
+        "기술적 구현 용이성",
+        "시장 수요"
+      ]
+    },
+    {
+      "idea_id": "idea-alphabetical-sorting",
+      "name": "알파벳 순 정렬 기능",
+      "summary": "목록 항목을 알파벳 순으로 정렬하여 사용자가 원하는 항목을 빠르게 찾을 수 있도록 합니다.",
+      "target_users": [
+        "재고 관리자",
+        "창고 운영자"
+      ],
+      "proposed_solution": "목록에 알파벳 순 정렬 옵션을 추가하고, 검색 기능과 결합하여 사용자가 원하는 항목을 빠르게 찾을 수 있도록 합니다.",
+      "value_proposition": "목록 탐색 시간을 단축하고, 사용자가 원하는 항목을 쉽게 찾을 수 있도록 하여 업무 효율성을 향상시킵니다.",
+      "differentiation": "알파벳 순 정렬을 통해 목록 탐색의 직관성을 높이는 접근 방식입니다.",
+      "revenue_model": "무료 MVP로 시작해, 추가 기능이나 기업용 라이선스를 통해 수익을 창출합니다.",
+      "feasibility": "기존 시스템에 정렬 기능 추가만으로 구현 가능하며, 기술적 난이도가 낮습니다.",
+      "evidence_ids": [
+        "signal-34ca38432fa50f4d"
+      ],
+      "risks": [
+        "정렬 기준에 대한 사용자 선호도 차이",
+        "기존 시스템과의 호환성 문제"
+      ],
+      "evaluation_dimensions": [
+        "사용자 경험 개선",
+        "기술적 구현 용이성",
+        "시장 수요"
+      ]
+    }
+  ]
+}
