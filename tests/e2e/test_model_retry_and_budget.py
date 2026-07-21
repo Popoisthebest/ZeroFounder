@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 
 import agents.orchestrator as orchestrator
 from agents.github_models import GitHubModelsClient
@@ -14,6 +15,7 @@ from tests.e2e.conftest import (
     SIGNAL_IDS,
     active_problem_payload,
     idea_candidate,
+    run_git,
     write_json,
 )
 
@@ -70,6 +72,150 @@ def _evaluate_ideas_action() -> dict[str, object]:
             "to": "DISTRIBUTION_CHECK",
         },
     }
+
+
+def _problem_action() -> dict[str, object]:
+    return {
+        "role": "researcher",
+        "action_type": "create_problem_candidate",
+        "title": "Create problem candidate",
+        "summary": "Create an evidence-backed problem candidate.",
+        "rationale": "The compacted signals show repeated manual navigation.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": list(SIGNAL_IDS),
+        "problem_candidate": {
+            "problem_id": PROBLEM_ID,
+            "title": "Repeated manual navigation",
+            "target_users": ["operators"],
+            "description": "Operators repeatedly lose position in long operational lists.",
+            "current_workaround": "They scroll, search, and manually remember positions.",
+        },
+        "state_transition": {
+            "from": "DISCOVERY",
+            "to": "EVIDENCE_VALIDATION",
+        },
+    }
+
+
+def _validate_evidence_action() -> dict[str, object]:
+    return {
+        "role": "researcher",
+        "action_type": "validate_evidence",
+        "title": "Validate evidence",
+        "summary": "Validate the active problem evidence.",
+        "rationale": "Both stored evidence records support the problem.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": list(SIGNAL_IDS),
+        "state_transition": {
+            "from": "EVIDENCE_VALIDATION",
+            "to": "IDEA_EVALUATION",
+        },
+    }
+
+
+def _write_report_action() -> dict[str, object]:
+    return {
+        "role": "researcher",
+        "action_type": "write_report",
+        "title": "Write report",
+        "summary": "Write a compact evidence-backed report.",
+        "rationale": "The repository contains enough context for a short report.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": list(SIGNAL_IDS),
+        "files": [
+            {
+                "path": "reports/request-budget.md",
+                "content": "# Request Budget\n\nEvidence-backed report.\n",
+                "operation": "upsert",
+            }
+        ],
+    }
+
+
+def _invalid_for(action_type: str, valid: dict[str, object]) -> dict[str, object]:
+    invalid = json.loads(json.dumps(valid))
+    if action_type == "create_problem_candidate":
+        invalid.pop("problem_candidate", None)
+    elif action_type == "validate_evidence":
+        invalid["evidence_ids"] = []
+    elif action_type == "create_idea_candidates":
+        invalid["files"] = [{"path": "research/ideas/bad.json", "content": "{}"}]
+    elif action_type == "evaluate_ideas":
+        invalid.pop("idea_candidate_ids", None)
+        invalid.pop("idea_evaluations", None)
+    elif action_type == "write_report":
+        invalid["files"] = []
+    return invalid
+
+
+def _budget_context(action_type: str) -> dict[str, Any]:
+    base_problem = active_problem_payload()
+    evidence = [
+        {
+            "signal_id": signal_id,
+            "title": f"Evidence {signal_id}",
+            "summary": "Operators repeatedly lose list position." + " evidence" * 700,
+        }
+        for signal_id in SIGNAL_IDS
+    ]
+    payload: dict[str, Any] = {
+        "required_action": action_type,
+        "mission": "mission " * 1000,
+        "safety_constraints": "safety " * 1000,
+        "included_signal_records": evidence,
+        "validation_metadata": "metadata " * 1000,
+    }
+    if action_type == "create_problem_candidate":
+        payload.update(
+            {
+                "lifecycle_stage": "DISCOVERY",
+                "representative_signals": evidence,
+                "signal_clusters": [{"theme": "navigation", "details": "cluster " * 500}],
+            }
+        )
+    elif action_type == "validate_evidence":
+        payload.update(
+            {
+                "lifecycle_stage": "EVIDENCE_VALIDATION",
+                "active_problem_id": PROBLEM_ID,
+                "active_problem_candidate": base_problem,
+                "candidate_evidence_ids": list(SIGNAL_IDS),
+            }
+        )
+    elif action_type in {"create_idea_candidates", "evaluate_ideas"}:
+        payload.update(
+            {
+                "lifecycle_stage": "IDEA_EVALUATION",
+                "active_problem_id": PROBLEM_ID,
+                "active_problem": base_problem,
+                "existing_idea_candidates": (
+                    [
+                        {
+                            **idea_candidate("idea-001", ["signal-001"]),
+                            "summary": "Candidate one." + " compare" * 500,
+                        },
+                        {
+                            **idea_candidate("idea-002", list(SIGNAL_IDS)),
+                            "summary": "Candidate two." + " compare" * 500,
+                        },
+                    ]
+                    if action_type == "evaluate_ideas"
+                    else []
+                ),
+            }
+        )
+    else:
+        payload.update(
+            {
+                "lifecycle_stage": "REPORTING",
+                "active_problem_id": PROBLEM_ID,
+                "report_target": "budget manager report " * 600,
+            }
+        )
+    return payload
 
 
 def _large_idea_context() -> dict[str, Any]:
@@ -199,6 +345,105 @@ def test_request_over_budget_fails_before_http_when_no_safe_minimization_exists(
     assert result.diagnostic.completed_inference_calls == 0
 
 
+@pytest.mark.parametrize(
+    ("action_type", "valid_action", "expected_removed", "must_keep"),
+    [
+        (
+            "create_problem_candidate",
+            _problem_action(),
+            {"full_action_schema", "full_signal_records", "unrelated_lifecycle_instructions"},
+            ["signal-001", "signal-002", "create_problem_candidate"],
+        ),
+        (
+            "validate_evidence",
+            _validate_evidence_action(),
+            {"full_action_schema", "full_signal_records", "verbose_validation_metadata"},
+            [PROBLEM_ID, "signal-001", "signal-002", "validate_evidence"],
+        ),
+        (
+            "create_idea_candidates",
+            _valid_ideas(),
+            {"full_action_schema", "full_signal_records", "validation_metadata"},
+            [PROBLEM_ID, "signal-001", "signal-002", "create_idea_candidates"],
+        ),
+        (
+            "evaluate_ideas",
+            _evaluate_ideas_action(),
+            {"full_action_schema", "full_signal_records", "verbose_candidate_fields"},
+            [PROBLEM_ID, "idea-001", "idea-002", "evaluate_ideas"],
+        ),
+        (
+            "write_report",
+            _write_report_action(),
+            {"full_action_schema", "full_signal_records", "verbose_repository_metadata"},
+            [PROBLEM_ID, "write_report"],
+        ),
+    ],
+)
+def test_request_budget_manager_compacts_each_action_and_correction_retry(
+    action_type: str,
+    valid_action: dict[str, object],
+    expected_removed: set[str],
+    must_keep: list[str],
+) -> None:
+    requests: list[dict[str, Any]] = []
+    invalid_action = _invalid_for(action_type, valid_action)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid_action if len(requests) == 1 else valid_action
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    existing_count = 2 if action_type == "evaluate_ideas" else 0
+    result = GitHubModelsClient(
+        "fake-token",
+        UsageLimiter(daily_limit=8),
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _: None,
+    ).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return one JSON object."},
+            {"role": "user", "content": json.dumps(_budget_context(action_type))},
+        ],
+        active_problem_id=PROBLEM_ID,
+        problem_loaded=action_type
+        in {"validate_evidence", "create_idea_candidates", "evaluate_ideas"},
+        problem_evidence_count=2,
+        resolved_evidence_count=2,
+        candidate_evidence_id_count=2,
+        idea_context_ready=action_type in {"create_idea_candidates", "evaluate_ideas"},
+        existing_idea_candidate_count=existing_count,
+        included_signal_count=2,
+        allowed_evidence_ids=list(SIGNAL_IDS),
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.action.action_type.value == action_type
+    assert len(requests) == 2
+    assert result.diagnostic.initial_target_tokens == 5000
+    assert result.diagnostic.initial_estimated_tokens <= 5000
+    assert result.diagnostic.correction_target_tokens == 6000
+    assert result.diagnostic.correction_estimated_tokens <= 6000
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.compacted_context
+    assert expected_removed.issubset(set(result.diagnostic.removed_context_sections))
+
+    initial_prompt = "\n".join(item["content"] for item in requests[0]["messages"])
+    correction_prompt = "\n".join(item["content"] for item in requests[1]["messages"])
+    for value in must_keep:
+        assert value in initial_prompt
+    assert "mission mission" not in initial_prompt
+    assert "safety safety" not in initial_prompt
+    assert "allowed_evidence_ids" in correction_prompt or action_type != "create_idea_candidates"
+    schema_text = json.dumps(requests[0])
+    if action_type == "evaluate_ideas":
+        assert "create_idea_candidates" not in initial_prompt
+        assert "problem_candidate" not in schema_text
+
+
 def test_e2e_default_model_selection_reaches_evaluate_ideas_http_call(
     e2e_harness,
     monkeypatch,
@@ -222,6 +467,8 @@ def test_e2e_default_model_selection_reaches_evaluate_ideas_http_call(
             active_problem_id=PROBLEM_ID,
         )
     )
+    run_git(e2e_harness.repo, "add", "company/state.json", "research/problems", "research/ideas")
+    run_git(e2e_harness.repo, "commit", "-m", "prepare idea evaluation fixture")
 
     def handler(request: httpx.Request) -> httpx.Response:
         requests.append(json.loads(request.content))
@@ -271,3 +518,19 @@ def test_e2e_default_model_selection_reaches_evaluate_ideas_http_call(
     prompt = "\n".join(message["content"] for message in requests[0]["messages"])
     assert PROBLEM_ID in prompt
     assert "evaluate_ideas" in prompt
+
+    run_id = "2001"
+    action_path = e2e_harness.write_model_action(outcome.action, run_id)
+    preflight_path = e2e_harness.write_preflight(
+        e2e_harness.manual_decision(run_id),
+        run_id,
+    )
+    step = e2e_harness.apply_commit_validate(
+        action_path=action_path,
+        preflight_path=preflight_path,
+        run_id=run_id,
+    )
+    assert step.validation.status == "valid"
+    assert step.quality_result["validation_status"] == "passed"
+    assert step.new_state.lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK
+    assert f"ideas/evaluations/{PROBLEM_ID}.json" in step.changed_files

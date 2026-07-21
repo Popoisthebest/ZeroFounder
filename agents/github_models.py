@@ -80,26 +80,6 @@ DIAGNOSTIC_ACTION = {
     "files": [],
     "dependency_proposal": None,
 }
-DISCOVERY_CORRECTION_EXAMPLE = {
-    "role": "researcher",
-    "action_type": "create_problem_candidate",
-    "title": "문제 후보 생성",
-    "summary": "근거가 있는 문제 후보 하나를 생성합니다.",
-    "rationale": "저장된 신호에서 같은 구체적 우회 방식이 확인됐습니다.",
-    "risk_level": "low",
-    "requires_approval": False,
-    "evidence_ids": ["signal-existing-id"],
-    "problem_candidate": {
-        "problem_id": "problem-example",
-        "title": "구체적으로 반복되는 문제",
-        "target_users": ["명확한 사용자 집단"],
-        "description": "저장된 근거가 뒷받침하는 구체적이고 반복적인 문제입니다.",
-        "current_workaround": "사용자는 현재 수작업 단계와 기존 도구를 조합합니다.",
-    },
-    "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
-}
-
-
 class CreateIdeaCandidatesCorrectionEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -112,6 +92,81 @@ class CreateIdeaCandidatesCorrectionEnvelope(BaseModel):
     requires_approval: bool
     evidence_ids: list[str] = Field(default_factory=list, max_length=100)
     idea_candidates: list[IdeaCandidateProposal] = Field(min_length=2, max_length=8)
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json"))
+
+
+class CreateProblemCandidateActionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    action_type: Literal[ActionType.CREATE_PROBLEM_CANDIDATE]
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[str] = Field(min_length=1, max_length=100)
+    problem_candidate: Any
+    state_transition: Any | None = None
+    files: list[Any] = Field(default_factory=list, max_length=0)
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json"))
+
+
+class ValidateEvidenceActionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    action_type: Literal[ActionType.VALIDATE_EVIDENCE]
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[str] = Field(min_length=1, max_length=100)
+    state_transition: Any | None = None
+    files: list[Any] = Field(default_factory=list, max_length=0)
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json"))
+
+
+class EvaluateIdeasActionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    action_type: Literal[ActionType.EVALUATE_IDEAS]
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    idea_candidate_ids: list[str] | None = Field(default=None, max_length=20)
+    idea_evaluations: list[dict[str, Any]] | None = Field(default=None, max_length=20)
+    state_transition: Any | None = None
+    files: list[Any] = Field(default_factory=list, max_length=50)
+
+    def to_action_envelope(self) -> ActionEnvelope:
+        return ActionEnvelope.model_validate(self.model_dump(mode="json"))
+
+
+class WriteReportActionEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: AgentRole
+    action_type: Literal[ActionType.WRITE_REPORT]
+    title: str = Field(min_length=1, max_length=200)
+    summary: str = Field(min_length=1, max_length=4000)
+    rationale: str = Field(min_length=1, max_length=4000)
+    risk_level: RiskLevel
+    requires_approval: bool
+    evidence_ids: list[str] = Field(default_factory=list, max_length=100)
+    files: list[Any] = Field(default_factory=list, min_length=1, max_length=50)
+    state_transition: Any | None = None
 
     def to_action_envelope(self) -> ActionEnvelope:
         return ActionEnvelope.model_validate(self.model_dump(mode="json"))
@@ -452,6 +507,800 @@ def _extract_text_content(message: dict[str, Any]) -> str:
     return ""
 
 
+@dataclass(frozen=True)
+class RequestBudgetProfile:
+    action_type: ActionType
+    response_model: type[BaseModel]
+    system_instruction: str
+    removed_sections: list[str]
+
+
+class RequestBudgetManager:
+    PROFILES = {
+        ActionType.CREATE_PROBLEM_CANDIDATE: RequestBudgetProfile(
+            action_type=ActionType.CREATE_PROBLEM_CANDIDATE,
+            response_model=CreateProblemCandidateActionEnvelope,
+            system_instruction=(
+                "Return one create_problem_candidate JSON object only. Use stored signal "
+                "summaries as evidence. Do not include unrelated lifecycle actions."
+            ),
+            removed_sections=[
+                "full_action_schema",
+                "unrelated_lifecycle_instructions",
+                "repeated_safety_constraints",
+                "full_signal_records",
+                "verbose_problem_history",
+            ],
+        ),
+        ActionType.VALIDATE_EVIDENCE: RequestBudgetProfile(
+            action_type=ActionType.VALIDATE_EVIDENCE,
+            response_model=ValidateEvidenceActionEnvelope,
+            system_instruction=(
+                "Return one validate_evidence JSON object only. Validate the active "
+                "problem using the listed evidence IDs and summaries."
+            ),
+            removed_sections=[
+                "full_action_schema",
+                "unrelated_lifecycle_instructions",
+                "repeated_safety_constraints",
+                "full_signal_records",
+                "verbose_validation_metadata",
+            ],
+        ),
+        ActionType.CREATE_IDEA_CANDIDATES: RequestBudgetProfile(
+            action_type=ActionType.CREATE_IDEA_CANDIDATES,
+            response_model=CreateIdeaCandidatesCorrectionEnvelope,
+            system_instruction=(
+                "Return one create_idea_candidates JSON object only. Keep "
+                "IDEA_EVALUATION state; do not include files or state_transition."
+            ),
+            removed_sections=[
+                "full_action_schema",
+                "unused_action_type_schema",
+                "unrelated_lifecycle_instructions",
+                "mission",
+                "full_signal_records",
+                "repeated_safety_constraints",
+                "validation_metadata",
+                "empty_existing_idea_candidates",
+            ],
+        ),
+        ActionType.EVALUATE_IDEAS: RequestBudgetProfile(
+            action_type=ActionType.EVALUATE_IDEAS,
+            response_model=EvaluateIdeasActionEnvelope,
+            system_instruction=(
+                "Return one evaluate_ideas JSON object only. Compare the existing "
+                "idea candidates and include the allowed state transition."
+            ),
+            removed_sections=[
+                "full_action_schema",
+                "unused_action_type_schema",
+                "unrelated_lifecycle_instructions",
+                "mission",
+                "full_signal_records",
+                "repeated_safety_constraints",
+                "verbose_candidate_fields",
+                "create_idea_candidates_instructions",
+            ],
+        ),
+        ActionType.WRITE_REPORT: RequestBudgetProfile(
+            action_type=ActionType.WRITE_REPORT,
+            response_model=WriteReportActionEnvelope,
+            system_instruction=(
+                "Return one write_report JSON object only. Use the report target, "
+                "required evidence, and allowed file path policy."
+            ),
+            removed_sections=[
+                "full_action_schema",
+                "unrelated_lifecycle_instructions",
+                "full_signal_records",
+                "repeated_safety_constraints",
+                "verbose_repository_metadata",
+            ],
+        ),
+    }
+
+    def __init__(
+        self,
+        client: Any,
+        *,
+        diagnostic_mode: bool,
+        applied_input_budget: int,
+    ) -> None:
+        self.client = client
+        self.diagnostic_mode = diagnostic_mode
+        self.applied_input_budget = applied_input_budget
+        self.used_compact_variant = False
+        self.used_profile_compaction = False
+        self.used_correction_minimizer = False
+
+    def prepare_payload(
+        self,
+        *,
+        model: str,
+        variant: PromptVariant,
+        request_mode: ModelRequestMode,
+        compact_variant: PromptVariant | None,
+        diagnostic: ModelInferenceDiagnostic,
+        calls: int,
+    ) -> tuple[PromptVariant, ModelRequestMode, dict[str, Any]]:
+        candidates: list[tuple[PromptVariant, ModelRequestMode]] = [
+            (variant, request_mode)
+        ]
+        if not variant.is_validation_correction:
+            if compact_variant is not None and not self.used_compact_variant:
+                candidates.append((compact_variant, request_mode))
+            profile_variant = self._profile_compact_variant(variant, level=1)
+            if profile_variant is not None and not self.used_profile_compaction:
+                candidates.append((profile_variant, ModelRequestMode.JSON_ONLY))
+            tighter_variant = self._profile_compact_variant(variant, level=2)
+            if tighter_variant is not None:
+                candidates.append((tighter_variant, ModelRequestMode.JSON_ONLY))
+        elif not self.used_correction_minimizer:
+            candidates.append(
+                (
+                    self._minimal_validation_correction_variant(variant),
+                    ModelRequestMode.JSON_ONLY,
+                )
+            )
+
+        target = (
+            diagnostic.correction_target_tokens
+            if variant.is_validation_correction
+            else (
+                diagnostic.initial_target_tokens
+                if calls == 0
+                else self.applied_input_budget
+            )
+        )
+        last_variant = variant
+        for candidate, mode in candidates:
+            payload, schema_text = self._build_payload(model, candidate, mode)
+            self._update_diagnostic(diagnostic, payload, schema_text, mode, candidate)
+            self._record_estimate(diagnostic, candidate)
+            if diagnostic.estimated_input_tokens <= target:
+                self._mark_used(candidate, compact_variant)
+                return candidate, mode, payload
+            last_variant = candidate
+        self._mark_removed(diagnostic, last_variant)
+        raise ModelPipelineError(
+            FailureStage.REQUEST_BUILD,
+            "model request exceeded the applied input budget before HTTP transport",
+            code=ActionRejectionCode.INPUT_BUDGET_EXCEEDED,
+        )
+
+    def validation_correction_variant(
+        self,
+        variant: PromptVariant,
+        error: ModelPipelineError,
+    ) -> PromptVariant:
+        safe_errors = [
+            {
+                "path": item.path,
+                "type": item.error_type,
+                "missing_field": item.missing_field,
+                "extra_field": item.extra_field,
+                "expected_type": item.expected_type,
+            }
+            for item in error.validation_errors
+        ]
+        action_type = error.original_action_type or _known_action_type_from_object(
+            {"action_type": error.failed_action_fragment.get("action_type")}
+        )
+        if action_type == ActionType.CREATE_IDEA_CANDIDATES:
+            allowed_evidence_ids = variant.allowed_evidence_ids or [
+                str(item)
+                for item in error.failed_action_fragment.get("evidence_ids", [])
+                if isinstance(item, str)
+            ]
+            correction_payload = {
+                "action_type": ActionType.CREATE_IDEA_CANDIDATES.value,
+                "active_problem_id": variant.active_problem_id,
+                "allowed_evidence_ids": allowed_evidence_ids[:20],
+                "failed_candidates": error.failed_action_fragment.get(
+                    "failed_candidates", []
+                ),
+                "validation_errors": safe_errors,
+                "schema_requirements": self._schema_requirements(
+                    ActionType.CREATE_IDEA_CANDIDATES
+                ),
+            }
+            return self._correction_variant(
+                variant,
+                action_type=ActionType.CREATE_IDEA_CANDIDATES,
+                payload=correction_payload,
+                response_model=CreateIdeaCandidatesCorrectionEnvelope,
+                allowed_evidence_ids=allowed_evidence_ids[:20],
+            )
+
+        target_action = (
+            action_type if action_type in self.PROFILES else self._infer_action_type(variant)
+        )
+        if target_action in self.PROFILES:
+            correction_payload = {
+                "action_type": target_action.value,
+                "active_problem_id": variant.active_problem_id,
+                "allowed_evidence_ids": variant.allowed_evidence_ids[:20],
+                "validation_errors": safe_errors,
+                "schema_requirements": self._schema_requirements(target_action),
+            }
+            return self._correction_variant(
+                variant,
+                action_type=target_action,
+                payload=correction_payload,
+                response_model=self.PROFILES[target_action].response_model,
+                allowed_evidence_ids=variant.allowed_evidence_ids,
+            )
+
+        correction = (
+            "Your previous JSON failed schema validation. Do not repeat or quote the "
+            "previous response. Return one corrected JSON object only. Validation "
+            "diagnostics: "
+            + json.dumps(safe_errors, ensure_ascii=False, separators=(",", ":"))
+        )
+        return self._copy_variant(
+            variant,
+            messages=[*variant.messages, {"role": "system", "content": correction}],
+            is_validation_correction=True,
+        )
+
+    def _build_payload(
+        self,
+        model: str,
+        variant: PromptVariant,
+        mode: ModelRequestMode,
+    ) -> tuple[dict[str, Any], str]:
+        payload = self.client._build_chat_payload(
+            {
+                "model": model,
+                "messages": variant.messages,
+                "temperature": 0,
+                "max_tokens": 500 if self.diagnostic_mode else 6000,
+                "stream": False,
+            },
+            mode,
+            diagnostic_mode=self.diagnostic_mode,
+            response_model=variant.response_model,
+        )
+        return payload, self.client._schema_text(variant.response_model)
+
+    def _update_diagnostic(
+        self,
+        diagnostic: ModelInferenceDiagnostic,
+        payload: dict[str, Any],
+        schema_text: str,
+        mode: ModelRequestMode,
+        variant: PromptVariant,
+    ) -> None:
+        self.client._update_request_diagnostic(
+            diagnostic,
+            payload,
+            schema_text=schema_text,
+            schema_in_messages=mode == ModelRequestMode.JSON_ONLY,
+            variant=variant,
+        )
+        self._mark_removed(diagnostic, variant)
+
+    @staticmethod
+    def _record_estimate(
+        diagnostic: ModelInferenceDiagnostic,
+        variant: PromptVariant,
+    ) -> None:
+        if variant.is_validation_correction:
+            diagnostic.correction_estimated_tokens = diagnostic.estimated_input_tokens
+        else:
+            diagnostic.initial_estimated_tokens = diagnostic.estimated_input_tokens
+
+    def _mark_used(
+        self,
+        variant: PromptVariant,
+        compact_variant: PromptVariant | None,
+    ) -> None:
+        if compact_variant is not None and variant is compact_variant:
+            self.used_compact_variant = True
+        if variant.compacted_context and variant is not compact_variant:
+            self.used_profile_compaction = True
+        if variant.is_validation_correction and variant.compacted_context:
+            self.used_correction_minimizer = True
+
+    @staticmethod
+    def _mark_removed(
+        diagnostic: ModelInferenceDiagnostic,
+        variant: PromptVariant,
+    ) -> None:
+        removed = list(
+            dict.fromkeys(
+                [
+                    *diagnostic.removed_context_sections,
+                    *variant.removed_context_sections,
+                ]
+            )
+        )[:20]
+        diagnostic.removed_context_sections = removed
+        diagnostic.compacted_context = bool(removed)
+
+    def _infer_action_type(self, variant: PromptVariant) -> ActionType | None:
+        for message in variant.messages:
+            if message.get("role") != "system":
+                continue
+            try:
+                loaded = json.loads(message.get("content", ""))
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(loaded, dict):
+                continue
+            policy = loaded.get("orchestration_policy")
+            if not isinstance(policy, dict):
+                continue
+            preferred = policy.get("preferred_action_types")
+            if isinstance(preferred, list):
+                for item in preferred:
+                    try:
+                        action_type = ActionType(item)
+                    except (TypeError, ValueError):
+                        continue
+                    if action_type in self.PROFILES:
+                        return action_type
+        payload = _latest_user_json(variant.messages)
+        try:
+            requested = ActionType(payload.get("required_action"))
+        except (TypeError, ValueError):
+            requested = None
+        if requested in self.PROFILES:
+            return requested
+        stage = payload.get("lifecycle_stage")
+        if stage == "IDEA_EVALUATION":
+            return (
+                ActionType.EVALUATE_IDEAS
+                if variant.existing_idea_candidate_count > 0
+                else ActionType.CREATE_IDEA_CANDIDATES
+            )
+        if stage == "EVIDENCE_VALIDATION":
+            return ActionType.VALIDATE_EVIDENCE
+        if stage == "DISCOVERY":
+            return ActionType.CREATE_PROBLEM_CANDIDATE
+        return None
+
+    def _profile_compact_variant(
+        self,
+        variant: PromptVariant,
+        *,
+        level: int,
+    ) -> PromptVariant | None:
+        action_type = self._infer_action_type(variant)
+        if action_type not in self.PROFILES:
+            return None
+        profile = self.PROFILES[action_type]
+        payload = _latest_user_json(variant.messages)
+        compact_payload = self._compact_payload(action_type, variant, payload, level=level)
+        user_content = json.dumps(
+            compact_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        removed = profile.removed_sections
+        if level > 1:
+            removed = [
+                *removed,
+                "verbose_candidate_fields",
+                "long_problem_description",
+                "long_evidence_summaries",
+            ]
+        return self._copy_variant(
+            variant,
+            messages=[
+                {"role": "system", "content": profile.system_instruction},
+                {"role": "user", "content": user_content},
+            ],
+            response_model=profile.response_model,
+            context_chars=len(user_content),
+            included_signal_count=self._included_count(action_type, compact_payload, variant),
+            compacted_context=True,
+            removed_context_sections=list(dict.fromkeys(removed)),
+        )
+
+    def _compact_payload(
+        self,
+        action_type: ActionType,
+        variant: PromptVariant,
+        payload: dict[str, Any],
+        *,
+        level: int,
+    ) -> dict[str, Any]:
+        if action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
+            return self._compact_problem_candidate_payload(payload, level=level)
+        if action_type == ActionType.VALIDATE_EVIDENCE:
+            return self._compact_validate_evidence_payload(variant, payload, level=level)
+        if action_type == ActionType.CREATE_IDEA_CANDIDATES:
+            return self._compact_create_ideas_payload(variant, payload, level=level)
+        if action_type == ActionType.EVALUATE_IDEAS:
+            return self._compact_evaluate_ideas_payload(variant, payload, level=level)
+        if action_type == ActionType.WRITE_REPORT:
+            return self._compact_write_report_payload(variant, payload, level=level)
+        return payload
+
+    @staticmethod
+    def _compact_problem_candidate_payload(
+        payload: dict[str, Any],
+        *,
+        level: int,
+    ) -> dict[str, Any]:
+        limit = 140 if level == 1 else 90
+        signals = []
+        for record in payload.get("representative_signals", [])[: (8 if level == 1 else 5)]:
+            if not isinstance(record, dict):
+                continue
+            signals.append(
+                {
+                    "signal_id": record.get("signal_id"),
+                    "title": _short_value(
+                        record.get("title_or_summary") or record.get("title"),
+                        max_chars=limit,
+                    ),
+                    "summary": _short_value(record.get("summary"), max_chars=limit * 2),
+                }
+            )
+        return {
+            "lifecycle_stage": "DISCOVERY",
+            "required_action": ActionType.CREATE_PROBLEM_CANDIDATE.value,
+            "representative_signals": signals,
+            "signal_clusters": _short_value(payload.get("signal_clusters", []), max_chars=limit),
+            "minimum_required_fields": [
+                "problem_id",
+                "title",
+                "description",
+                "target_users",
+                "current_workaround",
+                "evidence_ids",
+            ],
+        }
+
+    @staticmethod
+    def _compact_validate_evidence_payload(
+        variant: PromptVariant,
+        payload: dict[str, Any],
+        *,
+        level: int,
+    ) -> dict[str, Any]:
+        limit = 220 if level == 1 else 120
+        return {
+            "lifecycle_stage": "EVIDENCE_VALIDATION",
+            "required_action": ActionType.VALIDATE_EVIDENCE.value,
+            "active_problem_id": variant.active_problem_id
+            or payload.get("active_problem_id"),
+            "active_problem": _compact_problem(
+                payload.get("active_problem_candidate") or payload.get("active_problem"),
+                variant,
+                level=level,
+            ),
+            "candidate_evidence_ids": payload.get("candidate_evidence_ids")
+            or variant.allowed_evidence_ids,
+            "validated_evidence": _compact_evidence_records(
+                payload.get("included_signal_records", []),
+                variant.allowed_evidence_ids,
+                limit=limit,
+            ),
+            "state_transition": {
+                "from": "EVIDENCE_VALIDATION",
+                "to": "IDEA_EVALUATION",
+            },
+        }
+
+    @staticmethod
+    def _compact_create_ideas_payload(
+        variant: PromptVariant,
+        payload: dict[str, Any],
+        *,
+        level: int,
+    ) -> dict[str, Any]:
+        limit = 240 if level == 1 else 130
+        return {
+            "lifecycle_stage": "IDEA_EVALUATION",
+            "required_action": ActionType.CREATE_IDEA_CANDIDATES.value,
+            "active_problem_id": variant.active_problem_id,
+            "active_problem": _compact_problem(
+                payload.get("active_problem"),
+                variant,
+                level=level,
+            ),
+            "validated_evidence": _compact_evidence_records(
+                payload.get("included_signal_records", []),
+                variant.allowed_evidence_ids,
+                limit=limit,
+            ),
+            "allowed_evidence_ids": variant.allowed_evidence_ids[:20],
+            "output_rules": {
+                "candidate_count": "2..8",
+                "forbidden_fields": ["files", "state_transition"],
+                "candidate_evidence_ids": "Use only allowed_evidence_ids.",
+            },
+        }
+
+    @staticmethod
+    def _compact_evaluate_ideas_payload(
+        variant: PromptVariant,
+        payload: dict[str, Any],
+        *,
+        level: int,
+    ) -> dict[str, Any]:
+        limit = 220 if level == 1 else 120
+        candidates = []
+        for candidate in payload.get("existing_idea_candidates", [])[:8]:
+            if not isinstance(candidate, dict):
+                continue
+            candidates.append(
+                {
+                    "idea_id": candidate.get("idea_id"),
+                    "name": _short_value(candidate.get("name"), max_chars=80),
+                    "summary": _short_value(candidate.get("summary"), max_chars=limit),
+                    "value_proposition": _short_value(
+                        candidate.get("value_proposition"), max_chars=limit
+                    ),
+                    "differentiation": _short_value(
+                        candidate.get("differentiation"), max_chars=limit
+                    ),
+                    "feasibility": _short_value(candidate.get("feasibility"), max_chars=limit),
+                    "revenue_model": _short_value(
+                        candidate.get("revenue_model"), max_chars=limit
+                    ),
+                    "evidence_ids": candidate.get("evidence_ids", []),
+                    "risks": _short_value(candidate.get("risks", []), max_chars=limit),
+                }
+            )
+        return {
+            "lifecycle_stage": "IDEA_EVALUATION",
+            "required_action": ActionType.EVALUATE_IDEAS.value,
+            "active_problem_id": variant.active_problem_id,
+            "active_problem": _compact_problem(
+                payload.get("active_problem"),
+                variant,
+                level=level,
+            ),
+            "validated_evidence": _compact_evidence_records(
+                payload.get("included_signal_records", []),
+                variant.allowed_evidence_ids,
+                limit=limit,
+            ),
+            "existing_idea_candidates": candidates,
+            "evaluation_criteria": [
+                "evidence fit",
+                "clear user value",
+                "differentiation",
+                "feasibility",
+                "risk",
+            ],
+            "state_transition": {
+                "from": "IDEA_EVALUATION",
+                "to": "DISTRIBUTION_CHECK",
+            },
+        }
+
+    @staticmethod
+    def _compact_write_report_payload(
+        variant: PromptVariant,
+        payload: dict[str, Any],
+        *,
+        level: int,
+    ) -> dict[str, Any]:
+        limit = 300 if level == 1 else 160
+        return {
+            "required_action": ActionType.WRITE_REPORT.value,
+            "active_problem_id": variant.active_problem_id or payload.get("active_problem_id"),
+            "report_target": _short_value(payload.get("report_target") or payload, max_chars=limit),
+            "required_evidence": _compact_evidence_records(
+                payload.get("included_signal_records", []),
+                variant.allowed_evidence_ids,
+                limit=limit,
+            ),
+        }
+
+    @staticmethod
+    def _schema_requirements(action_type: ActionType) -> dict[str, Any]:
+        if action_type == ActionType.CREATE_IDEA_CANDIDATES:
+            return {
+                "action_type": action_type.value,
+                "forbidden_fields": ["files", "state_transition"],
+                "candidate_count": {"min": 2, "max": 8},
+                "evidence_ids": "Use only allowed_evidence_ids.",
+                "idea_id": "lowercase id matching ^[a-z0-9][a-z0-9._:-]{0,127}$",
+                "string_rules": "No URLs, execution results, or invented metrics.",
+            }
+        return {
+            "action_type": action_type.value,
+            "schema_subset": [
+                "role",
+                "action_type",
+                "title",
+                "summary",
+                "rationale",
+                "risk_level",
+                "requires_approval",
+                "evidence_ids",
+                "state_transition",
+                "files",
+                "idea_candidate_ids",
+                "idea_evaluations",
+                "problem_candidate",
+            ],
+        }
+
+    def _correction_variant(
+        self,
+        variant: PromptVariant,
+        *,
+        action_type: ActionType,
+        payload: dict[str, Any],
+        response_model: type[BaseModel],
+        allowed_evidence_ids: list[str],
+    ) -> PromptVariant:
+        user_content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        return self._copy_variant(
+            variant,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        f"Return one corrected {action_type.value} JSON object only. "
+                        "Do not quote the previous full response."
+                    ),
+                },
+                {"role": "user", "content": user_content},
+            ],
+            response_model=response_model,
+            context_chars=len(user_content),
+            allowed_evidence_ids=allowed_evidence_ids,
+            is_validation_correction=True,
+            compacted_context=True,
+            removed_context_sections=[
+                "full_original_context",
+                "failed_model_response_text",
+                "full_action_schema",
+                "included_signal_records",
+            ],
+        )
+
+    def _minimal_validation_correction_variant(self, variant: PromptVariant) -> PromptVariant:
+        user_payload = _latest_user_json(variant.messages)
+        minimal_payload = {
+            "action_type": user_payload.get("action_type"),
+            "active_problem_id": user_payload.get("active_problem_id"),
+            "allowed_evidence_ids": user_payload.get("allowed_evidence_ids", [])[:20],
+            "validation_errors": user_payload.get("validation_errors", [])[:20],
+            "schema_requirements": user_payload.get("schema_requirements", {}),
+        }
+        if "failed_candidates" in user_payload:
+            minimal_payload["failed_candidates"] = [
+                {
+                    "index": item.get("index"),
+                    "idea_id": (
+                        item.get("json", {}).get("idea_id")
+                        if isinstance(item.get("json"), dict)
+                        else None
+                    ),
+                }
+                for item in user_payload.get("failed_candidates", [])[:8]
+                if isinstance(item, dict)
+            ]
+        return self._copy_variant(
+            variant,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return one corrected JSON object only.",
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        minimal_payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            context_chars=0,
+            is_validation_correction=True,
+            compacted_context=True,
+            removed_context_sections=[
+                *variant.removed_context_sections,
+                "failed_candidate_json",
+            ],
+        )
+
+    @staticmethod
+    def _included_count(
+        action_type: ActionType,
+        payload: dict[str, Any],
+        variant: PromptVariant,
+    ) -> int:
+        if action_type == ActionType.EVALUATE_IDEAS:
+            return len(payload.get("validated_evidence", []))
+        if "validated_evidence" in payload:
+            return len(payload["validated_evidence"])
+        return variant.included_signal_count
+
+    @staticmethod
+    def _copy_variant(variant: PromptVariant, **updates: Any) -> PromptVariant:
+        values = {
+            "messages": variant.messages,
+            "response_model": variant.response_model,
+            "context_chars": variant.context_chars,
+            "active_problem_id": variant.active_problem_id,
+            "candidate_evidence_id_count": variant.candidate_evidence_id_count,
+            "resolved_evidence_count": variant.resolved_evidence_count,
+            "unresolved_evidence_ids": variant.unresolved_evidence_ids or [],
+            "new_signal_count": variant.new_signal_count,
+            "problem_loaded": variant.problem_loaded,
+            "problem_evidence_count": variant.problem_evidence_count,
+            "existing_idea_candidate_count": variant.existing_idea_candidate_count,
+            "idea_context_ready": variant.idea_context_ready,
+            "included_signal_count": variant.included_signal_count,
+            "excluded_signal_count": variant.excluded_signal_count,
+            "allowed_evidence_ids": variant.allowed_evidence_ids or [],
+            "is_validation_correction": variant.is_validation_correction,
+            "compacted_context": variant.compacted_context,
+            "removed_context_sections": variant.removed_context_sections or [],
+        }
+        values.update(updates)
+        return PromptVariant(**values)
+
+
+def _compact_problem(
+    problem: Any,
+    variant: PromptVariant,
+    *,
+    level: int,
+) -> dict[str, Any]:
+    limit = 280 if level == 1 else 140
+    if not isinstance(problem, dict):
+        return {
+            "problem_id": variant.active_problem_id,
+            "title": None,
+            "description": None,
+            "target_users": [],
+            "evidence_ids": variant.allowed_evidence_ids,
+        }
+    return {
+        "problem_id": problem.get("problem_id") or variant.active_problem_id,
+        "title": _short_value(problem.get("title"), max_chars=140),
+        "description": _short_value(problem.get("description"), max_chars=limit),
+        "target_users": _short_value(problem.get("target_users", []), max_chars=140),
+        "evidence_ids": problem.get("evidence_ids") or variant.allowed_evidence_ids,
+        "validation_result": _short_value(
+            problem.get("validation_result", {}),
+            max_chars=180 if level == 1 else 90,
+        ),
+    }
+
+
+def _compact_evidence_records(
+    records: Any,
+    fallback_ids: list[str],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    evidence = []
+    if isinstance(records, list):
+        for record in records[:8]:
+            if not isinstance(record, dict):
+                continue
+            evidence_id = record.get("signal_id") or record.get("evidence_id") or record.get("id")
+            evidence.append(
+                {
+                    "evidence_id": evidence_id,
+                    "title": _short_value(
+                        record.get("title")
+                        or record.get("title_or_summary")
+                        or record.get("summary"),
+                        max_chars=min(limit, 140),
+                    ),
+                    "summary": _short_value(record.get("summary"), max_chars=limit),
+                }
+            )
+    if evidence:
+        return evidence
+    return [{"evidence_id": evidence_id, "summary": None} for evidence_id in fallback_ids[:8]]
+
+
 class GitHubModelsClient:
     def __init__(
         self,
@@ -789,10 +1638,14 @@ class GitHubModelsClient:
             applied_input_budget - diagnostic.reserved_correction_tokens,
         )
         diagnostic.correction_target_tokens = applied_input_budget
+        budget_manager = RequestBudgetManager(
+            self,
+            diagnostic_mode=diagnostic_mode,
+            applied_input_budget=applied_input_budget,
+        )
         current_mode = request_mode
         calls = 0
         call_limit = 1 if diagnostic_mode else min(2, self.limiter.max_run_calls)
-        initial_minimized = False
         last_error = ModelPipelineError(
             FailureStage.REQUEST_BUILD,
             "model request was not completed",
@@ -808,18 +1661,13 @@ class GitHubModelsClient:
             diagnostic.finish_reason = None
             diagnostic.failure_stage = None
             try:
-                base_payload: dict[str, Any] = {
-                    "model": model,
-                    "messages": active_variant.messages,
-                    "temperature": 0,
-                    "max_tokens": 500 if diagnostic_mode else 6000,
-                    "stream": False,
-                }
-                payload = self._build_chat_payload(
-                    base_payload,
-                    current_mode,
-                    diagnostic_mode=diagnostic_mode,
-                    response_model=active_variant.response_model,
+                active_variant, current_mode, payload = budget_manager.prepare_payload(
+                    model=model,
+                    variant=active_variant,
+                    request_mode=current_mode,
+                    compact_variant=compact_variant,
+                    diagnostic=diagnostic,
+                    calls=calls,
                 )
             except (TypeError, ValueError):
                 last_error = ModelPipelineError(
@@ -828,81 +1676,8 @@ class GitHubModelsClient:
                 )
                 self.limiter.record_failure()
                 break
-            schema_text = self._schema_text(active_variant.response_model)
-            self._update_request_diagnostic(
-                diagnostic,
-                payload,
-                schema_text=schema_text,
-                schema_in_messages=current_mode == ModelRequestMode.JSON_ONLY,
-                variant=active_variant,
-            )
-            if not active_variant.is_validation_correction:
-                diagnostic.initial_estimated_tokens = diagnostic.estimated_input_tokens
-            if active_variant.is_validation_correction:
-                diagnostic.correction_estimated_tokens = diagnostic.estimated_input_tokens
-            diagnostic.compacted_context = diagnostic.compacted_context or (
-                active_variant.compacted_context
-                or bool(active_variant.removed_context_sections)
-            )
-            removed = [
-                *diagnostic.removed_context_sections,
-                *active_variant.removed_context_sections,
-            ]
-            diagnostic.removed_context_sections = list(dict.fromkeys(removed))[:20]
-            attempt_budget = applied_input_budget
-            if calls == 0 and not active_variant.is_validation_correction:
-                attempt_budget = diagnostic.initial_target_tokens
-            if diagnostic.estimated_input_tokens > attempt_budget:
-                if compact_variant is not None and not using_compact:
-                    active_variant = compact_variant
-                    using_compact = True
-                    continue
-                if (
-                    not active_variant.is_validation_correction
-                    and not initial_minimized
-                    and active_variant.idea_context_ready
-                    and active_variant.existing_idea_candidate_count == 0
-                ):
-                    active_variant = self._minimal_initial_variant(active_variant)
-                    initial_minimized = True
-                    current_mode = ModelRequestMode.JSON_ONLY
-                    continue
-                if active_variant.is_validation_correction:
-                    active_variant = self._minimal_validation_correction_variant(active_variant)
-                    schema_text = self._schema_text(active_variant.response_model)
-                    payload = self._build_chat_payload(
-                        {
-                            "model": model,
-                            "messages": active_variant.messages,
-                            "temperature": 0,
-                            "max_tokens": 500 if diagnostic_mode else 6000,
-                            "stream": False,
-                        },
-                        current_mode,
-                        diagnostic_mode=diagnostic_mode,
-                        response_model=active_variant.response_model,
-                    )
-                    self._update_request_diagnostic(
-                        diagnostic,
-                        payload,
-                        schema_text=schema_text,
-                        schema_in_messages=current_mode == ModelRequestMode.JSON_ONLY,
-                        variant=active_variant,
-                    )
-                    diagnostic.correction_estimated_tokens = diagnostic.estimated_input_tokens
-                    diagnostic.compacted_context = True
-                    removed = [
-                        *diagnostic.removed_context_sections,
-                        *active_variant.removed_context_sections,
-                    ]
-                    diagnostic.removed_context_sections = list(dict.fromkeys(removed))[:20]
-                    if diagnostic.estimated_input_tokens <= diagnostic.correction_target_tokens:
-                        continue
-                last_error = ModelPipelineError(
-                    FailureStage.REQUEST_BUILD,
-                    "model request exceeded the applied input budget before HTTP transport",
-                    code=ActionRejectionCode.INPUT_BUDGET_EXCEEDED,
-                )
+            except ModelPipelineError as exc:
+                last_error = exc
                 self.limiter.record_failure()
                 break
             fingerprint = request_fingerprint(
@@ -1048,7 +1823,7 @@ class GitHubModelsClient:
                         correction_base = compact_variant or active_variant
                         if compact_variant is not None:
                             using_compact = True
-                        active_variant = self._validation_correction_variant(
+                        active_variant = budget_manager.validation_correction_variant(
                             correction_base, exc
                         )
                         continue
@@ -1143,310 +1918,6 @@ class GitHubModelsClient:
         diagnostic.response_validation_failed_calls = usage[
             "response_validation_failed_calls"
         ]
-
-    @staticmethod
-    def _validation_correction_variant(
-        variant: PromptVariant,
-        error: ModelPipelineError,
-    ) -> PromptVariant:
-        safe_errors = [
-            {
-                "path": item.path,
-                "type": item.error_type,
-                "missing_field": item.missing_field,
-                "extra_field": item.extra_field,
-                "expected_type": item.expected_type,
-            }
-            for item in error.validation_errors
-        ]
-        if (
-            error.original_action_type == ActionType.CREATE_IDEA_CANDIDATES
-            or error.failed_action_fragment.get("action_type") == "create_idea_candidates"
-        ):
-            allowed_evidence_ids = variant.allowed_evidence_ids or [
-                str(item)
-                for item in error.failed_action_fragment.get("evidence_ids", [])
-                if isinstance(item, str)
-            ]
-            schema_requirements = {
-                "action_type": "create_idea_candidates",
-                "forbidden_fields": ["files", "state_transition"],
-                "candidate_fields": [
-                    "idea_id",
-                    "name",
-                    "summary",
-                    "target_users",
-                    "proposed_solution",
-                    "value_proposition",
-                    "differentiation",
-                    "revenue_model",
-                    "feasibility",
-                    "evidence_ids",
-                    "risks",
-                    "evaluation_dimensions",
-                ],
-                "candidate_count": {"min": 2, "max": 8},
-                "evidence_ids": "Use only allowed_evidence_ids.",
-                "idea_id": "lowercase id matching ^[a-z0-9][a-z0-9._:-]{0,127}$",
-                "string_rules": "Do not include URLs, execution results, or invented metrics.",
-            }
-            correction_payload = {
-                "action_type": "create_idea_candidates",
-                "active_problem_id": variant.active_problem_id,
-                "allowed_evidence_ids": allowed_evidence_ids[:20],
-                "failed_candidates": error.failed_action_fragment.get(
-                    "failed_candidates", []
-                ),
-                "validation_errors": safe_errors,
-                "schema_requirements": schema_requirements,
-            }
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Return one corrected JSON object only. Do not quote the previous "
-                        "full response. Keep create_idea_candidates in IDEA_EVALUATION; do "
-                        "not include files or state_transition."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        correction_payload,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                },
-            ]
-            return PromptVariant(
-                messages=messages,
-                response_model=CreateIdeaCandidatesCorrectionEnvelope,
-                context_chars=0,
-                active_problem_id=variant.active_problem_id,
-                candidate_evidence_id_count=variant.candidate_evidence_id_count,
-                resolved_evidence_count=variant.resolved_evidence_count,
-                unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
-                new_signal_count=variant.new_signal_count,
-                problem_loaded=variant.problem_loaded,
-                problem_evidence_count=variant.problem_evidence_count,
-                existing_idea_candidate_count=variant.existing_idea_candidate_count,
-                idea_context_ready=variant.idea_context_ready,
-                included_signal_count=variant.included_signal_count,
-                excluded_signal_count=variant.excluded_signal_count,
-                allowed_evidence_ids=allowed_evidence_ids[:20],
-                is_validation_correction=True,
-                compacted_context=True,
-                removed_context_sections=[
-                    "mission",
-                    "safety_constraints",
-                    "included_signal_records",
-                    "existing_idea_candidates",
-                    "general_lifecycle_instructions",
-                    "full_action_schema",
-                ],
-            )
-        correction = (
-            "Your previous JSON failed schema validation. Do not repeat or quote the "
-            "previous response. Return one corrected JSON object only. Allowed DISCOVERY "
-            "action_type values are collect_signals, create_problem_candidate, "
-            "validate_evidence, write_report, and no_op. Validation diagnostics: "
-            + json.dumps(safe_errors, ensure_ascii=False, separators=(",", ":"))
-            + ". Correct create_problem_candidate example: "
-            + json.dumps(
-                DISCOVERY_CORRECTION_EXAMPLE,
-                ensure_ascii=False,
-                separators=(",", ":"),
-            )
-        )
-        return PromptVariant(
-            messages=[*variant.messages, {"role": "system", "content": correction}],
-            response_model=variant.response_model,
-            context_chars=variant.context_chars,
-            active_problem_id=variant.active_problem_id,
-            candidate_evidence_id_count=variant.candidate_evidence_id_count,
-            resolved_evidence_count=variant.resolved_evidence_count,
-            unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
-            new_signal_count=variant.new_signal_count,
-            problem_loaded=variant.problem_loaded,
-            problem_evidence_count=variant.problem_evidence_count,
-            existing_idea_candidate_count=variant.existing_idea_candidate_count,
-            idea_context_ready=variant.idea_context_ready,
-            included_signal_count=variant.included_signal_count,
-            excluded_signal_count=variant.excluded_signal_count,
-            allowed_evidence_ids=variant.allowed_evidence_ids,
-            is_validation_correction=True,
-            compacted_context=variant.compacted_context,
-            removed_context_sections=variant.removed_context_sections or [],
-        )
-
-    @staticmethod
-    def _minimal_initial_variant(variant: PromptVariant) -> PromptVariant:
-        payload = _latest_user_json(variant.messages)
-        problem = payload.get("active_problem")
-        compact_problem: dict[str, Any]
-        if isinstance(problem, dict):
-            compact_problem = {
-                "problem_id": problem.get("problem_id") or variant.active_problem_id,
-                "title": _short_value(problem.get("title"), max_chars=160),
-                "description": _short_value(problem.get("description"), max_chars=500),
-                "target_users": _short_value(problem.get("target_users", []), max_chars=160),
-                "evidence_ids": problem.get("evidence_ids")
-                or variant.allowed_evidence_ids,
-            }
-        else:
-            compact_problem = {
-                "problem_id": variant.active_problem_id,
-                "title": None,
-                "description": None,
-                "target_users": [],
-                "evidence_ids": variant.allowed_evidence_ids,
-            }
-        raw_records = payload.get("included_signal_records", [])
-        evidence_records = []
-        if isinstance(raw_records, list):
-            for record in raw_records[:8]:
-                if not isinstance(record, dict):
-                    continue
-                evidence_id = (
-                    record.get("signal_id")
-                    or record.get("evidence_id")
-                    or record.get("id")
-                )
-                evidence_records.append(
-                    {
-                        "evidence_id": evidence_id,
-                        "title": _short_value(record.get("title"), max_chars=120),
-                        "summary": _short_value(record.get("summary"), max_chars=280),
-                    }
-                )
-        if not evidence_records:
-            evidence_records = [
-                {"evidence_id": evidence_id, "summary": None}
-                for evidence_id in variant.allowed_evidence_ids[:8]
-            ]
-        compact_payload = {
-            "lifecycle_stage": "IDEA_EVALUATION",
-            "active_problem_id": variant.active_problem_id,
-            "active_problem": compact_problem,
-            "validated_evidence": evidence_records,
-            "required_action": "create_idea_candidates",
-            "allowed_evidence_ids": variant.allowed_evidence_ids[:20],
-            "output_rules": {
-                "candidate_count": "2..8",
-                "forbidden_fields": ["files", "state_transition"],
-                "candidate_evidence_ids": "Use only allowed_evidence_ids.",
-                "no_urls_or_metrics": True,
-            },
-        }
-        user_content = json.dumps(compact_payload, ensure_ascii=False, separators=(",", ":"))
-        return PromptVariant(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Create IDEA_EVALUATION idea candidates as one JSON object. "
-                        "Use only create_idea_candidates. Do not include files or "
-                        "state_transition."
-                    ),
-                },
-                {"role": "user", "content": user_content},
-            ],
-            response_model=CreateIdeaCandidatesCorrectionEnvelope,
-            context_chars=len(user_content),
-            active_problem_id=variant.active_problem_id,
-            candidate_evidence_id_count=variant.candidate_evidence_id_count,
-            resolved_evidence_count=variant.resolved_evidence_count,
-            unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
-            new_signal_count=variant.new_signal_count,
-            problem_loaded=variant.problem_loaded,
-            problem_evidence_count=variant.problem_evidence_count,
-            existing_idea_candidate_count=variant.existing_idea_candidate_count,
-            idea_context_ready=variant.idea_context_ready,
-            included_signal_count=len(evidence_records),
-            excluded_signal_count=variant.excluded_signal_count,
-            allowed_evidence_ids=variant.allowed_evidence_ids,
-            compacted_context=True,
-            removed_context_sections=[
-                "mission",
-                "safety_constraints",
-                "full_signal_records",
-                "other_lifecycle_instructions",
-                "unused_action_type_schema",
-                "general_safety_policy_duplicates",
-                "validation_metadata",
-                "empty_existing_idea_candidates",
-            ],
-        )
-
-    @staticmethod
-    def _minimal_validation_correction_variant(variant: PromptVariant) -> PromptVariant:
-        user_payload: dict[str, Any] = {}
-        if len(variant.messages) >= 2:
-            try:
-                loaded = json.loads(variant.messages[-1].get("content", "{}"))
-                if isinstance(loaded, dict):
-                    user_payload = loaded
-            except json.JSONDecodeError:
-                user_payload = {}
-        minimal_candidates = []
-        for item in user_payload.get("failed_candidates", [])[:8]:
-            if not isinstance(item, dict):
-                continue
-            candidate = item.get("json")
-            idea_id = candidate.get("idea_id") if isinstance(candidate, dict) else None
-            minimal_candidates.append(
-                {
-                    "index": item.get("index"),
-                    "idea_id": idea_id,
-                }
-            )
-        minimal_payload = {
-            "action_type": user_payload.get("action_type", "create_idea_candidates"),
-            "active_problem_id": user_payload.get("active_problem_id"),
-            "allowed_evidence_ids": user_payload.get("allowed_evidence_ids", [])[:20],
-            "failed_candidates": minimal_candidates,
-            "validation_errors": user_payload.get("validation_errors", [])[:20],
-            "schema_requirements": user_payload.get("schema_requirements", {}),
-        }
-        return PromptVariant(
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Return one corrected create_idea_candidates JSON object only. "
-                        "No files, no state_transition, no URLs, no invented metrics."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        minimal_payload,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ),
-                },
-            ],
-            response_model=variant.response_model,
-            context_chars=0,
-            active_problem_id=variant.active_problem_id,
-            candidate_evidence_id_count=variant.candidate_evidence_id_count,
-            resolved_evidence_count=variant.resolved_evidence_count,
-            unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
-            new_signal_count=variant.new_signal_count,
-            problem_loaded=variant.problem_loaded,
-            problem_evidence_count=variant.problem_evidence_count,
-            existing_idea_candidate_count=variant.existing_idea_candidate_count,
-            idea_context_ready=variant.idea_context_ready,
-            included_signal_count=variant.included_signal_count,
-            excluded_signal_count=variant.excluded_signal_count,
-            allowed_evidence_ids=variant.allowed_evidence_ids,
-            is_validation_correction=True,
-            compacted_context=True,
-            removed_context_sections=[
-                *variant.removed_context_sections,
-                "failed_candidate_json",
-            ],
-        )
 
     @staticmethod
     def _build_chat_payload(
