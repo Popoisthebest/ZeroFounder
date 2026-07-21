@@ -11,8 +11,10 @@ from agents.approval import AGENT_COMMANDS, is_bot_actor, parse_comment_command
 from agents.context_builder import build_context_bundle
 from agents.github_client import GitHubClient
 from agents.github_models import (
+    DEFAULT_MAX_MODEL_OUTPUT_TOKENS,
     GitHubModelsClient,
     PromptVariant,
+    configured_model_input_budget,
     estimate_input_tokens,
     safe_no_op,
 )
@@ -637,11 +639,12 @@ def run_model(
         context_chars = 0
         included_signal_count = 0
         excluded_signal_count = 0
-        required_input_tokens = estimate_input_tokens(
+        prompt_estimated_tokens = estimate_input_tokens(
             messages,
             json.dumps(response_model.model_json_schema(), separators=(",", ":")),
             schema_in_messages=False,
         )
+        required_output_tokens = 500
     else:
         prompt = (root / "agents/prompts/core.md").read_text()
         max_context_chars = int(os.getenv("MAX_INPUT_CHARS", "24000"))
@@ -768,20 +771,67 @@ def run_model(
             ensure_ascii=False,
             separators=(",", ":"),
         )
-        required_input_tokens = estimate_input_tokens(
+        prompt_estimated_tokens = estimate_input_tokens(
             compact_messages,
             compact_schema,
             schema_in_messages=False,
         )
-    selection = client.select_chat_model(
-        catalog,
-        required_input_tokens=required_input_tokens,
+        required_output_tokens = DEFAULT_MAX_MODEL_OUTPUT_TOKENS
+    selection_required_input_tokens = configured_model_input_budget()
+    if hasattr(client, "select_chat_model_with_diagnostics"):
+        selection, selection_inference, selection_rejection = (
+            client.select_chat_model_with_diagnostics(
+                catalog,
+                required_input_tokens=selection_required_input_tokens,
+                required_output_tokens=required_output_tokens,
+            )
+        )
+    else:
+        selection = client.select_chat_model(
+            catalog,
+            required_input_tokens=selection_required_input_tokens,
+        )
+        selection_rejection = (
+            None if selection else ActionRejectionCode.NO_COMPATIBLE_MODEL
+        )
+        selection_inference = ModelInferenceDiagnostic(
+            selected_model=selection.selected_model if selection else None,
+            request_mode=selection.request_mode if selection else None,
+            selected_model_max_input_tokens=selection.max_input_tokens if selection else 0,
+            applied_input_budget=selection.applied_input_budget if selection else 0,
+            required_input_tokens=selection_required_input_tokens,
+            required_output_tokens=required_output_tokens,
+        )
+    selection_inference = selection_inference.model_copy(
+        update={"estimated_input_tokens": prompt_estimated_tokens}
     )
+    if not diagnostic_mode:
+        selection_inference = selection_inference.model_copy(
+            update={
+                "active_problem_id": context.active_problem_id,
+                "candidate_evidence_id_count": context.candidate_evidence_id_count,
+                "resolved_evidence_count": context.resolved_evidence_count,
+                "unresolved_evidence_ids": context.unresolved_evidence_ids or [],
+                "new_signal_count": context.new_signal_count,
+                "problem_loaded": context.problem_loaded,
+                "problem_evidence_count": context.problem_evidence_count,
+                "existing_idea_candidate_count": context.existing_idea_candidate_count,
+                "idea_context_ready": context.idea_context_ready,
+                "included_signal_count": context.included_signal_count,
+                "excluded_signal_count": context.excluded_signal_count,
+            }
+        )
     if not selection:
+        reason = (
+            "no model candidates were configured or discovered"
+            if selection_rejection == ActionRejectionCode.NO_MODEL_CANDIDATES_CONFIGURED
+            else "no compatible text model satisfies the required input budget"
+        )
         return _rejected_outcome(
             state,
-            code=ActionRejectionCode.NO_COMPATIBLE_MODEL,
-            reason="no compatible text model satisfies the required input budget",
+            code=selection_rejection or ActionRejectionCode.NO_COMPATIBLE_MODEL,
+            reason=reason,
+            inference=selection_inference,
             failure_stage=FailureStage.MODEL_SELECTION,
         )
     call = client.chat_action(
@@ -812,6 +862,24 @@ def run_model(
         allowed_evidence_ids=(context.allowed_evidence_ids or []) if not diagnostic_mode else [],
         model_max_input_tokens=selection.max_input_tokens,
         applied_input_budget=selection.applied_input_budget,
+    )
+    selection_diagnostic_fields = selection_inference.model_dump(
+        include={
+            "configured_model",
+            "configured_fallback_models",
+            "default_model_candidates",
+            "evaluated_model_candidates",
+            "required_input_tokens",
+            "required_output_tokens",
+            "selected_model_source",
+        }
+    )
+    call = call.model_copy(
+        update={
+            "diagnostic": call.diagnostic.model_copy(
+                update=selection_diagnostic_fields
+            )
+        }
     )
     if call.rejection_code is not None:
         return _rejected_outcome(

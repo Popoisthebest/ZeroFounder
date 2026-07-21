@@ -21,6 +21,7 @@ from agents.schemas import (
     IdeaCandidateProposal,
     MessageContentType,
     ModelCallResult,
+    ModelCandidateDiagnostic,
     ModelInferenceDiagnostic,
     ModelRequestMode,
     ModelSelection,
@@ -58,8 +59,14 @@ CHAT_ENDPOINT_NAMES = {
 }
 DEFAULT_MODEL_MAX_INPUT_TOKENS = 8192
 DEFAULT_MAX_MODEL_INPUT_TOKENS = 6000
+DEFAULT_MAX_MODEL_OUTPUT_TOKENS = 6000
 CONSERVATIVE_FREE_INPUT_TOKENS = 6000
 DEFAULT_MAX_INPUT_CHARS = 24_000
+DEFAULT_TEXT_MODEL_CANDIDATES = (
+    "cohere/cohere-command-a",
+    "openai/gpt-4.1-mini",
+    "openai/gpt-4.1",
+)
 DIAGNOSTIC_ACTION = {
     "role": "auditor",
     "action_type": "no_op",
@@ -160,6 +167,14 @@ def correction_token_reserve(applied_input_budget: int) -> int:
     if applied_input_budget < 1200:
         return max(0, applied_input_budget // 5)
     return min(1000, max(800, applied_input_budget // 6))
+
+
+def configured_model_input_budget() -> int:
+    try:
+        value = int(os.getenv("MAX_MODEL_INPUT_TOKENS", str(DEFAULT_MAX_MODEL_INPUT_TOKENS)))
+    except ValueError:
+        return DEFAULT_MAX_MODEL_INPUT_TOKENS
+    return max(1, value)
 
 
 def mask_secrets(value: str) -> str:
@@ -501,49 +516,209 @@ class GitHubModelsClient:
         return bool(capabilities.intersection(STRUCTURED_OUTPUT_CAPABILITIES))
 
     @staticmethod
-    def _max_input_tokens(model: dict[str, Any]) -> int:
-        limits = model.get("limits")
-        value = limits.get("max_input_tokens") if isinstance(limits, dict) else None
-        if value is None:
-            value = model.get("max_input_tokens")
+    def _positive_int(value: object) -> int:
         if isinstance(value, int) and value > 0:
             return value
+        if isinstance(value, str) and value.isdigit():
+            parsed = int(value)
+            return parsed if parsed > 0 else 0
+        return 0
+
+    @classmethod
+    def _limit_value(cls, model: dict[str, Any], *keys: str) -> int:
+        limits = model.get("limits")
+        for key in keys:
+            if isinstance(limits, dict):
+                value = cls._positive_int(limits.get(key))
+                if value:
+                    return value
+            value = cls._positive_int(model.get(key))
+            if value:
+                return value
+        return 0
+
+    @classmethod
+    def _max_input_tokens(cls, model: dict[str, Any]) -> int:
+        value = cls._limit_value(
+            model,
+            "max_input_tokens",
+            "input_token_limit",
+            "max_prompt_tokens",
+            "prompt_token_limit",
+        )
+        if value:
+            return value
+        context_window = cls._context_window_tokens(model)
+        if context_window:
+            return max(1, context_window - cls._max_output_tokens(model))
         return DEFAULT_MODEL_MAX_INPUT_TOKENS
+
+    @classmethod
+    def _max_output_tokens(cls, model: dict[str, Any]) -> int:
+        return cls._limit_value(
+            model,
+            "max_output_tokens",
+            "output_token_limit",
+            "max_completion_tokens",
+            "completion_token_limit",
+        ) or DEFAULT_MAX_MODEL_OUTPUT_TOKENS
+
+    @classmethod
+    def _context_window_tokens(cls, model: dict[str, Any]) -> int:
+        value = cls._limit_value(
+            model,
+            "context_window",
+            "context_window_tokens",
+            "max_context_tokens",
+            "context_length",
+            "max_tokens",
+        )
+        if value:
+            return value
+        return cls._max_input_tokens_without_context(model) + cls._max_output_tokens(model)
+
+    @classmethod
+    def _max_input_tokens_without_context(cls, model: dict[str, Any]) -> int:
+        return cls._limit_value(
+            model,
+            "max_input_tokens",
+            "input_token_limit",
+            "max_prompt_tokens",
+            "prompt_token_limit",
+        ) or DEFAULT_MODEL_MAX_INPUT_TOKENS
+
+    @staticmethod
+    def _configured_model() -> str | None:
+        configured = (os.getenv("GITHUB_MODEL") or "").strip()
+        return configured or None
+
+    @staticmethod
+    def _configured_fallback_models() -> list[str]:
+        raw = os.getenv("GITHUB_FALLBACK_MODELS")
+        if raw is None or not raw.strip():
+            return []
+        return [item.strip() for item in raw.split(",") if item.strip()]
+
+    @staticmethod
+    def _unique_candidates(items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        seen: set[str] = set()
+        unique: list[tuple[str, str]] = []
+        for model_id, source in items:
+            if model_id in seen:
+                continue
+            seen.add(model_id)
+            unique.append((model_id, source))
+        return unique
+
+    @staticmethod
+    def configured_input_budget() -> int:
+        return configured_model_input_budget()
 
     def select_chat_model(
         self,
         catalog: list[dict[str, Any]],
         *,
         required_input_tokens: int = 0,
+        required_output_tokens: int = DEFAULT_MAX_MODEL_OUTPUT_TOKENS,
     ) -> ModelSelection | None:
+        return self.select_chat_model_with_diagnostics(
+            catalog,
+            required_input_tokens=required_input_tokens,
+            required_output_tokens=required_output_tokens,
+        )[0]
+
+    def select_chat_model_with_diagnostics(
+        self,
+        catalog: list[dict[str, Any]],
+        *,
+        required_input_tokens: int = 0,
+        required_output_tokens: int = DEFAULT_MAX_MODEL_OUTPUT_TOKENS,
+    ) -> tuple[ModelSelection | None, ModelInferenceDiagnostic, ActionRejectionCode | None]:
         available = {model["id"]: model for model in catalog if self._is_text_model(model)}
-        configured = os.getenv("GITHUB_MODEL")
-        fallbacks = [
-            item.strip()
-            for item in os.getenv(
-                "GITHUB_FALLBACK_MODELS", "openai/gpt-4.1-mini,openai/gpt-4.1"
-            ).split(",")
-            if item.strip()
-        ]
-        candidates = ([configured] if configured else []) + fallbacks + sorted(available)
-        for candidate in candidates:
-            if candidate in available:
-                max_input_tokens = self._max_input_tokens(available[candidate])
-                input_budget = model_input_budget(max_input_tokens)
-                if required_input_tokens > input_budget:
-                    continue
-                mode = (
-                    ModelRequestMode.JSON_SCHEMA
-                    if self._supports_structured_output(available[candidate])
-                    else ModelRequestMode.JSON_ONLY
+        configured = self._configured_model()
+        fallbacks = self._configured_fallback_models()
+        default_candidates = list(DEFAULT_TEXT_MODEL_CANDIDATES)
+        candidate_sources = self._unique_candidates(
+            ([(configured, "configured_model")] if configured else [])
+            + [(item, "configured_fallback") for item in fallbacks]
+            + [(item, "default") for item in default_candidates]
+            + [(item, "catalog") for item in sorted(available)]
+        )
+        required_input_tokens = max(0, required_input_tokens)
+        diagnostic = ModelInferenceDiagnostic(
+            configured_model=configured,
+            configured_fallback_models=fallbacks,
+            default_model_candidates=default_candidates,
+            required_input_tokens=required_input_tokens,
+            required_output_tokens=required_output_tokens,
+        )
+        if not candidate_sources:
+            return None, diagnostic, ActionRejectionCode.NO_MODEL_CANDIDATES_CONFIGURED
+
+        evaluations: list[ModelCandidateDiagnostic] = []
+        for candidate, source in candidate_sources:
+            model = available.get(candidate)
+            if model is None:
+                evaluations.append(
+                    ModelCandidateDiagnostic(
+                        candidate_model_id=candidate,
+                        required_input_tokens=required_input_tokens,
+                        required_output_tokens=required_output_tokens,
+                        exclusion_reason="not_found_in_catalog",
+                    )
                 )
-                return ModelSelection(
-                    selected_model=candidate,
-                    request_mode=mode,
-                    max_input_tokens=max_input_tokens,
-                    applied_input_budget=input_budget,
+                continue
+            max_input_tokens = self._max_input_tokens(model)
+            context_window = self._context_window_tokens(model)
+            exclusion_reason = None
+            if required_input_tokens > max_input_tokens:
+                exclusion_reason = "insufficient_max_input_tokens"
+            elif required_input_tokens > model_input_budget(max_input_tokens):
+                exclusion_reason = "insufficient_applied_input_budget"
+            elif context_window < required_input_tokens + required_output_tokens:
+                exclusion_reason = "insufficient_context_window"
+            evaluations.append(
+                ModelCandidateDiagnostic(
+                    candidate_model_id=candidate,
+                    candidate_max_input_tokens=max_input_tokens,
+                    candidate_context_window=context_window,
+                    required_input_tokens=required_input_tokens,
+                    required_output_tokens=required_output_tokens,
+                    exclusion_reason=exclusion_reason,
                 )
-        return None
+            )
+            if exclusion_reason is not None:
+                continue
+            mode = (
+                ModelRequestMode.JSON_SCHEMA
+                if self._supports_structured_output(model)
+                else ModelRequestMode.JSON_ONLY
+            )
+            selection = ModelSelection(
+                selected_model=candidate,
+                request_mode=mode,
+                max_input_tokens=max_input_tokens,
+                applied_input_budget=model_input_budget(max_input_tokens),
+            )
+            return (
+                selection,
+                diagnostic.model_copy(
+                    update={
+                        "selected_model": candidate,
+                        "request_mode": mode,
+                        "selected_model_max_input_tokens": max_input_tokens,
+                        "applied_input_budget": selection.applied_input_budget,
+                        "evaluated_model_candidates": evaluations,
+                        "selected_model_source": source,
+                    }
+                ),
+                None,
+            )
+        return (
+            None,
+            diagnostic.model_copy(update={"evaluated_model_candidates": evaluations}),
+            ActionRejectionCode.NO_COMPATIBLE_MODEL,
+        )
 
     def select_embedding_model(self, catalog: list[dict[str, Any]]) -> str | None:
         configured = os.getenv("GITHUB_EMBEDDING_MODEL")

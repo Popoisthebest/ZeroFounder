@@ -3,7 +3,7 @@ from pathlib import Path
 
 import agents.orchestrator as orchestrator
 from agents.context_builder import build_context
-from agents.github_models import PromptVariant
+from agents.github_models import GitHubModelsClient, PromptVariant
 from agents.orchestrator import build_model_instruction, validate_model_action
 from agents.schemas import (
     ActionEnvelope,
@@ -62,6 +62,18 @@ def _decision(ids: list[str]) -> PreflightDecision:
     )
 
 
+def _manual_decision_with_comments(comment_ids: list[int] | None = None) -> PreflightDecision:
+    return PreflightDecision.model_validate(
+        {
+            "should_call_model": True,
+            "reasons": ["manual"],
+            "new_signal_ids": [],
+            "comment_ids": comment_ids or [],
+            "idempotency_key": "b" * 64,
+        }
+    )
+
+
 def _action(action_type: str, **overrides) -> ActionEnvelope:
     payload = {
         "role": "researcher",
@@ -76,6 +88,14 @@ def _action(action_type: str, **overrides) -> ActionEnvelope:
     }
     payload.update(overrides)
     return ActionEnvelope.model_validate(payload)
+
+
+def _write_discovery_model_root(root: Path) -> None:
+    _write_strategy(root)
+    _write_signals(root, 2)
+    (root / "agents/prompts").mkdir(parents=True)
+    (root / "agents/prompts/core.md").write_text("Return JSON.")
+    (root / "company/state.json").write_text(CompanyState().model_dump_json())
 
 
 def _idea_candidates() -> list[dict[str, object]]:
@@ -139,6 +159,79 @@ def test_discovery_prompt_prefers_validation_when_problem_exists(tmp_path: Path)
         build_model_instruction(tmp_path, CompanyState(), _decision(ids))
     )["orchestration_policy"]
     assert instruction["preferred_action_types"][0] == "validate_evidence"
+
+
+def test_model_selection_uses_same_defaults_for_manual_schedule_and_comment_paths(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _write_discovery_model_root(tmp_path)
+    captured: list[dict[str, object]] = []
+
+    class FakeClient:
+        def __init__(self, token, limiter):
+            self.selector = GitHubModelsClient(token, limiter)
+
+        def catalog(self):
+            return [
+                {
+                    "id": "cohere/cohere-command-a",
+                    "supported_input_modalities": ["text"],
+                    "supported_output_modalities": ["text"],
+                    "supported_endpoints": ["inference/chat/completions"],
+                    "limits": {"context_window": 131072},
+                }
+            ]
+
+        def select_chat_model_with_diagnostics(self, catalog, **kwargs):
+            selection, diagnostic, rejection = (
+                self.selector.select_chat_model_with_diagnostics(catalog, **kwargs)
+            )
+            captured.append(
+                {
+                    "selected_model": selection.selected_model if selection else None,
+                    "source": diagnostic.selected_model_source,
+                    "required_input_tokens": diagnostic.required_input_tokens,
+                    "required_output_tokens": diagnostic.required_output_tokens,
+                    "rejection": rejection,
+                }
+            )
+            return selection, diagnostic, rejection
+
+        def chat_action(self, **kwargs):
+            diagnostic = ModelInferenceDiagnostic(
+                selected_model=kwargs["model"],
+                request_mode=kwargs["request_mode"],
+                selected_model_max_input_tokens=kwargs["model_max_input_tokens"],
+                applied_input_budget=kwargs["applied_input_budget"],
+                completed_inference_calls=1,
+            )
+            return ModelCallResult(action=_action("no_op"), diagnostic=diagnostic)
+
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "")
+    monkeypatch.setenv("MAX_MODEL_INPUT_TOKENS", "6000")
+    monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeClient)
+
+    decisions = [
+        _manual_decision_with_comments(),
+        _decision(["signal-000", "signal-001"]),
+        _manual_decision_with_comments([20]),
+    ]
+
+    for decision in decisions:
+        outcome = orchestrator.run_model(tmp_path, decision)
+        assert outcome.diagnostic.accepted
+
+    assert len(captured) == 3
+    assert {item["selected_model"] for item in captured} == {
+        "cohere/cohere-command-a"
+    }
+    assert {item["source"] for item in captured} == {"default"}
+    assert {item["required_input_tokens"] for item in captured} == {6000}
+    assert {item["required_output_tokens"] for item in captured} == {6000}
+    assert {item["rejection"] for item in captured} == {None}
 
 
 def test_recent_signals_are_in_model_context(tmp_path: Path):

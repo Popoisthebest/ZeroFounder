@@ -56,6 +56,18 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("validated_action_type", diagnostic.validated_action_type.value),
         ("accepted", str(diagnostic.accepted).lower()),
         ("selected_model", inference.selected_model or "unavailable"),
+        ("selected_model_source", inference.selected_model_source or "unavailable"),
+        ("configured_model", inference.configured_model or "none"),
+        (
+            "configured_fallback_models",
+            ", ".join(inference.configured_fallback_models) or "none",
+        ),
+        (
+            "default_model_candidates",
+            ", ".join(inference.default_model_candidates) or "none",
+        ),
+        ("required_input_tokens", inference.required_input_tokens),
+        ("required_output_tokens", inference.required_output_tokens),
         ("request_mode", inference.request_mode or "unavailable"),
         ("http_status", inference.http_status or "unavailable"),
         (
@@ -127,6 +139,20 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("extra_fields", extra_fields),
         ("expected_types", expected_types),
     ]
+    for index, candidate in enumerate(inference.evaluated_model_candidates, start=1):
+        rows.append(
+            (
+                f"evaluated_model_candidate_{index}",
+                (
+                    f"{candidate.candidate_model_id}; "
+                    f"max_input={candidate.candidate_max_input_tokens}; "
+                    f"context={candidate.candidate_context_window}; "
+                    f"required_input={candidate.required_input_tokens}; "
+                    f"required_output={candidate.required_output_tokens}; "
+                    f"exclusion={candidate.exclusion_reason or 'selected'}"
+                ),
+            )
+        )
     table = "\n".join(f"| {_safe_cell(name)} | {_safe_cell(value)} |" for name, value in rows)
     return (
         "## ZeroFounder 모델 행동 검증\n\n"

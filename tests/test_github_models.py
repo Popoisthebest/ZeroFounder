@@ -4,6 +4,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
+import agents.github_models as github_models
 from agents.github_models import (
     CHAT_URL,
     GitHubModelsClient,
@@ -221,6 +222,108 @@ def test_model_selection_uses_catalog_input_limit_and_excludes_small_models(monk
     assert selection.selected_model == "vendor/large"
     assert selection.max_input_tokens == 16000
     assert selection.applied_input_budget == model_input_budget(16000)
+
+
+def test_blank_model_env_uses_default_cohere_candidate(monkeypatch):
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "")
+    monkeypatch.setenv("MAX_MODEL_INPUT_TOKENS", "6000")
+    client = _client(_single_response([]))
+
+    selection, diagnostic, rejection = client.select_chat_model_with_diagnostics(
+        [
+            {
+                "id": "cohere/cohere-command-a",
+                "supported_input_modalities": ["text"],
+                "supported_output_modalities": ["text"],
+                "supported_endpoints": ["inference/chat/completions"],
+                "limits": {"context_window": 131072},
+            }
+        ],
+        required_input_tokens=6000,
+        required_output_tokens=6000,
+    )
+
+    assert rejection is None
+    assert selection is not None
+    assert selection.selected_model == "cohere/cohere-command-a"
+    assert selection.applied_input_budget == 6000
+    assert diagnostic.configured_model is None
+    assert diagnostic.configured_fallback_models == []
+    assert diagnostic.default_model_candidates[0] == "cohere/cohere-command-a"
+    assert diagnostic.required_input_tokens == 6000
+    assert diagnostic.required_output_tokens == 6000
+    assert diagnostic.selected_model_source == "default"
+    assert diagnostic.evaluated_model_candidates[0].candidate_context_window == 131072
+    assert diagnostic.evaluated_model_candidates[0].exclusion_reason is None
+
+
+def test_model_selection_does_not_double_count_correction_reserve(monkeypatch):
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "")
+    monkeypatch.setenv("MAX_MODEL_INPUT_TOKENS", "6000")
+    client = _client(_single_response([]))
+
+    selection, diagnostic, rejection = client.select_chat_model_with_diagnostics(
+        [
+            {
+                "id": "cohere/cohere-command-a",
+                "supported_input_modalities": ["text"],
+                "supported_output_modalities": ["text"],
+                "limits": {"context_window": 131072},
+            }
+        ],
+        required_input_tokens=6000,
+        required_output_tokens=6000,
+    )
+
+    assert selection is not None
+    assert rejection is None
+    assert diagnostic.required_input_tokens == 6000
+    assert diagnostic.evaluated_model_candidates[0].required_input_tokens == 6000
+
+
+def test_model_selection_reports_no_compatible_only_after_evaluating_candidates(
+    monkeypatch,
+):
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "vendor/small")
+    client = _client(_single_response([]))
+
+    selection, diagnostic, rejection = client.select_chat_model_with_diagnostics(
+        [
+            {
+                "id": "vendor/small",
+                "supported_input_modalities": ["text"],
+                "supported_output_modalities": ["text"],
+                "limits": {"max_input_tokens": 4000, "context_window": 20000},
+            }
+        ],
+        required_input_tokens=6000,
+        required_output_tokens=6000,
+    )
+
+    assert selection is None
+    assert rejection == ActionRejectionCode.NO_COMPATIBLE_MODEL
+    reasons = {
+        item.candidate_model_id: item.exclusion_reason
+        for item in diagnostic.evaluated_model_candidates
+    }
+    assert reasons["vendor/small"] == "insufficient_max_input_tokens"
+    assert reasons["cohere/cohere-command-a"] == "not_found_in_catalog"
+
+
+def test_model_selection_reports_empty_candidate_list(monkeypatch):
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "")
+    monkeypatch.setattr(github_models, "DEFAULT_TEXT_MODEL_CANDIDATES", ())
+    client = _client(_single_response([]))
+
+    selection, diagnostic, rejection = client.select_chat_model_with_diagnostics([])
+
+    assert selection is None
+    assert rejection == ActionRejectionCode.NO_MODEL_CANDIDATES_CONFIGURED
+    assert diagnostic.evaluated_model_candidates == []
 
 
 def test_non_chat_endpoint_is_not_selected(monkeypatch):

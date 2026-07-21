@@ -114,6 +114,7 @@ class MessageContentType(StrEnum):
 class ActionRejectionCode(StrEnum):
     SLEEP_MODE = "sleep_mode"
     MODEL_CATALOG_UNAVAILABLE = "model_catalog_unavailable"
+    NO_MODEL_CANDIDATES_CONFIGURED = "no_model_candidates_configured"
     NO_COMPATIBLE_MODEL = "no_compatible_model"
     MODEL_RESPONSE_REJECTED = "model_response_rejected"
     LIFECYCLE_ACTION_NOT_ALLOWED = "lifecycle_action_not_allowed"
@@ -440,8 +441,26 @@ class PydanticErrorDiagnostic(StrictModel):
     expected_type: str | None = Field(default=None, max_length=100)
 
 
+class ModelCandidateDiagnostic(StrictModel):
+    candidate_model_id: str = Field(min_length=1, max_length=200)
+    candidate_max_input_tokens: int = Field(default=0, ge=0)
+    candidate_context_window: int = Field(default=0, ge=0)
+    required_input_tokens: int = Field(default=0, ge=0)
+    required_output_tokens: int = Field(default=0, ge=0)
+    exclusion_reason: str | None = Field(default=None, max_length=200)
+
+
 class ModelInferenceDiagnostic(StrictModel):
     selected_model: str | None = Field(default=None, max_length=200)
+    configured_model: str | None = Field(default=None, max_length=200)
+    configured_fallback_models: list[str] = Field(default_factory=list, max_length=20)
+    default_model_candidates: list[str] = Field(default_factory=list, max_length=20)
+    evaluated_model_candidates: list[ModelCandidateDiagnostic] = Field(
+        default_factory=list, max_length=50
+    )
+    required_input_tokens: int = Field(default=0, ge=0)
+    required_output_tokens: int = Field(default=0, ge=0)
+    selected_model_source: str | None = Field(default=None, max_length=50)
     request_mode: ModelRequestMode | None = None
     http_status: int | None = Field(default=None, ge=100, le=599)
     choices_count: int | None = Field(default=None, ge=0)
