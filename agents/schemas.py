@@ -124,6 +124,9 @@ class ActionRejectionCode(StrEnum):
     MODEL_REFUSAL = "model_refusal"
     REQUEST_TOO_LARGE = "request_too_large"
     INPUT_BUDGET_EXCEEDED = "input_budget_exceeded"
+    MISSING_ACTIVE_PROBLEM = "missing_active_problem"
+    MISSING_PROBLEM_RECORD = "missing_problem_record"
+    INSUFFICIENT_VALIDATED_EVIDENCE = "insufficient_validated_evidence"
 
 
 class RiskLevel(StrEnum):
@@ -314,6 +317,10 @@ class ModelInferenceDiagnostic(StrictModel):
     resolved_evidence_count: int = Field(default=0, ge=0)
     unresolved_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
     new_signal_count: int = Field(default=0, ge=0)
+    problem_loaded: bool = False
+    problem_evidence_count: int = Field(default=0, ge=0)
+    existing_idea_candidate_count: int = Field(default=0, ge=0)
+    idea_context_ready: bool = False
     included_signal_count: int = Field(default=0, ge=0)
     excluded_signal_count: int = Field(default=0, ge=0)
     compact_retry_attempted: bool = False

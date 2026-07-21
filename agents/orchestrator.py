@@ -277,6 +277,52 @@ def build_model_instruction(
             ActionType.WRITE_REPORT.value: "omit state_transition",
             ActionType.NO_OP.value: "state_transition is forbidden",
         }
+    elif state.lifecycle_stage.value == "IDEA_EVALUATION":
+        idea_context = build_context_bundle(
+            root,
+            lifecycle_stage=state.lifecycle_stage,
+            compact=compact,
+            max_chars=1000,
+        )
+        if idea_context.idea_context_ready and idea_context.existing_idea_candidate_count == 0:
+            preferred = [
+                ActionType.CREATE_IDEA_CANDIDATES,
+                ActionType.EVALUATE_IDEAS,
+                ActionType.WRITE_REPORT,
+                ActionType.NO_OP,
+            ]
+            guidance = (
+                "The active problem and validated evidence are already available. "
+                "Do not wait for new signals. Create idea candidates grounded in the "
+                "active problem and included signal records."
+            )
+        elif idea_context.idea_context_ready:
+            preferred = [
+                ActionType.EVALUATE_IDEAS,
+                ActionType.CREATE_IDEA_CANDIDATES,
+                ActionType.WRITE_REPORT,
+                ActionType.NO_OP,
+            ]
+            guidance = (
+                "Existing idea candidates are available for this active problem. "
+                "Evaluate them instead of creating duplicates; after evaluation, prepare "
+                "selection evidence for the next lifecycle transition."
+            )
+        else:
+            preferred = [ActionType.NO_OP, ActionType.WRITE_REPORT]
+            guidance = (
+                "Idea evaluation cannot proceed because the active problem context or "
+                "validated evidence is missing. Do not invent a problem or evidence."
+            )
+        transition_policy = {
+            ActionType.CREATE_IDEA_CANDIDATES.value: "omit state_transition",
+            ActionType.EVALUATE_IDEAS.value: (
+                "omit it, keep IDEA_EVALUATION, or transition IDEA_EVALUATION to "
+                "DISTRIBUTION_CHECK only after evaluation is complete"
+            ),
+            ActionType.WRITE_REPORT.value: "omit state_transition",
+            ActionType.NO_OP.value: "state_transition is forbidden",
+        }
     payload = {
         "orchestration_policy": {
             "operating_language": operating_language(),
@@ -285,10 +331,14 @@ def build_model_instruction(
             "allowed_action_types": [item.value for item in permitted],
             "preferred_action_types": [item.value for item in preferred],
             "trigger_reasons": [item.value for item in reasons],
-            "new_signal_count": len(decision.new_signal_ids) if decision else 0,
+            "new_signal_count": (
+                0
+                if state.lifecycle_stage.value == "IDEA_EVALUATION"
+                else (len(decision.new_signal_ids) if decision else 0)
+            ),
             "new_signal_ids": (
                 []
-                if state.lifecycle_stage.value == "DISCOVERY"
+                if state.lifecycle_stage.value in {"DISCOVERY", "IDEA_EVALUATION"}
                 else (decision.new_signal_ids[: (6 if compact else 20)] if decision else [])
             ),
             "repository_counts": counts,
@@ -307,6 +357,19 @@ def build_model_instruction(
         payload["orchestration_policy"]["unresolved_evidence_ids"] = (
             evidence_context.unresolved_evidence_ids or []
         )
+    if state.lifecycle_stage.value == "IDEA_EVALUATION":
+        payload["orchestration_policy"]["active_problem_id"] = idea_context.active_problem_id
+        payload["orchestration_policy"]["problem_loaded"] = idea_context.problem_loaded
+        payload["orchestration_policy"]["problem_evidence_count"] = (
+            idea_context.problem_evidence_count
+        )
+        payload["orchestration_policy"]["resolved_evidence_count"] = (
+            idea_context.resolved_evidence_count
+        )
+        payload["orchestration_policy"]["existing_idea_candidate_count"] = (
+            idea_context.existing_idea_candidate_count
+        )
+        payload["orchestration_policy"]["idea_context_ready"] = idea_context.idea_context_ready
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -512,6 +575,46 @@ def run_model(
                 inference=inference,
                 failure_stage=FailureStage.LIFECYCLE_VALIDATION,
             )
+        if state.lifecycle_stage.value == "IDEA_EVALUATION":
+            inference = ModelInferenceDiagnostic(
+                active_problem_id=context.active_problem_id,
+                problem_loaded=context.problem_loaded,
+                problem_evidence_count=context.problem_evidence_count,
+                resolved_evidence_count=context.resolved_evidence_count,
+                existing_idea_candidate_count=context.existing_idea_candidate_count,
+                included_signal_count=context.included_signal_count,
+                idea_context_ready=context.idea_context_ready,
+                unresolved_evidence_ids=context.unresolved_evidence_ids or [],
+            )
+            if not context.active_problem_id:
+                return _rejected_outcome(
+                    state,
+                    code=ActionRejectionCode.MISSING_ACTIVE_PROBLEM,
+                    reason="missing_active_problem: company/state.json has no active_problem_id",
+                    inference=inference,
+                    failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+                )
+            if not context.problem_loaded:
+                return _rejected_outcome(
+                    state,
+                    code=ActionRejectionCode.MISSING_PROBLEM_RECORD,
+                    reason=(
+                        "missing_problem_record: active problem file could not be loaded"
+                    ),
+                    inference=inference,
+                    failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+                )
+            if not context.idea_context_ready:
+                return _rejected_outcome(
+                    state,
+                    code=ActionRejectionCode.INSUFFICIENT_VALIDATED_EVIDENCE,
+                    reason=(
+                        "insufficient_validated_evidence: active problem evidence could "
+                        "not be fully resolved from stored signal records"
+                    ),
+                    inference=inference,
+                    failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+                )
         instruction = build_model_instruction(root, state, decision)
         compact_instruction = build_model_instruction(
             root, state, decision, compact=True
@@ -543,6 +646,10 @@ def run_model(
             resolved_evidence_count=compact_context.resolved_evidence_count,
             unresolved_evidence_ids=compact_context.unresolved_evidence_ids or [],
             new_signal_count=compact_context.new_signal_count,
+            problem_loaded=compact_context.problem_loaded,
+            problem_evidence_count=compact_context.problem_evidence_count,
+            existing_idea_candidate_count=compact_context.existing_idea_candidate_count,
+            idea_context_ready=compact_context.idea_context_ready,
         )
         context_chars = len(context.content)
         included_signal_count = context.included_signal_count
@@ -587,6 +694,12 @@ def run_model(
             (context.unresolved_evidence_ids or []) if not diagnostic_mode else []
         ),
         new_signal_count=context.new_signal_count if not diagnostic_mode else 0,
+        problem_loaded=context.problem_loaded if not diagnostic_mode else False,
+        problem_evidence_count=context.problem_evidence_count if not diagnostic_mode else 0,
+        existing_idea_candidate_count=(
+            context.existing_idea_candidate_count if not diagnostic_mode else 0
+        ),
+        idea_context_ready=context.idea_context_ready if not diagnostic_mode else False,
         model_max_input_tokens=selection.max_input_tokens,
         applied_input_budget=selection.applied_input_budget,
     )

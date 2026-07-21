@@ -182,7 +182,11 @@ def test_job_summary_masks_tokens_and_omits_model_text():
         "applied_input_budget",
         "active_problem_id",
         "candidate_evidence_id_count",
+        "problem_loaded",
+        "problem_evidence_count",
         "resolved_evidence_count",
+        "existing_idea_candidate_count",
+        "idea_context_ready",
         "unresolved_evidence_ids",
         "new_signal_count",
         "included_signal_count",
@@ -294,7 +298,180 @@ def test_prompt_variant_defaults_support_non_evidence_lifecycle():
 
     assert variant.active_problem_id is None
     assert variant.candidate_evidence_id_count == 0
+    assert not variant.problem_loaded
+    assert variant.problem_evidence_count == 0
     assert variant.resolved_evidence_count == 0
+    assert variant.existing_idea_candidate_count == 0
+    assert not variant.idea_context_ready
     assert variant.unresolved_evidence_ids == []
     assert variant.new_signal_count == 0
     assert variant.included_signal_count == 0
+
+
+def _write_idea_evaluation_problem(root: Path) -> None:
+    _write_strategy(root)
+    _write_signals(root, 2)
+    (root / "agents/prompts").mkdir(parents=True)
+    (root / "agents/prompts/core.md").write_text("Return JSON.")
+    (root / "company/state.json").write_text(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+            active_problem_id="problem-001",
+        ).model_dump_json()
+    )
+    (root / "research/problems").mkdir(parents=True)
+    problem = {
+        "problem_id": "problem-001",
+        "title": "Repeated manual navigation",
+        "target_users": ["operators"],
+        "description": "Operators repeatedly navigate long lists manually.",
+        "current_workaround": "They scroll and search by hand.",
+        "evidence_ids": ["signal-000", "signal-001"],
+        "evidence": [
+            {
+                "evidence_id": "signal-000",
+                "source_type": "rss",
+                "url": "https://example.test/signal-000",
+                "summary": "A repeated manual workflow problem.",
+            },
+            {
+                "evidence_id": "signal-001",
+                "source_type": "rss",
+                "url": "https://example.test/signal-001",
+                "summary": "A second repeated manual workflow problem.",
+            },
+        ],
+        "frequency_score": 5,
+        "severity_score": 5,
+        "buildability_score": 7,
+        "confidence": 0.7,
+    }
+    (root / "research/problems/problem-001.json").write_text(json.dumps(problem))
+
+
+def test_idea_evaluation_context_allows_idea_creation_without_new_signals(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _write_idea_evaluation_problem(tmp_path)
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, token, limiter):
+            pass
+
+        def catalog(self):
+            return [{"id": "fake/model"}]
+
+        def select_chat_model(self, catalog, *, required_input_tokens):
+            return ModelSelection(
+                selected_model="fake/model",
+                request_mode=ModelRequestMode.JSON_ONLY,
+                max_input_tokens=8000,
+                applied_input_budget=6000,
+            )
+
+        def chat_action(self, **kwargs):
+            captured.update(kwargs)
+            diagnostic = ModelInferenceDiagnostic(
+                active_problem_id=kwargs["active_problem_id"],
+                problem_loaded=kwargs["problem_loaded"],
+                problem_evidence_count=kwargs["problem_evidence_count"],
+                resolved_evidence_count=kwargs["resolved_evidence_count"],
+                existing_idea_candidate_count=kwargs["existing_idea_candidate_count"],
+                included_signal_count=kwargs["included_signal_count"],
+                idea_context_ready=kwargs["idea_context_ready"],
+            )
+            return ModelCallResult(
+                action=_action(
+                    "create_idea_candidates",
+                    evidence_ids=["signal-000", "signal-001"],
+                ),
+                diagnostic=diagnostic,
+            )
+
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeClient)
+
+    outcome = orchestrator.run_model(tmp_path, _decision([]))
+
+    assert outcome.diagnostic.accepted
+    assert captured["active_problem_id"] == "problem-001"
+    assert captured["problem_loaded"] is True
+    assert captured["problem_evidence_count"] == 2
+    assert captured["resolved_evidence_count"] == 2
+    assert captured["existing_idea_candidate_count"] == 0
+    assert captured["included_signal_count"] == 2
+    assert captured["idea_context_ready"] is True
+    instruction = json.loads(captured["messages"][1]["content"])["orchestration_policy"]
+    prompt = json.loads(captured["messages"][2]["content"])
+    assert instruction["preferred_action_types"][0] == "create_idea_candidates"
+    assert instruction["new_signal_count"] == 0
+    assert instruction["new_signal_ids"] == []
+    assert prompt["active_problem_id"] == "problem-001"
+    assert prompt["active_problem"]["title"] == "Repeated manual navigation"
+    assert [item["signal_id"] for item in prompt["included_signal_records"]] == [
+        "signal-000",
+        "signal-001",
+    ]
+
+
+def test_idea_evaluation_missing_problem_record_is_rejected(
+    tmp_path: Path,
+    monkeypatch,
+):
+    _write_strategy(tmp_path)
+    (tmp_path / "agents/prompts").mkdir(parents=True)
+    (tmp_path / "agents/prompts/core.md").write_text("Return JSON.")
+    (tmp_path / "company/state.json").write_text(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+            active_problem_id="problem-001",
+        ).model_dump_json()
+    )
+
+    class FakeClient:
+        def __init__(self, token, limiter):
+            pass
+
+        def catalog(self):
+            return [{"id": "fake/model"}]
+
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeClient)
+
+    outcome = orchestrator.run_model(tmp_path, _decision([]))
+
+    assert not outcome.diagnostic.accepted
+    assert outcome.diagnostic.rejection_code.value == "missing_problem_record"
+    assert outcome.diagnostic.inference.active_problem_id == "problem-001"
+    assert not outcome.diagnostic.inference.problem_loaded
+    assert not outcome.diagnostic.inference.idea_context_ready
+
+
+def test_idea_evaluation_prefers_evaluation_when_candidates_exist(tmp_path: Path):
+    _write_idea_evaluation_problem(tmp_path)
+    (tmp_path / "ideas/candidates").mkdir(parents=True)
+    (tmp_path / "ideas/candidates/ideas.json").write_text(
+        json.dumps(
+            {
+                "idea_id": "idea-001",
+                "problem_id": "problem-001",
+                "name": "List jump helper",
+            }
+        )
+    )
+
+    instruction = json.loads(
+        orchestrator.build_model_instruction(
+            tmp_path,
+            CompanyState(
+                lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+                active_problem_id="problem-001",
+            ),
+            _decision([]),
+        )
+    )["orchestration_policy"]
+
+    assert instruction["preferred_action_types"][0] == "evaluate_ideas"
+    assert instruction["existing_idea_candidate_count"] == 1

@@ -6,7 +6,13 @@ from pathlib import Path
 from typing import Any
 
 from agents.safety import load_evidence_index
-from agents.schemas import CompanyState, LifecycleStage, MarketSignal, ProblemCandidate
+from agents.schemas import (
+    CompanyState,
+    IdeaCandidate,
+    LifecycleStage,
+    MarketSignal,
+    ProblemCandidate,
+)
 from agents.signal_context import build_discovery_signal_context
 
 
@@ -20,6 +26,10 @@ class ContextBundle:
     resolved_evidence_count: int = 0
     unresolved_evidence_ids: list[str] | None = None
     new_signal_count: int = 0
+    problem_loaded: bool = False
+    problem_evidence_count: int = 0
+    existing_idea_candidate_count: int = 0
+    idea_context_ready: bool = False
 
 
 def _read(path: Path, limit: int) -> str:
@@ -128,6 +138,23 @@ def _active_problem_context(
     return active_problem_id, problem, list(problem.evidence_ids)
 
 
+def _idea_candidates_for_problem(root: Path, active_problem_id: str | None) -> list[dict[str, Any]]:
+    if not active_problem_id:
+        return []
+    records: list[dict[str, Any]] = []
+    for item in _recent_json_records(root / "ideas/candidates", limit=100):
+        try:
+            candidate = IdeaCandidate.model_validate(item)
+        except ValueError:
+            if item.get("problem_id") != active_problem_id:
+                continue
+            records.append(item)
+            continue
+        if candidate.problem_id == active_problem_id:
+            records.append(candidate.model_dump(mode="json"))
+    return records
+
+
 def _discovery_context(root: Path, *, compact: bool, max_chars: int) -> ContextBundle:
     signals = build_discovery_signal_context(root, compact=compact)
     strategy = _json(root / "company/strategy.json")
@@ -212,6 +239,87 @@ def _evidence_validation_context(
     )
 
 
+def _idea_evaluation_context(
+    root: Path,
+    *,
+    compact: bool,
+    max_chars: int,
+) -> ContextBundle:
+    active_problem_id, problem, candidate_evidence_ids = _active_problem_context(root)
+    candidate_evidence_ids = _ordered_unique(candidate_evidence_ids)
+    evidence_index = load_evidence_index(root)
+    included_records = [
+        _signal_payload(evidence_id, evidence_index[evidence_id], compact=compact)
+        for evidence_id in candidate_evidence_ids
+        if evidence_id in evidence_index
+    ]
+    unresolved_ids = [
+        evidence_id for evidence_id in candidate_evidence_ids if evidence_id not in evidence_index
+    ]
+    idea_candidates = _idea_candidates_for_problem(root, active_problem_id)
+    problem_loaded = problem is not None
+    problem_evidence_count = len(candidate_evidence_ids)
+    resolved_evidence_count = len(included_records)
+    idea_context_ready = (
+        bool(active_problem_id)
+        and problem_loaded
+        and problem_evidence_count > 0
+        and resolved_evidence_count == problem_evidence_count
+    )
+    payload: dict[str, Any] = {
+        "lifecycle_stage": LifecycleStage.IDEA_EVALUATION.value,
+        "mission": _read(root / "company/mission.md", 1200 if compact else 2000),
+        "safety_constraints": _read(
+            root / "company/constitution.md", 900 if compact else 1600
+        ),
+        "active_problem_id": active_problem_id,
+        "problem_loaded": problem_loaded,
+        "active_problem": (
+            {
+                "problem_id": problem.problem_id,
+                "title": problem.title,
+                "description": problem.description,
+                "target_users": problem.target_users,
+                "evidence_ids": problem.evidence_ids,
+                "validation_result": {
+                    "lifecycle_stage": LifecycleStage.IDEA_EVALUATION.value,
+                    "frequency_score": problem.frequency_score,
+                    "severity_score": problem.severity_score,
+                    "buildability_score": problem.buildability_score,
+                    "confidence": problem.confidence,
+                    "validated": True,
+                },
+            }
+            if problem
+            else None
+        ),
+        "existing_idea_candidates": idea_candidates[: (4 if compact else 12)],
+        "included_signal_records": included_records,
+        "unresolved_evidence_ids": unresolved_ids,
+        "idea_stats": {
+            "problem_evidence_count": problem_evidence_count,
+            "resolved_evidence_count": resolved_evidence_count,
+            "existing_idea_candidate_count": len(idea_candidates),
+            "included_signal_count": len(included_records),
+            "idea_context_ready": idea_context_ready,
+        },
+    }
+    return ContextBundle(
+        content=_fit_payload(payload, max_chars),
+        included_signal_count=len(included_records),
+        excluded_signal_count=0,
+        active_problem_id=active_problem_id,
+        candidate_evidence_id_count=problem_evidence_count,
+        resolved_evidence_count=resolved_evidence_count,
+        unresolved_evidence_ids=unresolved_ids,
+        new_signal_count=0,
+        problem_loaded=problem_loaded,
+        problem_evidence_count=problem_evidence_count,
+        existing_idea_candidate_count=len(idea_candidates),
+        idea_context_ready=idea_context_ready,
+    )
+
+
 def _general_context(root: Path, *, compact: bool, max_chars: int) -> ContextBundle:
     fixed_names = [
         "mission",
@@ -263,6 +371,12 @@ def build_context_bundle(
             compact=compact,
             max_chars=configured_max,
             new_signal_ids=new_signal_ids or [],
+        )
+    if lifecycle_stage == LifecycleStage.IDEA_EVALUATION:
+        return _idea_evaluation_context(
+            root,
+            compact=compact,
+            max_chars=configured_max,
         )
     return _general_context(root, compact=compact, max_chars=configured_max)
 

@@ -102,6 +102,10 @@ class PromptVariant:
     resolved_evidence_count: int = 0
     unresolved_evidence_ids: list[str] = field(default_factory=list)
     new_signal_count: int = 0
+    problem_loaded: bool = False
+    problem_evidence_count: int = 0
+    existing_idea_candidate_count: int = 0
+    idea_context_ready: bool = False
     included_signal_count: int = 0
     excluded_signal_count: int = 0
 
@@ -441,6 +445,10 @@ class GitHubModelsClient:
         resolved_evidence_count: int = 0,
         unresolved_evidence_ids: list[str] | None = None,
         new_signal_count: int = 0,
+        problem_loaded: bool = False,
+        problem_evidence_count: int = 0,
+        existing_idea_candidate_count: int = 0,
+        idea_context_ready: bool = False,
         included_signal_count: int = 0,
         excluded_signal_count: int = 0,
         model_max_input_tokens: int | None = None,
@@ -458,6 +466,10 @@ class GitHubModelsClient:
             resolved_evidence_count=resolved_evidence_count,
             unresolved_evidence_ids=unresolved_evidence_ids or [],
             new_signal_count=new_signal_count,
+            problem_loaded=problem_loaded,
+            problem_evidence_count=problem_evidence_count,
+            existing_idea_candidate_count=existing_idea_candidate_count,
+            idea_context_ready=idea_context_ready,
             included_signal_count=included_signal_count,
             excluded_signal_count=excluded_signal_count,
         )
@@ -749,6 +761,10 @@ class GitHubModelsClient:
         diagnostic.resolved_evidence_count = variant.resolved_evidence_count
         diagnostic.unresolved_evidence_ids = variant.unresolved_evidence_ids or []
         diagnostic.new_signal_count = variant.new_signal_count
+        diagnostic.problem_loaded = variant.problem_loaded
+        diagnostic.problem_evidence_count = variant.problem_evidence_count
+        diagnostic.existing_idea_candidate_count = variant.existing_idea_candidate_count
+        diagnostic.idea_context_ready = variant.idea_context_ready
         diagnostic.included_signal_count = variant.included_signal_count
         diagnostic.excluded_signal_count = variant.excluded_signal_count
 
@@ -799,6 +815,10 @@ class GitHubModelsClient:
             resolved_evidence_count=variant.resolved_evidence_count,
             unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
             new_signal_count=variant.new_signal_count,
+            problem_loaded=variant.problem_loaded,
+            problem_evidence_count=variant.problem_evidence_count,
+            existing_idea_candidate_count=variant.existing_idea_candidate_count,
+            idea_context_ready=variant.idea_context_ready,
             included_signal_count=variant.included_signal_count,
             excluded_signal_count=variant.excluded_signal_count,
         )
