@@ -60,6 +60,7 @@ def _write_preflight(
     signal_id: str | None,
     suffix: str = "a",
     signal_ids: list[str] | None = None,
+    metrics_hash: str | None = None,
 ) -> Path:
     ids = signal_ids if signal_ids is not None else ([signal_id] if signal_id else [])
     path = root / "runtime/preflight.json"
@@ -69,6 +70,7 @@ def _write_preflight(
                 "should_call_model": True,
                 "reasons": ["new_signals"] if ids else ["manual"],
                 "new_signal_ids": ids,
+                "metrics_hash": metrics_hash,
                 "idempotency_key": suffix * 64,
             }
         )
@@ -314,6 +316,8 @@ def test_create_idea_candidates_applies_file_without_advancing_lifecycle(tmp_pat
         (tmp_path / "company/checkpoints.json").read_text()
     )
     assert checkpoint.idempotency_keys == ["c" * 64]
+    assert checkpoint.last_signal_ids == []
+    assert checkpoint.last_metrics_hash is None
     assert checkpoint.updated_at == APPLIED_AT
 
 
@@ -393,7 +397,13 @@ def test_create_idea_candidates_materialize_commit_and_quality_flow(tmp_path: Pa
     shutil.copytree(repo, control, ignore=shutil.ignore_patterns(".git", "runtime"))
 
     action_path = _write_action(repo, _create_idea_payload())
-    preflight_path = _write_preflight(repo, None, "d", signal_ids=[])
+    preflight_path = _write_preflight(
+        repo,
+        None,
+        "d",
+        signal_ids=["signal-ee24e3790220b151"],
+        metrics_hash="e" * 64,
+    )
     materialized_path = repo / "runtime/materialized-action.json"
     branch = create_agent_branch(repo, action_path, "12345")
     action, changed = apply_validated_action(
@@ -432,6 +442,8 @@ def test_create_idea_candidates_materialize_commit_and_quality_flow(tmp_path: Pa
         (repo / "company/checkpoints.json").read_text()
     )
     assert checkpoint.idempotency_keys == ["d" * 64]
+    assert checkpoint.last_signal_ids == []
+    assert checkpoint.last_metrics_hash is None
 
     contract = validate_changed_file_contract(
         branch,

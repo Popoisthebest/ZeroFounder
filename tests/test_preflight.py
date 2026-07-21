@@ -3,7 +3,7 @@ from agents.preflight import (
     checkpoint_after_material_work,
     usage_allows_run,
 )
-from agents.schemas import RepositoryCheckpoint, TriggerReason
+from agents.schemas import ActionType, PreflightDecision, RepositoryCheckpoint, TriggerReason
 from scripts.write_preflight_summary import render_summary
 
 
@@ -44,6 +44,56 @@ def test_manual_and_strong_signal_trigger():
     )
     assert TriggerReason.STRONG_SIGNAL in decision.reasons
     assert TriggerReason.MANUAL in decision.reasons
+
+
+def test_create_idea_checkpoint_updates_only_idempotency_key():
+    checkpoint = RepositoryCheckpoint(
+        last_signal_ids=["signal-old"],
+        idempotency_keys=["a" * 64],
+        last_metrics_hash="b" * 64,
+    )
+    decision = PreflightDecision(
+        should_call_model=True,
+        reasons=[TriggerReason.MANUAL, TriggerReason.METRICS_CHANGED],
+        new_signal_ids=["signal-ee24e3790220b151"],
+        metrics_hash="c" * 64,
+        idempotency_key="d" * 64,
+    )
+
+    updated = checkpoint_after_material_work(
+        checkpoint,
+        decision,
+        action_type=ActionType.CREATE_IDEA_CANDIDATES,
+    )
+
+    assert updated.last_signal_ids == ["signal-old"]
+    assert updated.last_metrics_hash == "b" * 64
+    assert updated.idempotency_keys == ["a" * 64, "d" * 64]
+
+
+def test_material_work_changes_metrics_hash_only_for_metrics_trigger():
+    checkpoint = RepositoryCheckpoint(last_metrics_hash="b" * 64)
+    same_metrics_decision = PreflightDecision(
+        should_call_model=True,
+        reasons=[TriggerReason.MANUAL],
+        metrics_hash="c" * 64,
+        idempotency_key="d" * 64,
+    )
+    changed_metrics_decision = PreflightDecision(
+        should_call_model=True,
+        reasons=[TriggerReason.METRICS_CHANGED],
+        metrics_hash="c" * 64,
+        idempotency_key="e" * 64,
+    )
+
+    assert (
+        checkpoint_after_material_work(checkpoint, same_metrics_decision).last_metrics_hash
+        == "b" * 64
+    )
+    assert (
+        checkpoint_after_material_work(checkpoint, changed_metrics_decision).last_metrics_hash
+        == "c" * 64
+    )
 
 
 def test_usage_gate_allows_limit_equality():

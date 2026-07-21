@@ -57,7 +57,11 @@ def apply_validated_action(
         checkpoint_path = root / "company/checkpoints.json"
         checkpoint = RepositoryCheckpoint.model_validate_json(checkpoint_path.read_text())
         decision = PreflightDecision.model_validate_json(preflight_path.read_text())
-        updated = checkpoint_after_material_work(checkpoint, decision)
+        updated = checkpoint_after_material_work(
+            checkpoint,
+            decision,
+            action_type=materialized.action_type,
+        )
         updated.updated_at = applied_at or datetime.now(UTC)
         checkpoint_path.write_text(updated.model_dump_json(indent=2) + "\n")
     return materialized, material

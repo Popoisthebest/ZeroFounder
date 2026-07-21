@@ -431,3 +431,49 @@ def test_create_idea_candidates_rejects_bad_evidence_or_state_change(tmp_path: P
         contract=contract,
     )
     assert result.status == "invalid_state_change"
+
+
+def test_create_idea_candidates_rejects_checkpoint_signal_or_metrics_mutation(
+    tmp_path: Path,
+):
+    control, candidate, contract = _prepare_create_idea_candidate(tmp_path)
+    checkpoint_path = candidate / "company/checkpoints.json"
+    checkpoint = RepositoryCheckpoint.model_validate_json(
+        checkpoint_path.read_text(encoding="utf-8")
+    )
+    checkpoint_path.write_text(
+        checkpoint.model_copy(
+            update={"last_signal_ids": ["signal-ee24e3790220b151"]}
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = validate_create_idea_candidates_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_checkpoint_change"
+    assert result.rejected_files == ("company/checkpoints.json",)
+
+    control, candidate, contract = _prepare_create_idea_candidate(tmp_path / "metrics")
+    checkpoint_path = candidate / "company/checkpoints.json"
+    checkpoint = RepositoryCheckpoint.model_validate_json(
+        checkpoint_path.read_text(encoding="utf-8")
+    )
+    checkpoint_path.write_text(
+        checkpoint.model_copy(update={"last_metrics_hash": "e" * 64}).model_dump_json(
+            indent=2
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = validate_create_idea_candidates_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_checkpoint_change"
+    assert result.rejected_files == ("company/checkpoints.json",)

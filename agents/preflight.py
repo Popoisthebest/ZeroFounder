@@ -4,7 +4,7 @@ import hashlib
 import json
 from datetime import date
 
-from agents.schemas import PreflightDecision, RepositoryCheckpoint, TriggerReason
+from agents.schemas import ActionType, PreflightDecision, RepositoryCheckpoint, TriggerReason
 
 
 def usage_allows_run(
@@ -85,11 +85,15 @@ def checkpoint_after_material_work(
     checkpoint: RepositoryCheckpoint,
     decision: PreflightDecision,
     *,
+    action_type: ActionType | None = None,
     today: date | None = None,
 ) -> RepositoryCheckpoint:
     if not decision.should_call_model:
         return checkpoint.model_copy(deep=True)
     updated = checkpoint.model_copy(deep=True)
+    updated.idempotency_keys = (updated.idempotency_keys + [decision.idempotency_key])[-1000:]
+    if action_type == ActionType.CREATE_IDEA_CANDIDATES:
+        return updated
     updated.last_signal_ids = sorted(set(updated.last_signal_ids + decision.new_signal_ids))[-5000:]
     updated.processed_issue_ids = sorted(set(updated.processed_issue_ids + decision.issue_ids))[
         -5000:
@@ -97,9 +101,9 @@ def checkpoint_after_material_work(
     updated.processed_comment_ids = sorted(
         set(updated.processed_comment_ids + decision.comment_ids)
     )[-5000:]
-    updated.idempotency_keys = (updated.idempotency_keys + [decision.idempotency_key])[-1000:]
     updated.last_product_sha = decision.product_sha or updated.last_product_sha
-    updated.last_metrics_hash = decision.metrics_hash or updated.last_metrics_hash
+    if TriggerReason.METRICS_CHANGED in decision.reasons:
+        updated.last_metrics_hash = decision.metrics_hash or updated.last_metrics_hash
     if TriggerReason.DAILY_REVIEW in decision.reasons:
         updated.last_daily_review = today or date.today()
     if TriggerReason.WEEKLY_REVIEW in decision.reasons:
