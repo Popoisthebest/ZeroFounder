@@ -255,11 +255,14 @@ def validate_create_problem_candidate_content(
             "회사 상태 JSON 구조를 안전하게 검증할 수 없습니다.",
             [state_path.as_posix()],
         )
-    old_unchanged = old_state.model_dump(mode="json", exclude={"lifecycle_stage", "last_agent_run"})
-    new_unchanged = new_state.model_dump(mode="json", exclude={"lifecycle_stage", "last_agent_run"})
+    state_mutable_fields = {"lifecycle_stage", "last_agent_run", "active_problem_id"}
+    old_unchanged = old_state.model_dump(mode="json", exclude=state_mutable_fields)
+    new_unchanged = new_state.model_dump(mode="json", exclude=state_mutable_fields)
     if (
         old_state.lifecycle_stage != LifecycleStage.DISCOVERY
         or new_state.lifecycle_stage != LifecycleStage.EVIDENCE_VALIDATION
+        or old_state.active_problem_id is not None
+        or new_state.active_problem_id != contract.problem_id
         or new_state.last_agent_run is None
         or old_unchanged != new_unchanged
     ):

@@ -6,7 +6,7 @@ import os
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -97,6 +97,11 @@ class PromptVariant:
     messages: list[dict[str, str]]
     response_model: type[BaseModel] = ActionEnvelope
     context_chars: int = 0
+    active_problem_id: str | None = None
+    candidate_evidence_id_count: int = 0
+    resolved_evidence_count: int = 0
+    unresolved_evidence_ids: list[str] = field(default_factory=list)
+    new_signal_count: int = 0
     included_signal_count: int = 0
     excluded_signal_count: int = 0
 
@@ -431,6 +436,11 @@ class GitHubModelsClient:
         response_model: type[BaseModel] = ActionEnvelope,
         compact_variant: PromptVariant | None = None,
         context_chars: int = 0,
+        active_problem_id: str | None = None,
+        candidate_evidence_id_count: int = 0,
+        resolved_evidence_count: int = 0,
+        unresolved_evidence_ids: list[str] | None = None,
+        new_signal_count: int = 0,
         included_signal_count: int = 0,
         excluded_signal_count: int = 0,
         model_max_input_tokens: int | None = None,
@@ -443,6 +453,11 @@ class GitHubModelsClient:
             messages=messages,
             response_model=response_model,
             context_chars=context_chars,
+            active_problem_id=active_problem_id,
+            candidate_evidence_id_count=candidate_evidence_id_count,
+            resolved_evidence_count=resolved_evidence_count,
+            unresolved_evidence_ids=unresolved_evidence_ids or [],
+            new_signal_count=new_signal_count,
             included_signal_count=included_signal_count,
             excluded_signal_count=excluded_signal_count,
         )
@@ -729,6 +744,11 @@ class GitHubModelsClient:
             schema_text,
             schema_in_messages=schema_in_messages,
         )
+        diagnostic.active_problem_id = variant.active_problem_id
+        diagnostic.candidate_evidence_id_count = variant.candidate_evidence_id_count
+        diagnostic.resolved_evidence_count = variant.resolved_evidence_count
+        diagnostic.unresolved_evidence_ids = variant.unresolved_evidence_ids or []
+        diagnostic.new_signal_count = variant.new_signal_count
         diagnostic.included_signal_count = variant.included_signal_count
         diagnostic.excluded_signal_count = variant.excluded_signal_count
 
@@ -774,6 +794,11 @@ class GitHubModelsClient:
             messages=[*variant.messages, {"role": "system", "content": correction}],
             response_model=variant.response_model,
             context_chars=variant.context_chars,
+            active_problem_id=variant.active_problem_id,
+            candidate_evidence_id_count=variant.candidate_evidence_id_count,
+            resolved_evidence_count=variant.resolved_evidence_count,
+            unresolved_evidence_ids=variant.unresolved_evidence_ids or [],
+            new_signal_count=variant.new_signal_count,
             included_signal_count=variant.included_signal_count,
             excluded_signal_count=variant.excluded_signal_count,
         )

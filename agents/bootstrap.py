@@ -8,6 +8,7 @@ def initial_company_state() -> CompanyState:
     return CompanyState(
         lifecycle_stage=LifecycleStage.DISCOVERY,
         autonomy_level=1,
+        active_problem_id=None,
         selected_venture=None,
         active_experiment=None,
         infrastructure_provider=InfrastructureProvider.UNSELECTED,

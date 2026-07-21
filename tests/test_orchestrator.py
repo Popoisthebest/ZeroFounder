@@ -3,6 +3,7 @@ from pathlib import Path
 
 import agents.orchestrator as orchestrator
 from agents.context_builder import build_context
+from agents.github_models import PromptVariant
 from agents.orchestrator import build_model_instruction, validate_model_action
 from agents.schemas import (
     ActionEnvelope,
@@ -214,14 +215,20 @@ def test_run_model_diagnostics_include_evidence_validation_context(
         "target_users": ["operators"],
         "description": "Operators repeatedly navigate long lists manually.",
         "current_workaround": "They scroll and search by hand.",
-        "evidence_ids": ["signal-000"],
+        "evidence_ids": ["signal-000", "signal-001"],
         "evidence": [
             {
                 "evidence_id": "signal-000",
                 "source_type": "rss",
                 "url": "https://example.test/signal-000",
                 "summary": "A repeated manual workflow problem.",
-            }
+            },
+            {
+                "evidence_id": "signal-001",
+                "source_type": "rss",
+                "url": "https://example.test/signal-001",
+                "summary": "A second repeated manual workflow problem.",
+            },
         ],
         "frequency_score": 5,
         "severity_score": 5,
@@ -259,7 +266,7 @@ def test_run_model_diagnostics_include_evidence_validation_context(
             return ModelCallResult(
                 action=_action(
                     "validate_evidence",
-                    evidence_ids=["signal-000"],
+                    evidence_ids=["signal-000", "signal-001"],
                     state_transition={
                         "from": "EVIDENCE_VALIDATION",
                         "to": "IDEA_EVALUATION",
@@ -271,12 +278,23 @@ def test_run_model_diagnostics_include_evidence_validation_context(
     monkeypatch.setenv("GITHUB_TOKEN", "token")
     monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeClient)
 
-    outcome = orchestrator.run_model(tmp_path, _decision(["signal-000", "signal-001"]))
+    outcome = orchestrator.run_model(tmp_path, _decision([]))
 
     assert outcome.diagnostic.accepted
     assert captured["active_problem_id"] == "problem-001"
-    assert captured["candidate_evidence_id_count"] == 1
-    assert captured["resolved_evidence_count"] == 1
+    assert captured["candidate_evidence_id_count"] == 2
+    assert captured["resolved_evidence_count"] == 2
     assert captured["unresolved_evidence_ids"] == []
-    assert captured["new_signal_count"] == 2
+    assert captured["new_signal_count"] == 0
     assert captured["included_signal_count"] == 2
+
+
+def test_prompt_variant_defaults_support_non_evidence_lifecycle():
+    variant = PromptVariant(messages=[{"role": "user", "content": "context"}])
+
+    assert variant.active_problem_id is None
+    assert variant.candidate_evidence_id_count == 0
+    assert variant.resolved_evidence_count == 0
+    assert variant.unresolved_evidence_ids == []
+    assert variant.new_signal_count == 0
+    assert variant.included_signal_count == 0
