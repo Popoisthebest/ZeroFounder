@@ -622,7 +622,18 @@ class PreflightDecision(StrictModel):
     product_sha: str | None = None
     metrics_hash: str | None = None
     idempotency_key: str
+    skip_reason: str | None = None
+    skip_detail: str | None = None
     blocked_reason: str | None = None
+    lifecycle_stage: LifecycleStage | None = None
+    active_problem_id: StrictId | None = None
+    expected_action_type: ActionType | None = None
+    open_agent_pr_count: int = Field(default=0, ge=0)
+    open_agent_pr_numbers: list[int] = Field(default_factory=list)
+    idempotency_key_seen: bool = False
+    concurrent_run_detected: bool = False
+    schedule_cron: str | None = None
+    next_schedule_note: str | None = None
     completed_calls_today: int = Field(default=0, ge=0)
     active_reservations: int = Field(default=0, ge=0)
     required_calls: int = Field(default=0, ge=0, le=2)
@@ -633,6 +644,19 @@ class PreflightDecision(StrictModel):
     usage_calculation: str = "0 + 0 + 0 <= 0"
     failed_after_request_calls_today: int = Field(default=0, ge=0)
     skipped_runs_today: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def require_skip_reason_for_skipped_run(self) -> PreflightDecision:
+        if self.skip_reason is None and self.blocked_reason is not None:
+            self.skip_reason = self.blocked_reason
+        if self.blocked_reason is None and self.skip_reason is not None:
+            self.blocked_reason = self.skip_reason
+        if not self.should_call_model:
+            if not self.skip_reason:
+                raise ValueError("skipped preflight requires skip_reason")
+            if not self.skip_detail:
+                raise ValueError("skipped preflight requires skip_detail")
+        return self
 
 
 class InferenceReservation(StrictModel):

@@ -10,6 +10,14 @@ from agents.schemas import DependencyProposal
 
 DEPENDENCY_MARKER = "<!-- zerofounder-dependency-proposal -->"
 COMMAND_LABELS = {"founder-approval", "requires-approval", "tool-request", "agent-generated"}
+SKIP_DETAILS = {
+    "bot_comment": "봇이 작성한 댓글은 명령으로 처리하지 않습니다.",
+    "unrecognized_comment_command": "허용된 첫 줄 명령이 아니어서 일반 댓글로 처리했습니다.",
+    "unsupported_issue_context": (
+        "댓글 대상 Issue/PR에 명령 처리를 허용하는 라벨 또는 문맥이 없습니다."
+    ),
+    "unauthorized_actor": "댓글 작성자가 이 명령을 실행할 권한을 갖고 있지 않습니다.",
+}
 
 
 def dependency_from_body(body: str) -> DependencyProposal | None:
@@ -74,6 +82,7 @@ def main() -> int:
     )
     if not valid and skip_reason is None:
         skip_reason = "unsupported_issue_context"
+    skip_detail = SKIP_DETAILS.get(skip_reason, skip_reason) if not valid else None
     payload = {
         "valid": valid,
         "kind": kind if valid else None,
@@ -84,6 +93,7 @@ def main() -> int:
         "dependency_proposal": dependency.model_dump(mode="json") if valid and dependency else None,
         "skipped": not valid,
         "skip_reason": skip_reason if not valid else None,
+        "skip_detail": skip_detail,
     }
     Path("runtime").mkdir(exist_ok=True)
     Path("runtime/approval-command.json").write_text(json.dumps(payload) + "\n")
@@ -99,6 +109,7 @@ def main() -> int:
                 "## ZeroFounder Issue 댓글 명령\n\n"
                 f"- skipped: `{str(not valid).lower()}`\n"
                 f"- skip_reason: `{skip_reason if not valid else 'none'}`\n"
+                f"- skip_detail: `{skip_detail if not valid else 'none'}`\n"
                 f"- command: `{command or 'none'}`\n"
                 f"- kind: `{kind if valid else 'none'}`\n"
             )
@@ -109,6 +120,7 @@ def main() -> int:
             handle.write(f"kind={kind if valid else 'none'}\n")
             handle.write(f"skipped={str(not valid).lower()}\n")
             handle.write(f"skip_reason={skip_reason if not valid else 'none'}\n")
+            handle.write(f"skip_detail={skip_detail if not valid else 'none'}\n")
     return 0
 
 

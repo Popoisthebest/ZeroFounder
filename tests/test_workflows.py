@@ -5,6 +5,13 @@ import yaml
 
 ROOT = Path(__file__).parents[1]
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+MIN_ACTION_MAJOR = {
+    "actions/checkout": 7,
+    "actions/setup-node": 7,
+    "actions/setup-python": 7,
+    "actions/upload-artifact": 7,
+    "actions/download-artifact": 8,
+}
 
 
 def load_workflows() -> dict[str, dict]:
@@ -45,6 +52,30 @@ def test_workflow_yaml_and_job_permissions():
     }
 
 
+def test_agent_workflow_concurrency_prevents_parallel_material_work():
+    agent = load_workflows()["agent.yml"]
+    assert agent["concurrency"] == {
+        "group": "zerofounder-agent-${{ github.repository }}-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }
+
+
+def test_workflows_do_not_use_deprecated_action_majors():
+    for workflow_name, workflow in load_workflows().items():
+        for job in workflow["jobs"].values():
+            for step in job.get("steps", []):
+                uses = str(step.get("uses", ""))
+                if "@" not in uses:
+                    continue
+                action, version = uses.split("@", 1)
+                minimum = MIN_ACTION_MAJOR.get(action)
+                if minimum is None:
+                    continue
+                assert version.startswith("v")
+                major = int(version[1:].split(".", 1)[0])
+                assert major >= minimum, f"{workflow_name}:{uses}"
+
+
 def test_issue_comment_command_job_exposes_skip_outputs():
     agent = load_workflows()["agent.yml"]
     job = agent["jobs"]["issue-command"]
@@ -54,6 +85,7 @@ def test_issue_comment_command_job_exposes_skip_outputs():
         "kind": "${{ steps.command.outputs.kind }}",
         "skipped": "${{ steps.command.outputs.skipped }}",
         "skip_reason": "${{ steps.command.outputs.skip_reason }}",
+        "skip_detail": "${{ steps.command.outputs.skip_detail }}",
     }
     for key, value in expected.items():
         assert job["outputs"][key] == value

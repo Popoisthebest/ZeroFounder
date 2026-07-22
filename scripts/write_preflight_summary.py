@@ -13,10 +13,28 @@ def _safe(value: object) -> str:
 
 
 def render_summary(decision: PreflightDecision) -> str:
+    lifecycle_stage = decision.lifecycle_stage.value if decision.lifecycle_stage else "unknown"
+    expected_action_type = (
+        decision.expected_action_type.value if decision.expected_action_type else "none"
+    )
+    open_pr_numbers = (
+        ", ".join(f"#{number}" for number in decision.open_agent_pr_numbers) or "none"
+    )
     rows = [
-        ("skipped", str(not decision.should_call_model).lower()),
-        ("skip_reason", decision.blocked_reason or "none"),
+        ("lifecycle_stage", lifecycle_stage),
+        ("active_problem_id", decision.active_problem_id or "none"),
+        ("expected_action_type", expected_action_type),
+        ("open_agent_pr_count", decision.open_agent_pr_count),
+        ("open_agent_pr_numbers", open_pr_numbers),
+        ("new_signal_count", len(decision.new_signal_ids)),
+        ("new_issue_count", len(decision.issue_ids)),
+        ("new_comment_count", len(decision.comment_ids)),
+        ("idempotency_key_seen", str(decision.idempotency_key_seen).lower()),
+        ("concurrent_run_detected", str(decision.concurrent_run_detected).lower()),
         ("should_call_model", str(decision.should_call_model).lower()),
+        ("skipped", str(not decision.should_call_model).lower()),
+        ("skip_reason", decision.skip_reason or "none"),
+        ("skip_detail", decision.skip_detail or "none"),
         ("오늘 완료된 호출", decision.completed_calls_today),
         ("활성 예약", decision.active_reservations),
         ("이번 실행 필요 호출", decision.required_calls),
@@ -29,6 +47,17 @@ def render_summary(decision: PreflightDecision) -> str:
         ("오늘 건너뛴 실행", decision.skipped_runs_today),
         ("blocked_reason", decision.blocked_reason or "none"),
     ]
+    if decision.schedule_cron or decision.next_schedule_note:
+        rows.extend(
+            [
+                ("schedule_cron", decision.schedule_cron or "none"),
+                (
+                    "next_schedule",
+                    decision.next_schedule_note
+                    or "다음 실행은 GitHub 스케줄에 따라 진행됩니다.",
+                ),
+            ]
+        )
     table = "\n".join(f"| {_safe(key)} | {_safe(value)} |" for key, value in rows)
     return (
         "## ZeroFounder 모델 사용량 사전 점검\n\n"

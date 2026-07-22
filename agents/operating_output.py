@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from agents.language import language_mismatches, operating_language
 from agents.schemas import ActionEnvelope, ActionType, MaterializedActionEnvelope
 
@@ -30,6 +32,43 @@ def action_commit_message(action: ActionEnvelope | MaterializedActionEnvelope, r
     return f"{prefix}({scope}): {description} [run:{run_id}]"
 
 
+def _pr_lifecycle_stage(action: ActionEnvelope | MaterializedActionEnvelope) -> str | None:
+    if action.state_transition:
+        return action.state_transition.from_stage.value
+    if action.action_type in {
+        ActionType.CREATE_PROBLEM_CANDIDATE,
+        ActionType.VALIDATE_EVIDENCE,
+    }:
+        if action.action_type == ActionType.VALIDATE_EVIDENCE:
+            return "EVIDENCE_VALIDATION"
+        return "DISCOVERY"
+    if action.action_type in {ActionType.CREATE_IDEA_CANDIDATES, ActionType.EVALUATE_IDEAS}:
+        return "IDEA_EVALUATION"
+    return None
+
+
+def _pr_active_problem_id(action: ActionEnvelope | MaterializedActionEnvelope) -> str | None:
+    for change in action.files:
+        path = change.path
+        if path.startswith("research/problems/") and path.endswith(".json"):
+            return path.removeprefix("research/problems/").removesuffix(".json")
+        if path.startswith("research/ideas/") and path.endswith(".json"):
+            return path.removeprefix("research/ideas/").removesuffix(".json")
+        if path.startswith("research/idea-evaluations/") and path.endswith(".json"):
+            return path.removeprefix("research/idea-evaluations/").removesuffix(".json")
+    return None
+
+
+def _agent_pr_metadata(action: ActionEnvelope | MaterializedActionEnvelope) -> str:
+    payload = {
+        "source": "zerofounder-agent",
+        "action_type": action.action_type.value,
+        "lifecycle_stage": _pr_lifecycle_stage(action),
+        "active_problem_id": _pr_active_problem_id(action),
+    }
+    return f"<!-- zerofounder-agent-pr {json.dumps(payload, sort_keys=True)} -->"
+
+
 def render_agent_pull_request(
     action: ActionEnvelope | MaterializedActionEnvelope,
     sha: str,
@@ -50,7 +89,9 @@ def render_agent_pull_request(
         else "없음"
     )
     generated = "\n".join(f"- `{change.path}`" for change in action.files) or "- 없음"
-    body = f"""## 변경 목적
+    body = f"""{_agent_pr_metadata(action)}
+
+## 변경 목적
 
 {action.summary}
 

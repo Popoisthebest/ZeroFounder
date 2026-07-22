@@ -6,6 +6,39 @@ from pathlib import Path
 import yaml
 
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2}
+MIN_ACTION_MAJOR = {
+    "actions/checkout": 7,
+    "actions/setup-node": 7,
+    "actions/setup-python": 7,
+    "actions/upload-artifact": 7,
+    "actions/download-artifact": 8,
+}
+
+
+def check_action_version(uses: object, *, workflow_name: str) -> None:
+    value = str(uses or "")
+    if "@" not in value:
+        return
+    action, version = value.split("@", 1)
+    minimum = MIN_ACTION_MAJOR.get(action)
+    if minimum is None:
+        return
+    if not version.startswith("v") or not version[1:].split(".", 1)[0].isdigit():
+        raise SystemExit(f"action major를 고정해야 합니다: {workflow_name}:{value}")
+    major = int(version[1:].split(".", 1)[0])
+    if major < minimum:
+        raise SystemExit(
+            f"deprecated action major입니다: {workflow_name}:{value} < {action}@v{minimum}"
+        )
+
+
+def iter_steps(document: dict) -> list[dict]:
+    steps: list[dict] = []
+    for job in document.get("jobs", {}).values():
+        for step in job.get("steps", []):
+            if isinstance(step, dict):
+                steps.append(step)
+    return steps
 
 
 def max_job_permissions(document: dict) -> dict[str, str]:
@@ -38,6 +71,8 @@ def main() -> int:
         document = yaml.safe_load(text)
         if path.name == "agent.yml":
             agent_document = document
+        for step in iter_steps(document):
+            check_action_version(step.get("uses"), workflow_name=path.name)
         if document.get("permissions") != {"contents": "read"}:
             raise SystemExit(f"workflow 기본 권한은 contents: read여야 합니다: {path.name}")
         for name, job in document.get("jobs", {}).items():
@@ -53,6 +88,24 @@ def main() -> int:
         raise SystemExit(f"예상하지 않은 actions:write job입니다: {actions_writers}")
     if agent_document is None:
         raise SystemExit("agent workflow가 없습니다.")
+    concurrency = agent_document.get("concurrency", {})
+    if concurrency != {
+        "group": "zerofounder-agent-${{ github.repository }}-${{ github.ref }}",
+        "cancel-in-progress": False,
+    }:
+        raise SystemExit("agent workflow concurrency group/cancel 정책이 올바르지 않습니다.")
+    schema_text = (root / "agents/schemas.py").read_text()
+    if (
+        "skipped preflight requires skip_reason" not in schema_text
+        or "skipped preflight requires skip_detail" not in schema_text
+    ):
+        raise SystemExit("skipped=true인 preflight는 skip_reason과 skip_detail을 강제해야 합니다.")
+    orchestrator_text = (root / "agents/orchestrator.py").read_text()
+    if (
+        "unrecognized_comment_command" not in orchestrator_text
+        or "parse_comment_command" not in orchestrator_text
+    ):
+        raise SystemExit("일반 issue_comment는 모델 실행을 열면 안 됩니다.")
     steps = agent_document["jobs"]["create-branch"]["steps"]
 
     def step_index(predicate) -> int:

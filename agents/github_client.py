@@ -67,6 +67,20 @@ class GitHubClient:
         )
         return result if isinstance(result, list) else []
 
+    def open_agent_pull_requests(self) -> list[dict[str, Any]]:
+        result = self._request(
+            "GET",
+            f"/repos/{self.repository}/issues",
+            params={
+                "state": "open",
+                "labels": "agent-generated",
+                "per_page": 100,
+            },
+        )
+        if not isinstance(result, list):
+            return []
+        return [item for item in result if isinstance(item, dict) and "pull_request" in item]
+
     def collaborator_permission(self, login: str) -> str:
         if not re.fullmatch(r"[A-Za-z0-9-]{1,39}", login):
             return "none"

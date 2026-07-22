@@ -1,4 +1,7 @@
+import hashlib
 import json
+
+import pytest
 
 import agents.orchestrator as orchestrator
 from agents.preflight import (
@@ -6,14 +9,51 @@ from agents.preflight import (
     checkpoint_after_material_work,
     usage_allows_run,
 )
-from agents.schemas import ActionType, PreflightDecision, RepositoryCheckpoint, TriggerReason
+from agents.schemas import (
+    ActionType,
+    CompanyState,
+    LifecycleStage,
+    PreflightDecision,
+    RepositoryCheckpoint,
+    TriggerReason,
+)
 from scripts.write_preflight_summary import render_summary
 
 
-def _write_preflight_root(root):
-    (root / "company").mkdir(parents=True)
+def _write_preflight_root(
+    root,
+    *,
+    checkpoint: RepositoryCheckpoint | None = None,
+    state: CompanyState | None = None,
+):
+    metrics_body = "{}\n"
+    default_checkpoint = RepositoryCheckpoint(
+        last_metrics_hash=hashlib.sha256(metrics_body.encode()).hexdigest()
+    )
+    (root / "company").mkdir(parents=True, exist_ok=True)
     (root / "company/checkpoints.json").write_text(
-        RepositoryCheckpoint().model_dump_json() + "\n"
+        (checkpoint or default_checkpoint).model_dump_json() + "\n"
+    )
+    (root / "company/state.json").write_text(
+        (state or CompanyState()).model_dump_json() + "\n"
+    )
+    (root / "company/metrics.json").write_text(metrics_body)
+    (root / "company/strategy.json").write_text(
+        json.dumps(
+            {
+                "review": {
+                    "daily_hour": 23,
+                    "weekly_day": 7,
+                    "weekly_hour": 23,
+                },
+                "evidence": {
+                    "min_new_signals_for_analysis": 5,
+                    "strong_evidence_threshold": 0.85,
+                    "min_unique_signals": 2,
+                },
+            }
+        )
+        + "\n"
     )
 
 
@@ -44,6 +84,13 @@ def _write_issue_comment_event(
 
 class _PreflightClient:
     can_write = True
+    open_pulls: list[dict] = []
+    usage = {
+        "completed_inference_calls": 0,
+        "reserved_inference_calls": 0,
+        "failed_after_request_calls": 0,
+        "skipped_runs": 0,
+    }
 
     def __init__(self, token: str, repository: str):
         pass
@@ -52,12 +99,10 @@ class _PreflightClient:
         return self.can_write
 
     def model_usage_today(self):
-        return {
-            "completed_inference_calls": 0,
-            "reserved_inference_calls": 0,
-            "failed_after_request_calls": 0,
-            "skipped_runs": 0,
-        }
+        return self.usage
+
+    def open_agent_pull_requests(self):
+        return self.open_pulls
 
 
 def test_unchanged_preflight_is_no_op_and_checkpoint_unchanged():
@@ -77,6 +122,7 @@ def test_unchanged_preflight_is_no_op_and_checkpoint_unchanged():
         strong_evidence_threshold=0.85,
     )
     assert not decision.should_call_model
+    assert decision.skip_reason == "no_new_trigger"
     assert checkpoint_after_material_work(checkpoint, decision) == checkpoint
 
 
@@ -91,10 +137,13 @@ def test_issue_comment_duplicate_is_skipped_before_model_flow(tmp_path, monkeypa
 
     assert decision["should_call_model"] is False
     assert decision["blocked_reason"] == "unrecognized_comment_command"
+    assert decision["skip_reason"] == "unrecognized_comment_command"
+    assert decision["skip_detail"]
     assert decision["comment_ids"] == []
     summary = render_summary(PreflightDecision.model_validate(decision))
     assert "| skipped | true |" in summary
     assert "| skip_reason | unrecognized_comment_command |" in summary
+    assert "| skip_detail |" in summary
 
 
 def test_issue_comment_bot_is_skipped_before_model_flow(tmp_path, monkeypatch):
@@ -168,6 +217,146 @@ def test_issue_comment_run_agent_requires_write_permission(tmp_path, monkeypatch
     assert decision["should_call_model"] is False
     assert decision["blocked_reason"] == "unauthorized_actor"
     _PreflightClient.can_write = True
+
+
+def test_schedule_without_trigger_records_no_new_trigger(tmp_path, monkeypatch):
+    _write_preflight_root(tmp_path)
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "schedule")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "no_new_trigger"
+    assert decision["skip_detail"]
+    assert decision["lifecycle_stage"] == "DISCOVERY"
+    assert decision["active_problem_id"] is None
+    assert decision["new_signal_ids"] == []
+    assert decision["schedule_cron"] == "17 */2 * * *"
+
+
+def test_same_stage_agent_pr_blocks_model_flow(tmp_path, monkeypatch):
+    state = CompanyState(
+        lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+        active_problem_id="problem-001",
+    )
+    _write_preflight_root(tmp_path, state=state)
+    _PreflightClient.open_pulls = [
+        {
+            "number": 12,
+            "labels": [{"name": "agent-generated"}],
+            "pull_request": {},
+            "body": (
+                '<!-- zerofounder-agent-pr {"active_problem_id":"problem-001",'
+                '"lifecycle_stage":"IDEA_EVALUATION"} -->'
+            ),
+        }
+    ]
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "open_agent_pr_exists"
+    assert decision["open_agent_pr_count"] == 1
+    assert decision["open_agent_pr_numbers"] == [12]
+    _PreflightClient.open_pulls = []
+
+
+def test_different_problem_agent_pr_does_not_block(tmp_path, monkeypatch):
+    state = CompanyState(
+        lifecycle_stage=LifecycleStage.IDEA_EVALUATION,
+        active_problem_id="problem-001",
+    )
+    _write_preflight_root(tmp_path, state=state)
+    _PreflightClient.open_pulls = [
+        {
+            "number": 13,
+            "labels": [{"name": "agent-generated"}],
+            "pull_request": {},
+            "body": (
+                '<!-- zerofounder-agent-pr {"active_problem_id":"problem-002",'
+                '"lifecycle_stage":"IDEA_EVALUATION"} -->'
+            ),
+        }
+    ]
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is True
+    assert decision["open_agent_pr_count"] == 0
+    _PreflightClient.open_pulls = []
+
+
+def test_idempotency_key_seen_blocks_manual_run(tmp_path, monkeypatch):
+    _write_preflight_root(tmp_path)
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+    first = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+    checkpoint = RepositoryCheckpoint(
+        idempotency_keys=[first["idempotency_key"]],
+        last_metrics_hash=first["metrics_hash"],
+    )
+    _write_preflight_root(tmp_path, checkpoint=checkpoint)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "idempotency_key_already_processed"
+    assert decision["idempotency_key_seen"] is True
+
+
+def test_founder_approval_stage_blocks_model_flow(tmp_path, monkeypatch):
+    _write_preflight_root(
+        tmp_path,
+        state=CompanyState(lifecycle_stage=LifecycleStage.FOUNDER_APPROVAL),
+    )
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "approval_required"
+
+
+def test_concurrent_reservation_blocks_material_work(tmp_path, monkeypatch):
+    _write_preflight_root(tmp_path)
+    _PreflightClient.usage = {
+        "completed_inference_calls": 0,
+        "reserved_inference_calls": 1,
+        "failed_after_request_calls": 0,
+        "skipped_runs": 0,
+    }
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "concurrent_run_active"
+    assert decision["concurrent_run_detected"] is True
+    _PreflightClient.usage = {
+        "completed_inference_calls": 0,
+        "reserved_inference_calls": 0,
+        "failed_after_request_calls": 0,
+        "skipped_runs": 0,
+    }
+
+
+def test_skipped_preflight_requires_reason_and_detail():
+    with pytest.raises(ValueError, match="skip_reason"):
+        PreflightDecision(should_call_model=False, idempotency_key="a" * 64)
+
+    with pytest.raises(ValueError, match="skip_detail"):
+        PreflightDecision(
+            should_call_model=False,
+            idempotency_key="a" * 64,
+            skip_reason="no_new_trigger",
+        )
 
 
 def test_manual_and_strong_signal_trigger():

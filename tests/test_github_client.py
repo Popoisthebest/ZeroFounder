@@ -99,3 +99,20 @@ def test_model_usage_counts_only_successful_inference_markers():
         "response_validation_failed_calls": 1,
         "skipped_runs": 1,
     }
+
+
+def test_open_agent_pull_requests_filters_labeled_open_pulls():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/repos/owner/repo/issues")
+        assert request.url.params["state"] == "open"
+        assert request.url.params["labels"] == "agent-generated"
+        return httpx.Response(
+            200,
+            json=[
+                {"number": 1, "pull_request": {}, "labels": [{"name": "agent-generated"}]},
+                {"number": 2, "labels": [{"name": "agent-generated"}]},
+            ],
+        )
+
+    client = GitHubClient("fake", "owner/repo", transport=httpx.MockTransport(handler))
+    assert [item["number"] for item in client.open_agent_pull_requests()] == [1]

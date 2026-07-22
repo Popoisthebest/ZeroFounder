@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -44,6 +45,137 @@ from agents.schemas import (
 )
 from agents.usage_limiter import UsageLimiter, required_inference_calls
 
+AGENT_PR_METADATA = re.compile(r"<!--\s*zerofounder-agent-pr\s*(\{.*?\})\s*-->", re.S)
+SCHEDULE_CRON = "17 */2 * * *"
+
+
+def _load_company_state(root: Path) -> CompanyState:
+    path = root / "company/state.json"
+    if not path.exists():
+        return CompanyState()
+    return CompanyState.model_validate_json(path.read_text())
+
+
+def _skip_detail(reason: str, *, state: CompanyState, pr_numbers: list[int] | None = None) -> str:
+    problem = state.active_problem_id or "none"
+    stage = state.lifecycle_stage.value
+    details = {
+        "bot_comment": (
+            "봇이 작성한 댓글은 ZeroFounder 에이전트 실행 트리거로 사용하지 않습니다."
+        ),
+        "unrecognized_comment_command": "허용된 첫 줄 명령이 아니어서 일반 댓글로 처리했습니다.",
+        "command_handled_by_approval_flow": (
+            "승인 관련 명령은 AI 의사결정 workflow가 아닌 승인 반영 흐름에서 처리합니다."
+        ),
+        "unsupported_issue_context": (
+            "댓글 대상 Issue/PR에 에이전트 실행을 허용하는 라벨 또는 문맥이 없습니다."
+        ),
+        "unauthorized_actor": "댓글 작성자가 ZeroFounder 에이전트 실행 권한을 갖고 있지 않습니다.",
+        "concurrent_run_active": "다른 ZeroFounder 에이전트 실행이 모델 호출을 예약한 상태입니다.",
+        "no_new_trigger": "마지막 실행 이후 새 signal, metric, 명령이 없습니다.",
+        "idempotency_key_already_processed": (
+            "현재 실행의 idempotency key가 이미 처리된 기록에 있습니다."
+        ),
+        "no_actionable_state": f"{stage} 단계에서 새로 수행할 material work가 없습니다.",
+        "approval_required": "창업자 승인 대기 단계이므로 모델 의사결정을 새로 실행하지 않습니다.",
+        "model_call_limit_reached": (
+            "오늘 허용된 모델 호출 한도 또는 활성 예약 수 때문에 실행하지 않습니다."
+        ),
+        "unsupported_lifecycle_stage": f"{stage} 단계는 현재 자동 모델 action을 지원하지 않습니다.",
+    }
+    if reason == "open_agent_pr_exists":
+        numbers = ", ".join(f"#{number}" for number in pr_numbers or [])
+        return (
+            f"{stage} 단계의 active_problem_id={problem} "
+            f"agent PR {numbers}가 이미 열려 있습니다."
+        )
+    return details.get(reason, reason)
+
+
+def _apply_skip(
+    decision: PreflightDecision,
+    reason: str,
+    *,
+    state: CompanyState,
+    pr_numbers: list[int] | None = None,
+) -> None:
+    decision.should_call_model = False
+    decision.skip_reason = reason
+    decision.blocked_reason = reason
+    decision.skip_detail = _skip_detail(reason, state=state, pr_numbers=pr_numbers)
+
+
+def _agent_pr_metadata(body: object) -> dict[str, object]:
+    if not isinstance(body, str):
+        return {}
+    match = AGENT_PR_METADATA.search(body)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _matching_agent_pr_numbers(
+    pulls: list[dict],
+    *,
+    lifecycle_stage: str,
+    active_problem_id: str | None,
+) -> list[int]:
+    numbers: list[int] = []
+    for pull in pulls:
+        labels = {
+            item.get("name")
+            for item in pull.get("labels", [])
+            if isinstance(item, dict)
+        }
+        if "agent-generated" not in labels:
+            continue
+        metadata = _agent_pr_metadata(pull.get("body"))
+        if metadata.get("lifecycle_stage") != lifecycle_stage:
+            continue
+        if metadata.get("active_problem_id") != active_problem_id:
+            continue
+        number = pull.get("number")
+        if isinstance(number, int):
+            numbers.append(number)
+    return sorted(numbers)
+
+
+def _idea_candidate_count(root: Path, problem_id: str | None) -> int:
+    if not problem_id:
+        return 0
+    path = root / "research/ideas" / f"{problem_id}.json"
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return 0
+    candidates = data.get("idea_candidates") if isinstance(data, dict) else None
+    return len(candidates) if isinstance(candidates, list) else 0
+
+
+def _expected_action_type(root: Path, state: CompanyState) -> ActionType | None:
+    if state.sleep_mode:
+        return None
+    permitted = [
+        item for item in allowed_actions(state.lifecycle_stage) if item != ActionType.NO_OP
+    ]
+    if not permitted:
+        return None
+    if state.lifecycle_stage.value == "EVIDENCE_VALIDATION":
+        return ActionType.VALIDATE_EVIDENCE
+    if state.lifecycle_stage.value == "IDEA_EVALUATION":
+        if _idea_candidate_count(root, state.active_problem_id) > 0:
+            return ActionType.EVALUATE_IDEAS
+        return ActionType.CREATE_IDEA_CANDIDATES
+    if state.lifecycle_stage.value == "FOUNDER_APPROVAL":
+        return None
+    return permitted[0]
+
 
 def _signal_quality(root: Path) -> dict[str, float]:
     output: dict[str, float] = {}
@@ -61,6 +193,7 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     checkpoint = RepositoryCheckpoint.model_validate_json(
         (root / "company/checkpoints.json").read_text()
     )
+    state = _load_company_state(root)
     event: dict = {}
     if event_path and event_path.exists():
         loaded = json.loads(event_path.read_text())
@@ -69,6 +202,12 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     comment = event.get("comment") if isinstance(event.get("comment"), dict) else {}
     token = os.getenv("GITHUB_TOKEN")
     repository = os.getenv("GITHUB_REPOSITORY")
+    github_client: GitHubClient | None = None
+    if token and repository:
+        try:
+            github_client = GitHubClient(token, repository)
+        except Exception:
+            github_client = None
     decision: PreflightDecision
     if event_name == "issue_comment":
         actor = str(comment.get("user", {}).get("login", ""))
@@ -90,7 +229,7 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
             skip_reason = "unauthorized_actor"
         else:
             try:
-                if not GitHubClient(token, repository).has_write_permission(actor):
+                if not (github_client and github_client.has_write_permission(actor)):
                     skip_reason = "unauthorized_actor"
             except Exception:
                 skip_reason = "unauthorized_actor"
@@ -101,6 +240,8 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
                     f"skip:{skip_reason}:{comment.get('id')}".encode()
                 ).hexdigest(),
                 blocked_reason=skip_reason,
+                skip_reason=skip_reason,
+                skip_detail=_skip_detail(skip_reason, state=state),
             )
         else:
             decision = build_preflight_decision(
@@ -152,6 +293,17 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
                 os.getenv("STRONG_EVIDENCE_THRESHOLD", evidence["strong_evidence_threshold"])
             ),
         )
+    expected_action_type = _expected_action_type(root, state)
+    open_agent_pr_numbers: list[int] = []
+    if github_client is not None:
+        try:
+            open_agent_pr_numbers = _matching_agent_pr_numbers(
+                github_client.open_agent_pull_requests(),
+                lifecycle_stage=state.lifecycle_stage.value,
+                active_problem_id=state.active_problem_id,
+            )
+        except Exception:
+            open_agent_pr_numbers = []
     base_limit = int(os.getenv("DAILY_MODEL_CALL_LIMIT", "8"))
     diagnostic_mode = os.getenv("MODEL_DIAGNOSTIC_MODE", "false").lower() == "true"
     manual_diagnostic_allowance = (
@@ -169,9 +321,9 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
         "failed_after_request_calls": 0,
         "skipped_runs": 0,
     }
-    if token and repository:
+    if github_client is not None:
         try:
-            usage = GitHubClient(token, repository).model_usage_today()
+            usage = github_client.model_usage_today()
         except Exception:
             ledger = UsageLimiter.from_path(root / "company/usage.json", daily_limit=limit)
             day = ledger.today()
@@ -199,13 +351,43 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     decision.usage_calculation = f"{completed} + {active} + {required_calls} <= {limit}"
     decision.failed_after_request_calls_today = usage["failed_after_request_calls"]
     decision.skipped_runs_today = usage["skipped_runs"]
-    if decision.should_call_model and not allowed:
-        decision.should_call_model = False
-        decision.blocked_reason = (
-            "daily inference limit would be exceeded: "
-            f"{completed} completed + {active} active reservations + "
-            f"{required_calls} required > limit {limit}"
+    decision.lifecycle_stage = state.lifecycle_stage
+    decision.active_problem_id = state.active_problem_id
+    decision.expected_action_type = expected_action_type
+    decision.open_agent_pr_count = len(open_agent_pr_numbers)
+    decision.open_agent_pr_numbers = open_agent_pr_numbers
+    decision.idempotency_key_seen = decision.idempotency_key in checkpoint.idempotency_keys
+    decision.concurrent_run_detected = active > 0
+    if event_name == "schedule":
+        decision.schedule_cron = SCHEDULE_CRON
+        decision.next_schedule_note = "다음 실행은 GitHub 스케줄에 따라 진행됩니다."
+    if decision.skip_reason in {
+        "bot_comment",
+        "unrecognized_comment_command",
+        "command_handled_by_approval_flow",
+        "unsupported_issue_context",
+        "unauthorized_actor",
+    }:
+        pass
+    elif decision.concurrent_run_detected:
+        _apply_skip(decision, "concurrent_run_active", state=state)
+    elif open_agent_pr_numbers:
+        _apply_skip(
+            decision,
+            "open_agent_pr_exists",
+            state=state,
+            pr_numbers=open_agent_pr_numbers,
         )
+    elif state.lifecycle_stage.value == "FOUNDER_APPROVAL":
+        _apply_skip(decision, "approval_required", state=state)
+    elif expected_action_type is None:
+        _apply_skip(decision, "no_actionable_state", state=state)
+    elif not decision.should_call_model:
+        _apply_skip(decision, decision.skip_reason or "no_new_trigger", state=state)
+    elif decision.idempotency_key_seen:
+        _apply_skip(decision, "idempotency_key_already_processed", state=state)
+    elif not allowed:
+        _apply_skip(decision, "model_call_limit_reached", state=state)
     return decision.model_dump(mode="json", by_alias=True)
 
 

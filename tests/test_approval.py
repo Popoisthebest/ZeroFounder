@@ -95,6 +95,7 @@ def test_general_issue_comments_are_skipped(tmp_path, monkeypatch):
         assert payload["valid"] is False
         assert payload["skipped"] is True
         assert payload["skip_reason"] == "unrecognized_comment_command"
+        assert payload["skip_detail"]
 
 
 def test_bot_comment_is_skipped(tmp_path, monkeypatch):
@@ -105,6 +106,7 @@ def test_bot_comment_is_skipped(tmp_path, monkeypatch):
     )
     assert payload["valid"] is False
     assert payload["skip_reason"] == "bot_comment"
+    assert payload["skip_detail"]
 
 
 def test_exact_approve_runs_approval_flow(tmp_path, monkeypatch):

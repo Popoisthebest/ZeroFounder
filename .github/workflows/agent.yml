@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: zerofounder-agent
+  group: zerofounder-agent-${{ github.repository }}-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -35,8 +35,8 @@ jobs:
     outputs:
       should_call_model: ${{ steps.decision.outputs.should_call_model }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -56,7 +56,7 @@ jobs:
       - name: 모델 사용량 사전 점검 요약
         if: always()
         run: python -m scripts.write_preflight_summary --preflight runtime/preflight.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: preflight
           path: runtime/preflight.json
@@ -71,13 +71,13 @@ jobs:
       models: read
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: preflight
           path: runtime
@@ -123,7 +123,7 @@ jobs:
       - name: 모델 행동 검증 결과 요약
         if: always()
         run: python -m scripts.write_model_summary --diagnostic runtime/model-diagnostic.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: validated-action
           path: |
@@ -140,12 +140,12 @@ jobs:
       issues: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: validated-action
           path: runtime
@@ -166,9 +166,10 @@ jobs:
       kind: ${{ steps.command.outputs.kind }}
       skipped: ${{ steps.command.outputs.skipped }}
       skip_reason: ${{ steps.command.outputs.skip_reason }}
+      skip_detail: ${{ steps.command.outputs.skip_detail }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
@@ -178,7 +179,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_EVENT_PATH: ${{ github.event_path }}
         run: python -m scripts.process_issue_command
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: approval-command
           path: runtime/approval-command.json
@@ -192,12 +193,12 @@ jobs:
       contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: approval-command
           path: runtime
@@ -218,12 +219,12 @@ jobs:
       proposal_id: ${{ steps.apply.outputs.proposal_id }}
       package: ${{ steps.apply.outputs.package }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -231,7 +232,7 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: npm ci
         if: hashFiles('package-lock.json') != ''
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: approval-command
           path: runtime
@@ -252,8 +253,8 @@ jobs:
       pr_number: ${{ steps.pr.outputs.pr_number }}
       default_branch: ${{ steps.pr.outputs.default_branch }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
@@ -271,8 +272,8 @@ jobs:
       issues: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
@@ -290,8 +291,8 @@ jobs:
       pull-requests: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
@@ -318,12 +319,12 @@ jobs:
       branch: ${{ steps.commit.outputs.branch }}
       sha: ${{ steps.commit.outputs.sha }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -331,11 +332,11 @@ jobs:
       - run: python -m pip install -r requirements.txt
       - run: npm ci
         if: hashFiles('package-lock.json') != ''
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: preflight
           path: runtime
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: validated-action
           path: runtime
@@ -350,7 +351,7 @@ jobs:
             --action runtime/model-action.json \
             --preflight runtime/preflight.json \
             --materialized-output runtime/materialized-action.json
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: steps.apply.outputs.changed == 'true'
         with:
           name: materialized-action
@@ -388,12 +389,12 @@ jobs:
       pr_number: ${{ steps.pr.outputs.pr_number }}
       default_branch: ${{ steps.pr.outputs.default_branch }}
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: python -m pip install -r requirements.txt
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: materialized-action
           path: runtime
@@ -427,12 +428,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 신뢰된 제어 코드 가져오기
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: control
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - working-directory: control
@@ -466,12 +467,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 신뢰된 제어 코드 가져오기
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           path: control
           persist-credentials: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - working-directory: control

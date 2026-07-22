@@ -343,7 +343,7 @@ def test_create_branch_job_applies_then_tests_before_commit_and_push():
     checkout = step_index(lambda step: step.get("uses", "").startswith("actions/checkout@"))
     branch = step_index(lambda step: step.get("id") == "prepare_branch")
     apply = step_index(lambda step: step.get("id") == "apply")
-    upload = step_index(lambda step: step.get("uses") == "actions/upload-artifact@v4")
+    upload = step_index(lambda step: step.get("uses") == "actions/upload-artifact@v7")
     pytest_step = step_index(lambda step: step.get("run") == "python -m pytest")
     commit = step_index(lambda step: step.get("id") == "commit")
     assert checkout < branch < apply < upload < pytest_step < commit

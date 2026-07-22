@@ -183,7 +183,7 @@ def test_workflow_artifacts_and_quality_check_inputs_are_separated() -> None:
     model_uploads = [
         step
         for step in agent["jobs"]["model"]["steps"]
-        if step.get("uses") == "actions/upload-artifact@v4"
+        if step.get("uses") == "actions/upload-artifact@v7"
     ]
     materialized_upload = next(
         step

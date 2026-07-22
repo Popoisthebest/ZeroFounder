@@ -78,6 +78,8 @@ def build_preflight_decision(
         product_sha=product_sha,
         metrics_hash=metrics_hash,
         idempotency_key=key,
+        skip_reason=None if reasons else "no_new_trigger",
+        skip_detail=None if reasons else "마지막 실행 이후 새 signal, metric, 명령이 없습니다.",
     )
 
 
