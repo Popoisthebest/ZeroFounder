@@ -57,7 +57,7 @@
       "embedding_calls": 0,
       "catalog_calls": 0,
       "failures": 0,
-      "completed_inference_calls": 5,
+      "completed_inference_calls": 7,
       "reserved_inference_calls": 0,
       "failed_after_request_calls": 0,
       "http_failed_calls": 0,
