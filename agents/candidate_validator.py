@@ -7,6 +7,11 @@ from datetime import timedelta
 from pathlib import Path
 
 from agents.quality import ChangeValidation, VerificationStatus
+from agents.report_materializer import (
+    report_artifact_path,
+    report_period,
+    stable_report_operation_key,
+)
 from agents.safety import load_evidence_index
 from agents.schemas import (
     CompanyState,
@@ -37,6 +42,10 @@ def _reject(
         action_type=contract.action_type,
         problem_id=contract.problem_id,
         allowed_files=contract.allowed_files,
+        report_type=contract.report_type,
+        report_period=contract.report_period,
+        artifact_path=contract.artifact_path,
+        operation_key=contract.operation_key,
     )
 
 
@@ -287,6 +296,114 @@ def validate_create_idea_candidates_content(
             [idea_path.as_posix()],
         )
     return contract
+
+
+def validate_write_report_content(
+    *,
+    control_root: Path,
+    candidate_root: Path,
+    contract: ChangeValidation,
+) -> ChangeValidation:
+    if (
+        contract.action_type != "write_report"
+        or contract.report_type != "weekly"
+        or not contract.report_period
+        or not contract.artifact_path
+    ):
+        return _reject(
+            contract,
+            "invalid_report_path",
+            "branch 행동과 주간 보고서 경로를 연결할 수 없습니다.",
+            [],
+        )
+    expected_period = report_period(control_root)
+    expected_path = report_artifact_path(expected_period)
+    if contract.report_period != expected_period or contract.artifact_path != expected_path:
+        return _reject(
+            contract,
+            "invalid_report_path",
+            "보고서 경로가 trusted report_period와 일치하지 않습니다.",
+            [contract.artifact_path],
+        )
+    checkpoint_path = Path("company/checkpoints.json")
+    report_path = Path(contract.artifact_path)
+    if any((candidate_root / path).is_symlink() for path in (checkpoint_path, report_path)):
+        return _reject(
+            contract,
+            "disallowed_file",
+            "검증 대상 파일에 심볼릭 링크가 포함됐습니다.",
+            [
+                path.as_posix()
+                for path in (checkpoint_path, report_path)
+                if (candidate_root / path).is_symlink()
+            ],
+        )
+    try:
+        old_checkpoint = RepositoryCheckpoint.model_validate_json(
+            (control_root / checkpoint_path).read_text(encoding="utf-8")
+        )
+        new_checkpoint = RepositoryCheckpoint.model_validate_json(
+            (candidate_root / checkpoint_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            "checkpoint JSON 구조를 안전하게 검증할 수 없습니다.",
+            [checkpoint_path.as_posix()],
+        )
+    if not _checkpoint_updated_with_one_idempotency_key_only(old_checkpoint, new_checkpoint):
+        return _reject(
+            contract,
+            "invalid_checkpoint_change",
+            (
+                "write_report checkpoint는 현재 실행 idempotency key와 "
+                "updated_at만 변경할 수 있습니다."
+            ),
+            [checkpoint_path.as_posix()],
+        )
+    try:
+        content = (candidate_root / report_path).read_bytes()
+    except OSError:
+        return _reject(
+            contract,
+            "invalid_report_path",
+            "보고서 파일을 읽을 수 없습니다.",
+            [report_path.as_posix()],
+        )
+    if len(content) < 20 or not content.startswith(b"%PDF-"):
+        return _reject(
+            contract,
+            "invalid_report_path",
+            "보고서 파일은 비어 있지 않은 PDF여야 합니다.",
+            [report_path.as_posix()],
+        )
+    try:
+        old_state = CompanyState.model_validate_json(
+            (control_root / "company/state.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        old_state = CompanyState()
+    operation_key = stable_report_operation_key(
+        lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK.value,
+        report_type="weekly",
+        report_period_value=expected_period,
+        active_problem_id=old_state.active_problem_id,
+    )
+    return ChangeValidation(
+        status=contract.status,
+        rejection_code=contract.rejection_code,
+        rejection_reason=contract.rejection_reason,
+        rejected_files=contract.rejected_files,
+        changed_files_count=contract.changed_files_count,
+        action_type=contract.action_type,
+        problem_id=contract.problem_id,
+        allowed_files=contract.allowed_files,
+        report_type="weekly",
+        report_period=expected_period,
+        artifact_path=expected_path,
+        operation_key=operation_key,
+    )
 
 
 def _checkpoint_fingerprint_is_valid(

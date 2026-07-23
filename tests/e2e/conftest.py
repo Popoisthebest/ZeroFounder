@@ -358,6 +358,10 @@ class E2EHarness:
             outcomes=outcomes,
             changed_files_count=validation.changed_files_count,
             allowed_files=list(validation.allowed_files),
+            report_type=validation.report_type or "",
+            report_period=validation.report_period or "",
+            artifact_path=validation.artifact_path or "",
+            operation_key=validation.operation_key or "",
         )
         assert quality_result["validation_status"] == "passed"
         self.monkeypatch.setenv("VALIDATION_STATUS", "passed")

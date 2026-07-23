@@ -94,7 +94,7 @@ def checkpoint_after_material_work(
         return checkpoint.model_copy(deep=True)
     updated = checkpoint.model_copy(deep=True)
     updated.idempotency_keys = (updated.idempotency_keys + [decision.idempotency_key])[-1000:]
-    if action_type == ActionType.CREATE_IDEA_CANDIDATES:
+    if action_type in {ActionType.CREATE_IDEA_CANDIDATES, ActionType.WRITE_REPORT}:
         return updated
     updated.last_signal_ids = sorted(set(updated.last_signal_ids + decision.new_signal_ids))[-5000:]
     updated.processed_issue_ids = sorted(set(updated.processed_issue_ids + decision.issue_ids))[

@@ -55,6 +55,7 @@ SECRET_PATTERNS = (
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"(?:authorization|api[_-]?key|token)\s*[:=]\s*['\"][^'\"]{12,}", re.I),
 )
+WEEKLY_REPORT_PATH = re.compile(r"^reports/weekly_report_\d{4}-W\d{2}\.pdf$")
 
 
 class SafetyViolation(ValueError):
@@ -107,7 +108,9 @@ def path_allowed_for_action(path: str, action: ActionType) -> bool:
         ActionType.NO_OP,
     }:
         return False
-    if action in {ActionType.WRITE_REPORT, ActionType.CREATE_CONTENT}:
+    if action == ActionType.WRITE_REPORT:
+        return bool(WEEKLY_REPORT_PATH.fullmatch(path))
+    if action == ActionType.CREATE_CONTENT:
         return path.startswith(("reports/", "research/", "venture/content/"))
     if action == ActionType.ANALYZE_FEEDBACK:
         return path.startswith(("reports/", "research/")) or path == "company/task-board.json"

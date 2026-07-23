@@ -9,8 +9,10 @@ from agents.candidate_validator import (
     validate_create_idea_candidates_content,
     validate_create_problem_candidate_content,
     validate_validate_evidence_content,
+    validate_write_report_content,
 )
 from agents.quality import ChangeValidation, validate_changed_file_contract
+from agents.report_materializer import report_artifact_path, report_period
 from agents.schemas import (
     LifecycleStage,
     ProblemCandidate,
@@ -23,6 +25,7 @@ RUN_AT = datetime(2026, 7, 20, 15, 56, 5, tzinfo=UTC)
 BRANCH = "agent/29757293892-create-problem-candidate"
 VALIDATE_BRANCH = "agent/29757293893-validate-evidence"
 IDEA_BRANCH = "agent/29757293894-create-idea-candidates"
+REPORT_BRANCH = "agent/29757293895-write-report"
 PROBLEM_ID = "problem-navigation-inefficiency"
 
 
@@ -456,6 +459,83 @@ def test_create_idea_candidates_rejects_checkpoint_signal_or_metrics_mutation(
     )
     assert result.status == "invalid_checkpoint_change"
     assert result.rejected_files == ("company/checkpoints.json",)
+
+
+def _prepare_write_report_candidate(
+    tmp_path: Path,
+    *,
+    pdf_content: bytes,
+) -> tuple[Path, Path, ChangeValidation]:
+    control = tmp_path / "control"
+    candidate = tmp_path / "candidate"
+    (control / "company").mkdir(parents=True)
+    (control / "company/state.json").write_text(
+        initial_company_state()
+        .model_copy(update={"lifecycle_stage": LifecycleStage.DISTRIBUTION_CHECK})
+        .model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    (control / "company/strategy.json").write_text(
+        json.dumps({"review": {"timezone": "Asia/Seoul"}}) + "\n",
+        encoding="utf-8",
+    )
+    (control / "company/checkpoints.json").write_text(
+        RepositoryCheckpoint(idempotency_keys=["a" * 64]).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    shutil.copytree(control, candidate)
+    checkpoint = RepositoryCheckpoint(
+        idempotency_keys=["a" * 64, "b" * 64],
+        updated_at=RUN_AT,
+    )
+    (candidate / "company/checkpoints.json").write_text(
+        checkpoint.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    period = report_period(control)
+    path = report_artifact_path(period)
+    report_path = candidate / path
+    report_path.parent.mkdir(parents=True)
+    report_path.write_bytes(pdf_content)
+    contract = validate_changed_file_contract(
+        REPORT_BRANCH,
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": path, "status": "added"},
+        ],
+    )
+    return control, candidate, contract
+
+
+def test_write_report_candidate_requires_real_pdf_and_checkpoint_only(tmp_path: Path):
+    control, candidate, contract = _prepare_write_report_candidate(
+        tmp_path / "valid",
+        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+    )
+
+    result = validate_write_report_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+
+    assert result.status == "valid"
+    assert result.report_type == "weekly"
+    assert result.artifact_path == report_artifact_path(report_period(control))
+    assert result.operation_key
+
+    control, candidate, contract = _prepare_write_report_candidate(
+        tmp_path / "fake",
+        pdf_content=b"not a pdf",
+    )
+    result = validate_write_report_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+    assert result.status == "invalid_report_path"
 
     control, candidate, contract = _prepare_create_idea_candidate(tmp_path / "metrics")
     checkpoint_path = candidate / "company/checkpoints.json"

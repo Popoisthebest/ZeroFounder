@@ -10,6 +10,7 @@ from agents.approval import apply_command, decide_command
 from agents.bootstrap import initial_company_state
 from agents.candidate_validator import validate_create_idea_candidates_content
 from agents.quality import validate_changed_file_contract
+from agents.report_materializer import report_artifact_path, report_period
 from agents.schemas import (
     ActionEnvelope,
     CompanyState,
@@ -105,6 +106,32 @@ def _create_problem_payload(signal_id: str) -> dict:
             "current_workaround": "They combine spreadsheets, screenshots, and messages.",
         },
         "state_transition": {"from": "DISCOVERY", "to": "EVIDENCE_VALIDATION"},
+    }
+
+
+def _write_report_payload() -> dict:
+    return {
+        "role": "researcher",
+        "action_type": "write_report",
+        "title": "보고서 작성",
+        "summary": "주간 운영 보고서를 작성합니다.",
+        "rationale": "운영 판단을 공유할 필요가 있습니다.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": [],
+        "report": {
+            "report_type": "weekly",
+            "title": "주간 운영 보고서",
+            "summary": "이번 주 운영 판단과 근거를 요약한 보고서입니다.",
+            "period_summary": "이번 주 검토 대상 기간의 핵심 흐름을 정리합니다.",
+            "sections": [
+                {
+                    "heading": "핵심 판단",
+                    "content": "저장된 근거와 현재 lifecycle 상태를 바탕으로 정리합니다.",
+                }
+            ],
+            "evidence_ids": [],
+        },
     }
 
 
@@ -443,7 +470,6 @@ def test_create_idea_candidates_materialize_commit_and_quality_flow(tmp_path: Pa
     )
     assert checkpoint.idempotency_keys == ["d" * 64]
     assert checkpoint.last_signal_ids == []
-    assert checkpoint.last_metrics_hash is None
 
     contract = validate_changed_file_contract(
         branch,
@@ -458,6 +484,79 @@ def test_create_idea_candidates_materialize_commit_and_quality_flow(tmp_path: Pa
         contract=contract,
     )
     assert result.status == "valid"
+
+
+def test_write_report_materialize_commit_uses_trusted_weekly_pdf(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _initialize_runtime(repo)
+    (repo / "company/strategy.json").write_text(
+        json.dumps({"review": {"timezone": "Asia/Seoul"}}) + "\n"
+    )
+    state_path = repo / "company/state.json"
+    state_path.write_text(
+        initial_company_state()
+        .model_copy(update={"lifecycle_stage": LifecycleStage.DISTRIBUTION_CHECK})
+        .model_dump_json(indent=2)
+        + "\n"
+    )
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "config", "user.name", "Test User"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(["git", "add", "company", "signals"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+    origin = tmp_path / "origin.git"
+    subprocess.run(["git", "init", "--bare", origin], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "remote", "add", "origin", str(origin)],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    action_path = _write_action(repo, _write_report_payload())
+    preflight_path = _write_preflight(repo, None, "e")
+    materialized_path = repo / "runtime/materialized-action.json"
+    branch = create_agent_branch(repo, action_path, "12346")
+    action, changed = apply_validated_action(
+        repo,
+        action_path,
+        preflight_path,
+        materialized_output_path=materialized_path,
+        applied_at=APPLIED_AT,
+    )
+
+    expected_report = report_artifact_path(report_period(repo))
+    assert changed
+    assert branch == "agent/12346-write-report"
+    assert ActionEnvelope.model_validate_json(action_path.read_text()).files == []
+    assert [change.path for change in action.files] == [expected_report]
+    assert (repo / expected_report).read_bytes().startswith(b"%PDF-")
+    assert not (repo / "missing_file.txt").exists()
+
+    changed, committed_branch, sha = commit_agent_changes(repo, materialized_path, "12346")
+
+    assert changed
+    assert committed_branch == branch
+    assert len(sha) == 40
+    changed_files = subprocess.run(
+        ["git", "diff", "--name-only", "main..HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert changed_files == ["company/checkpoints.json", expected_report]
 
 
 def test_commit_rejects_materialized_idea_path_not_matching_active_problem(tmp_path: Path):

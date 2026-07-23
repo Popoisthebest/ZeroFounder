@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 
 from agents.language import language_mismatches, operating_language
+from agents.report_materializer import stable_report_operation_key
 from agents.schemas import ActionEnvelope, ActionType, MaterializedActionEnvelope
 
 ACTION_TITLES = {
@@ -59,6 +61,35 @@ def _pr_active_problem_id(action: ActionEnvelope | MaterializedActionEnvelope) -
     return None
 
 
+def _weekly_report_metadata(
+    action: ActionEnvelope | MaterializedActionEnvelope,
+) -> dict[str, str | None] | None:
+    if action.action_type != ActionType.WRITE_REPORT or len(action.files) != 1:
+        return None
+    path = action.files[0].path
+    match = re.fullmatch(r"reports/weekly_report_(?P<period>\d{4}-W\d{2})\.pdf", path)
+    if not match:
+        return None
+    lifecycle_stage = _pr_lifecycle_stage(action) or "DISTRIBUTION_CHECK"
+    active_problem_id = _pr_active_problem_id(action)
+    period = match.group("period")
+    operation_key = stable_report_operation_key(
+        lifecycle_stage=lifecycle_stage,
+        report_type="weekly",
+        report_period_value=period,
+        active_problem_id=active_problem_id,
+    )
+    return {
+        "lifecycle_stage": lifecycle_stage,
+        "action_type": action.action_type.value,
+        "report_type": "weekly",
+        "report_period": period,
+        "artifact_path": path,
+        "active_problem_id": active_problem_id,
+        "operation_key": operation_key,
+    }
+
+
 def _agent_pr_metadata(action: ActionEnvelope | MaterializedActionEnvelope) -> str:
     payload = {
         "source": "zerofounder-agent",
@@ -67,6 +98,13 @@ def _agent_pr_metadata(action: ActionEnvelope | MaterializedActionEnvelope) -> s
         "active_problem_id": _pr_active_problem_id(action),
     }
     return f"<!-- zerofounder-agent-pr {json.dumps(payload, sort_keys=True)} -->"
+
+
+def _operation_metadata_marker(action: ActionEnvelope | MaterializedActionEnvelope) -> str:
+    payload = _weekly_report_metadata(action)
+    if payload is None:
+        return ""
+    return f"<!-- zerofounder-operation: {json.dumps(payload, sort_keys=True)} -->"
 
 
 def render_agent_pull_request(
@@ -89,7 +127,9 @@ def render_agent_pull_request(
         else "없음"
     )
     generated = "\n".join(f"- `{change.path}`" for change in action.files) or "- 없음"
+    operation_marker = _operation_metadata_marker(action)
     body = f"""{_agent_pr_metadata(action)}
+{operation_marker}
 
 ## 변경 목적
 

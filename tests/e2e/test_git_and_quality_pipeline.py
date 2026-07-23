@@ -141,7 +141,25 @@ def test_create_agent_pr_uses_branch_sha_and_quality_body(
         rationale="이번 실행에는 사람이 검토할 운영 산출물이 필요합니다.",
         risk_level=RiskLevel.LOW,
         requires_approval=False,
-        files=[FileChange(path="reports/e2e.md", content="# E2E\n")],
+        report={
+            "report_type": "weekly",
+            "title": "주간 운영 보고서",
+            "summary": "사람이 검토할 주간 운영 보고서입니다.",
+            "period_summary": "이번 주 운영 판단을 요약합니다.",
+            "sections": [
+                {
+                    "heading": "핵심 판단",
+                    "content": "품질검사 E2E에서 검토할 내용을 정리합니다.",
+                }
+            ],
+            "evidence_ids": [],
+        },
+        files=[
+            FileChange(
+                path="reports/weekly_report_2026-W30.pdf",
+                content="%PDF-1.4\nbody body body\n%%EOF\n",
+            )
+        ],
     )
     action_path = tmp_path / "materialized-action.json"
     action_path.write_text(action.model_dump_json(indent=2) + "\n", encoding="utf-8")

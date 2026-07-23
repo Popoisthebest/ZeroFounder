@@ -223,6 +223,20 @@ class IdeaCandidateProposal(StrictModel):
         return self
 
 
+class ReportSection(StrictModel):
+    heading: str = Field(min_length=2, max_length=160)
+    content: str = Field(min_length=20, max_length=3000)
+
+
+class ReportProposal(StrictModel):
+    report_type: Literal["weekly"] = "weekly"
+    title: str = Field(min_length=3, max_length=200)
+    summary: str = Field(min_length=20, max_length=2000)
+    period_summary: str = Field(min_length=10, max_length=1200)
+    sections: list[ReportSection] = Field(min_length=1, max_length=8)
+    evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+
+
 class DependencyProposal(StrictModel):
     proposal_id: StrictId
     ecosystem: Literal["npm", "python"]
@@ -254,6 +268,7 @@ class ActionEnvelope(StrictModel):
     idea_candidates: list[IdeaCandidateProposal] | None = Field(default=None, max_length=8)
     idea_candidate_ids: list[StrictId] | None = Field(default=None, max_length=20)
     idea_evaluations: list[dict[str, object]] | None = Field(default=None, max_length=20)
+    report: ReportProposal | None = None
 
     @model_validator(mode="after")
     def enforce_action_shape(self) -> ActionEnvelope:
@@ -265,6 +280,7 @@ class ActionEnvelope(StrictModel):
             or self.idea_candidates is not None
             or self.idea_candidate_ids is not None
             or self.idea_evaluations is not None
+            or self.report is not None
         ):
             raise ValueError("no_op cannot mutate files, problem data, dependencies, or state")
         if self.action_type == ActionType.PROPOSE_DEPENDENCY and not self.dependency_proposal:
@@ -288,6 +304,8 @@ class ActionEnvelope(StrictModel):
             and self.action_type != ActionType.EVALUATE_IDEAS
         ):
             raise ValueError("idea_evaluations is only valid for evaluate_ideas")
+        if self.report is not None and self.action_type != ActionType.WRITE_REPORT:
+            raise ValueError("report is only valid for write_report")
         if self.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
             if not self.evidence_ids:
                 raise ValueError("discovery analysis actions require stored evidence_ids")
@@ -307,6 +325,13 @@ class ActionEnvelope(StrictModel):
             raise ValueError("evaluate_ideas requires idea_candidate_ids or idea_evaluations")
         if self.action_type == ActionType.VALIDATE_EVIDENCE and not self.evidence_ids:
             raise ValueError("discovery analysis actions require stored evidence_ids")
+        if self.action_type == ActionType.WRITE_REPORT:
+            if self.files:
+                raise ValueError("write_report cannot provide files")
+            if self.state_transition is not None:
+                raise ValueError("write_report cannot provide state_transition")
+            if self.report is None:
+                raise ValueError("write_report requires report")
         return self
 
 
@@ -324,6 +349,7 @@ class MaterializedActionEnvelope(StrictModel):
     files: list[FileChange] = Field(default_factory=list, max_length=50)
     dependency_proposal: DependencyProposal | None = None
     problem_candidate: ProblemCandidateProposal | None = None
+    report: ReportProposal | None = None
 
     @classmethod
     def from_model_action(
@@ -349,6 +375,7 @@ class MaterializedActionEnvelope(StrictModel):
                 "files": action.files if files is None else files,
                 "dependency_proposal": action.dependency_proposal,
                 "problem_candidate": action.problem_candidate,
+                "report": action.report,
             }
         )
 
@@ -366,6 +393,15 @@ class MaterializedActionEnvelope(StrictModel):
                 self.files[0].path,
             ):
                 raise ValueError("create_idea_candidates materialized path is invalid")
+        if self.action_type == ActionType.WRITE_REPORT:
+            if self.state_transition is not None:
+                raise ValueError("write_report cannot provide state_transition")
+            if len(self.files) != 1:
+                raise ValueError("write_report materialization requires one report file")
+            if not re.fullmatch(r"reports/weekly_report_\d{4}-W\d{2}\.pdf", self.files[0].path):
+                raise ValueError("write_report materialized path is invalid")
+            if not self.files[0].content.startswith("%PDF-") or len(self.files[0].content) < 20:
+                raise ValueError("write_report materialized file must be a non-empty PDF")
         if any(change.path == "company/checkpoints.json" for change in self.files):
             raise ValueError("checkpoint changes are trusted commit metadata, not action files")
         return self
@@ -634,6 +670,10 @@ class PreflightDecision(StrictModel):
     concurrent_run_detected: bool = False
     schedule_cron: str | None = None
     next_schedule_note: str | None = None
+    report_type: str | None = None
+    report_period: str | None = None
+    artifact_path: str | None = None
+    operation_key: str | None = None
     completed_calls_today: int = Field(default=0, ge=0)
     active_reservations: int = Field(default=0, ge=0)
     required_calls: int = Field(default=0, ge=0, le=2)

@@ -20,6 +20,7 @@ VerificationStatus = Literal[
     "invalid_checkpoint_change",
     "invalid_state_change",
     "invalid_problem_path",
+    "invalid_report_path",
 ]
 ValidationStatus = Literal[
     "passed",
@@ -35,6 +36,7 @@ ValidationStatus = Literal[
     "invalid_checkpoint_change",
     "invalid_state_change",
     "invalid_problem_path",
+    "invalid_report_path",
     "quality_check_not_started",
 ]
 ReviewStatus = Literal[
@@ -50,6 +52,7 @@ ReviewStatus = Literal[
     "invalid_checkpoint_change",
     "invalid_state_change",
     "invalid_problem_path",
+    "invalid_report_path",
     "quality_check_not_started",
 ]
 
@@ -103,6 +106,9 @@ PROBLEM_PATH = re.compile(
 IDEA_PATH = re.compile(
     r"^research/ideas/(?P<problem_id>problem-[a-z0-9][a-z0-9._-]{0,100})\.json$"
 )
+WEEKLY_REPORT_PATH = re.compile(
+    r"^reports/weekly_report_(?P<period>\d{4}-W\d{2})\.pdf$"
+)
 AGENT_ACTION_BRANCH = re.compile(
     r"^agent/(?P<run_id>[0-9]{1,30})-(?P<action>[a-z][a-z0-9-]{1,80})$"
 )
@@ -119,6 +125,10 @@ class ChangeValidation:
     action_type: str | None = None
     problem_id: str | None = None
     allowed_files: tuple[str, ...] = ()
+    report_type: str | None = None
+    report_period: str | None = None
+    artifact_path: str | None = None
+    operation_key: str | None = None
 
 
 def _change_result(
@@ -130,6 +140,10 @@ def _change_result(
     allowed_files: list[str] | tuple[str, ...] = (),
     action_type: str | None = None,
     problem_id: str | None = None,
+    report_type: str | None = None,
+    report_period: str | None = None,
+    artifact_path: str | None = None,
+    operation_key: str | None = None,
 ) -> ChangeValidation:
     return ChangeValidation(
         status=status,
@@ -140,6 +154,10 @@ def _change_result(
         action_type=action_type,
         problem_id=problem_id,
         allowed_files=tuple(sorted(set(allowed_files))),
+        report_type=report_type,
+        report_period=report_period,
+        artifact_path=artifact_path,
+        operation_key=operation_key,
     )
 
 
@@ -305,6 +323,41 @@ def validate_changed_file_contract(
             allowed_files=sorted(expected),
         )
 
+    if action_type == "write_report":
+        report_paths = [path for path in normalized_files if path.startswith("reports/")]
+        valid_report_paths = [path for path in report_paths if WEEKLY_REPORT_PATH.fullmatch(path)]
+        if len(report_paths) != 1 or len(valid_report_paths) != 1:
+            return _change_result(
+                "invalid_report_path",
+                count=count,
+                reason="주간 보고서 PDF 경로가 정확히 하나여야 합니다.",
+                files=report_paths,
+                allowed_files=["company/checkpoints.json", "reports/weekly_report_<period>.pdf"],
+                action_type=action_type,
+            )
+        expected = {"company/checkpoints.json", valid_report_paths[0]}
+        actual = set(normalized_files)
+        if actual != expected:
+            return _change_result(
+                "disallowed_file",
+                count=count,
+                reason="운영 보고서 작성 허용 목록과 변경 파일이 일치하지 않습니다.",
+                files=sorted(actual.symmetric_difference(expected)),
+                allowed_files=sorted(expected),
+                action_type=action_type,
+            )
+        match = WEEKLY_REPORT_PATH.fullmatch(valid_report_paths[0])
+        period = match.group("period") if match else None
+        return _change_result(
+            "valid",
+            count=count,
+            action_type=action_type,
+            allowed_files=sorted(expected),
+            report_type="weekly",
+            report_period=period,
+            artifact_path=valid_report_paths[0],
+        )
+
     rejected = [
         path
         for path in normalized_files
@@ -389,6 +442,7 @@ def finalize_validation_status(
         "invalid_checkpoint_change": "invalid_checkpoint_change",
         "invalid_state_change": "invalid_state_change",
         "invalid_problem_path": "invalid_problem_path",
+        "invalid_report_path": "invalid_report_path",
     }
     if verification_status in verification_failures:
         return verification_status, verification_failures[verification_status]  # type: ignore[return-value]
@@ -426,5 +480,6 @@ def review_status(validation_status: str) -> ReviewStatus:
         "invalid_checkpoint_change": "invalid_checkpoint_change",
         "invalid_state_change": "invalid_state_change",
         "invalid_problem_path": "invalid_problem_path",
+        "invalid_report_path": "invalid_report_path",
         "quality_check_not_started": "quality_check_not_started",
     }.get(validation_status, "quality_check_not_started")

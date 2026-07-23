@@ -48,6 +48,10 @@ def main() -> int:
         rejected_files=_rejected_files(),
         allowed_files=_allowed_files(),
         changed_files_count=int(os.getenv("CHANGED_FILES_COUNT", "0") or 0),
+        report_type=os.getenv("REPORT_TYPE", ""),
+        report_period=os.getenv("REPORT_PERIOD", ""),
+        artifact_path=os.getenv("ARTIFACT_PATH", ""),
+        operation_key=os.getenv("OPERATION_KEY", ""),
     )
     client.update_pull_request_body(args.pr, body)
     output = os.getenv("GITHUB_OUTPUT")

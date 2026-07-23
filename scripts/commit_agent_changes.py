@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 
 from agents.operating_output import action_commit_message
+from agents.report_materializer import report_artifact_path, report_period
 from agents.safety import SafetyViolation, validate_action_files
 from agents.schemas import (
     ActionEnvelope,
@@ -55,6 +56,15 @@ def validate_materialized_action_for_commit(
         paths = [change.path for change in action.files]
         if paths != [expected]:
             raise ValueError("create_idea_candidates materialized file path is not allowed")
+    if action.action_type == ActionType.WRITE_REPORT:
+        expected = report_artifact_path(report_period(root))
+        paths = [change.path for change in action.files]
+        if action.state_transition is not None:
+            raise ValueError("write_report cannot change lifecycle stage")
+        if paths != [expected]:
+            raise ValueError("write_report materialized file path is not allowed")
+        if not action.files[0].content.startswith("%PDF-") or len(action.files[0].content) < 20:
+            raise ValueError("write_report materialized file must be a non-empty PDF")
 
 
 def commit_agent_changes(root: Path, action_path: Path, run_id: str) -> tuple[bool, str, str]:

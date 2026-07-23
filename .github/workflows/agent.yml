@@ -453,6 +453,10 @@ jobs:
           REJECTED_FILES: ${{ needs.quality-check.outputs.rejected_files }}
           ALLOWED_FILES: ${{ needs.quality-check.outputs.allowed_files }}
           CHANGED_FILES_COUNT: ${{ needs.quality-check.outputs.changed_files_count }}
+          REPORT_TYPE: ${{ needs.quality-check.outputs.report_type }}
+          REPORT_PERIOD: ${{ needs.quality-check.outputs.report_period }}
+          ARTIFACT_PATH: ${{ needs.quality-check.outputs.artifact_path }}
+          OPERATION_KEY: ${{ needs.quality-check.outputs.operation_key }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"

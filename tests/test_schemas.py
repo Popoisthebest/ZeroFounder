@@ -39,6 +39,24 @@ def valid_action(**overrides):
     return ActionEnvelope.model_validate(payload)
 
 
+def report_payload(**overrides):
+    payload = {
+        "report_type": "weekly",
+        "title": "주간 운영 보고서",
+        "summary": "이번 주 운영 판단과 근거를 요약한 보고서입니다.",
+        "period_summary": "이번 주 검토 대상 기간의 핵심 흐름을 정리합니다.",
+        "sections": [
+            {
+                "heading": "핵심 판단",
+                "content": "저장된 근거와 현재 lifecycle 상태를 바탕으로 운영 판단을 정리합니다.",
+            }
+        ],
+        "evidence_ids": [],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def discovery_problem(**overrides):
     payload = {
         "role": "researcher",
@@ -231,10 +249,16 @@ def test_idea_candidates_are_rejected_on_other_actions_or_bad_shape():
         valid_action(
             action_type="write_report",
             files=[],
+            report=report_payload(),
             idea_candidates=[idea_candidate("idea-001"), idea_candidate("idea-002")],
         )
     with pytest.raises(ValidationError):
-        valid_action(action_type="write_report", files=[], idea_candidates=[])
+        valid_action(
+            action_type="write_report",
+            files=[],
+            report=report_payload(),
+            idea_candidates=[],
+        )
     with pytest.raises(ValidationError):
         valid_action(action_type="no_op", files=[], idea_candidates=[])
     with pytest.raises(ValidationError):
@@ -264,6 +288,31 @@ def test_idea_candidates_are_rejected_on_other_actions_or_bad_shape():
             action_type="create_idea_candidates",
             files=[],
             idea_candidates=[invented_metric, idea_candidate("idea-002")],
+        )
+
+
+def test_raw_write_report_uses_report_payload_not_files():
+    action = valid_action(
+        action_type="write_report",
+        files=[],
+        report=report_payload(),
+    )
+    assert action.report is not None
+    assert action.files == []
+
+    with pytest.raises(ValidationError):
+        valid_action(action_type="write_report", files=[], report=None)
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="write_report",
+            report=report_payload(),
+            files=[{"path": "missing_file.txt", "content": "placeholder"}],
+        )
+    with pytest.raises(ValidationError):
+        valid_action(
+            action_type="write_report",
+            report=report_payload(sections=[]),
+            files=[],
         )
 
 
@@ -335,6 +384,52 @@ def test_create_idea_candidates_raw_and_materialized_schema_are_separate():
                     "from": "IDEA_EVALUATION",
                     "to": "IDEA_SELECTED",
                 }
+            }
+        )
+
+
+def test_materialized_write_report_requires_trusted_pdf_path():
+    payload = {
+        "source": "trusted_materializer",
+        "role": "researcher",
+        "action_type": "write_report",
+        "title": "보고서",
+        "summary": "주간 운영 보고서를 생성합니다.",
+        "rationale": "운영 판단을 공유하기 위해 필요합니다.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": [],
+        "report": report_payload(),
+        "files": [
+            {
+                "path": "reports/weekly_report_2026-W30.pdf",
+                "content": "%PDF-1.4\nbody body body\n%%EOF\n",
+            }
+        ],
+    }
+    assert MaterializedActionEnvelope.model_validate(payload)
+    with pytest.raises(ValidationError):
+        MaterializedActionEnvelope.model_validate(
+            payload
+            | {
+                "files": [
+                    {
+                        "path": "reports/weekly_report_2023_10.pdf",
+                        "content": "%PDF-1.4\nbody body body\n%%EOF\n",
+                    }
+                ]
+            }
+        )
+    with pytest.raises(ValidationError):
+        MaterializedActionEnvelope.model_validate(
+            payload
+            | {
+                "files": [
+                    {
+                        "path": "reports/weekly_report_2026-W30.pdf",
+                        "content": "not a pdf",
+                    }
+                ]
             }
         )
 

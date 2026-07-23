@@ -9,6 +9,7 @@ from agents.candidate_validator import (
     validate_create_idea_candidates_content,
     validate_create_problem_candidate_content,
     validate_validate_evidence_content,
+    validate_write_report_content,
 )
 from agents.github_client import GitHubAPIError, GitHubClient
 from agents.quality import (
@@ -87,6 +88,12 @@ def validate_candidate(
             candidate_root=candidate_root,
             contract=contract,
         )
+    elif contract.action_type == "write_report":
+        contract = validate_write_report_content(
+            control_root=control_root,
+            candidate_root=candidate_root,
+            contract=contract,
+        )
     return contract, verified_sha
 
 
@@ -101,6 +108,10 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
         "changed_files_count": result.changed_files_count,
         "action_type": result.action_type,
         "problem_id": result.problem_id,
+        "report_type": result.report_type,
+        "report_period": result.report_period,
+        "artifact_path": result.artifact_path,
+        "operation_key": result.operation_key,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -113,6 +124,10 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
                 "rejection_code",
                 "rejection_reason",
                 "changed_files_count",
+                "report_type",
+                "report_period",
+                "artifact_path",
+                "operation_key",
             ):
                 handle.write(f"{key}={payload[key] or ''}\n")
             handle.write(

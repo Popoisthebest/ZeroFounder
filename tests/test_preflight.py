@@ -9,6 +9,7 @@ from agents.preflight import (
     checkpoint_after_material_work,
     usage_allows_run,
 )
+from agents.report_materializer import report_operation_metadata
 from agents.schemas import (
     ActionType,
     CompanyState,
@@ -262,6 +263,52 @@ def test_same_stage_agent_pr_blocks_model_flow(tmp_path, monkeypatch):
     assert decision["open_agent_pr_count"] == 1
     assert decision["open_agent_pr_numbers"] == [12]
     _PreflightClient.open_pulls = []
+
+
+def test_write_report_open_operation_pr_blocks_duplicate_week(tmp_path, monkeypatch):
+    state = CompanyState(lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK)
+    _write_preflight_root(tmp_path, state=state)
+    metadata = report_operation_metadata(tmp_path, state)
+    _PreflightClient.open_pulls = [
+        {
+            "number": 10,
+            "labels": [{"name": "agent-generated"}],
+            "pull_request": {},
+            "body": (
+                "<!-- zerofounder-operation: "
+                + json.dumps(metadata, separators=(",", ":"))
+                + " -->"
+            ),
+        }
+    ]
+    monkeypatch.setenv("GITHUB_TOKEN", "token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "open_agent_pr_exists"
+    assert decision["open_agent_pr_numbers"] == [10]
+    assert decision["operation_key"] == metadata["operation_key"]
+    _PreflightClient.open_pulls = []
+
+
+def test_existing_weekly_report_blocks_regeneration_without_checkpoint(tmp_path, monkeypatch):
+    state = CompanyState(lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK)
+    _write_preflight_root(tmp_path, state=state)
+    metadata = report_operation_metadata(tmp_path, state)
+    artifact = tmp_path / str(metadata["artifact_path"])
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"%PDF-1.4\nbody body body\n%%EOF\n")
+    monkeypatch.setattr(orchestrator, "GitHubClient", _PreflightClient)
+
+    decision = orchestrator.preflight(tmp_path, None, "workflow_dispatch")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "idempotency_key_already_processed"
+    assert decision["artifact_path"] == metadata["artifact_path"]
+    assert str(metadata["artifact_path"]) in decision["skip_detail"]
 
 
 def test_different_problem_agent_pr_does_not_block(tmp_path, monkeypatch):

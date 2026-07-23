@@ -19,6 +19,7 @@ STATUS_LABELS = {
     "invalid_checkpoint_change": "checkpoint 변경 검증 실패",
     "invalid_state_change": "상태 변경 검증 실패",
     "invalid_problem_path": "문제 후보 경로 또는 내용 검증 실패",
+    "invalid_report_path": "보고서 경로 또는 내용 검증 실패",
     "quality_check_not_started": "품질검사 시작 안 됨",
 }
 
@@ -35,6 +36,10 @@ def render_status_body(
     rejected_files: list[str] | None = None,
     allowed_files: list[str] | None = None,
     changed_files_count: int = 0,
+    report_type: str = "",
+    report_period: str = "",
+    artifact_path: str = "",
+    operation_key: str = "",
 ) -> str:
     if status not in STATUS_LABELS:
         raise ValueError("invalid quality review status")
@@ -51,6 +56,10 @@ def render_status_body(
         f"- 거부 파일: {', '.join(rejected_files or []) or '없음'}",
         f"- 허용 파일: {', '.join(allowed_files or []) or '없음'}",
         f"- 변경 파일 수: {changed_files_count}",
+        f"- 보고서 유형: `{report_type or '없음'}`",
+        f"- 보고서 기간: `{report_period or '없음'}`",
+        f"- 산출물 경로: `{artifact_path or '없음'}`",
+        f"- operation key: `{operation_key or '없음'}`",
         f"- 검사 실행: {run_url or '확인 불가'}",
         "",
         "자동 병합은 수행되지 않으며 창업자의 최종 검토가 필요합니다.",

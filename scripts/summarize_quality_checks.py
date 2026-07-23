@@ -38,6 +38,10 @@ def aggregate_quality_results(
     rejected_files: list[str] | None = None,
     allowed_files: list[str] | None = None,
     changed_files_count: int = 0,
+    report_type: str = "",
+    report_period: str = "",
+    artifact_path: str = "",
+    operation_key: str = "",
 ) -> dict[str, object]:
     results_dir.mkdir(parents=True, exist_ok=True)
     checks = [(name, outcomes.get(variable, "skipped")) for name, variable in CHECKS]
@@ -64,6 +68,10 @@ def aggregate_quality_results(
         "rejected_files": rejected_files or [],
         "allowed_files": allowed_files or [],
         "changed_files_count": changed_files_count,
+        "report_type": report_type,
+        "report_period": report_period,
+        "artifact_path": artifact_path,
+        "operation_key": operation_key,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -84,6 +92,10 @@ def main() -> int:
     parser.add_argument("--rejected-files", default="[]")
     parser.add_argument("--allowed-files", default="[]")
     parser.add_argument("--changed-files-count", type=int, default=0)
+    parser.add_argument("--report-type", default="")
+    parser.add_argument("--report-period", default="")
+    parser.add_argument("--artifact-path", default="")
+    parser.add_argument("--operation-key", default="")
     args = parser.parse_args()
     try:
         rejected_files = json.loads(args.rejected_files)
@@ -115,6 +127,10 @@ def main() -> int:
         rejected_files=rejected_files,
         allowed_files=allowed_files,
         changed_files_count=args.changed_files_count,
+        report_type=args.report_type,
+        report_period=args.report_period,
+        artifact_path=args.artifact_path,
+        operation_key=args.operation_key,
     )
     github_output = os.getenv("GITHUB_OUTPUT")
     if github_output:
@@ -127,6 +143,10 @@ def main() -> int:
                 "rejection_code",
                 "rejection_reason",
                 "changed_files_count",
+                "report_type",
+                "report_period",
+                "artifact_path",
+                "operation_key",
             ):
                 value = result[key]
                 handle.write(f"{key}={value}\n")
@@ -153,6 +173,10 @@ def main() -> int:
                 f"- 거부 파일: {rejected_text}\n"
                 f"- 허용 파일: {allowed_text}\n"
                 f"- 변경 파일 수: {result['changed_files_count']}\n"
+                f"- 보고서 유형: `{result['report_type'] or '없음'}`\n"
+                f"- 보고서 기간: `{result['report_period'] or '없음'}`\n"
+                f"- 산출물 경로: `{result['artifact_path'] or '없음'}`\n"
+                f"- operation key: `{result['operation_key'] or '없음'}`\n"
                 f"- 검증 SHA: `{result['verified_sha'] or '없음'}`\n"
             )
     return 0

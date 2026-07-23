@@ -26,6 +26,7 @@ from agents.lifecycle import (
     validate_action_transition,
 )
 from agents.preflight import build_preflight_decision, usage_allows_run
+from agents.report_materializer import report_operation_metadata
 from agents.safety import load_evidence_index, validate_evidence_references
 from agents.schemas import (
     ActionEnvelope,
@@ -46,6 +47,7 @@ from agents.schemas import (
 from agents.usage_limiter import UsageLimiter, required_inference_calls
 
 AGENT_PR_METADATA = re.compile(r"<!--\s*zerofounder-agent-pr\s*(\{.*?\})\s*-->", re.S)
+OPERATION_METADATA = re.compile(r"<!--\s*zerofounder-operation:\s*(\{.*?\})\s*-->", re.S)
 SCHEDULE_CRON = "17 */2 * * *"
 
 
@@ -98,17 +100,31 @@ def _apply_skip(
     *,
     state: CompanyState,
     pr_numbers: list[int] | None = None,
+    detail: str | None = None,
 ) -> None:
     decision.should_call_model = False
     decision.skip_reason = reason
     decision.blocked_reason = reason
-    decision.skip_detail = _skip_detail(reason, state=state, pr_numbers=pr_numbers)
+    decision.skip_detail = detail or _skip_detail(reason, state=state, pr_numbers=pr_numbers)
 
 
 def _agent_pr_metadata(body: object) -> dict[str, object]:
     if not isinstance(body, str):
         return {}
     match = AGENT_PR_METADATA.search(body)
+    if not match:
+        return {}
+    try:
+        data = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _operation_metadata(body: object) -> dict[str, object]:
+    if not isinstance(body, str):
+        return {}
+    match = OPERATION_METADATA.search(body)
     if not match:
         return {}
     try:
@@ -144,6 +160,29 @@ def _matching_agent_pr_numbers(
     return sorted(numbers)
 
 
+def _matching_operation_pr_numbers(
+    pulls: list[dict],
+    *,
+    operation_key: str,
+) -> list[int]:
+    numbers: list[int] = []
+    for pull in pulls:
+        labels = {
+            item.get("name")
+            for item in pull.get("labels", [])
+            if isinstance(item, dict)
+        }
+        if "agent-generated" not in labels:
+            continue
+        metadata = _operation_metadata(pull.get("body"))
+        if metadata.get("operation_key") != operation_key:
+            continue
+        number = pull.get("number")
+        if isinstance(number, int):
+            numbers.append(number)
+    return sorted(numbers)
+
+
 def _idea_candidate_count(root: Path, problem_id: str | None) -> int:
     if not problem_id:
         return 0
@@ -172,6 +211,8 @@ def _expected_action_type(root: Path, state: CompanyState) -> ActionType | None:
         if _idea_candidate_count(root, state.active_problem_id) > 0:
             return ActionType.EVALUATE_IDEAS
         return ActionType.CREATE_IDEA_CANDIDATES
+    if state.lifecycle_stage.value == "DISTRIBUTION_CHECK":
+        return ActionType.WRITE_REPORT
     if state.lifecycle_stage.value == "FOUNDER_APPROVAL":
         return None
     return permitted[0]
@@ -294,11 +335,24 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
             ),
         )
     expected_action_type = _expected_action_type(root, state)
+    operation_metadata: dict[str, str | None] = {}
+    if expected_action_type == ActionType.WRITE_REPORT:
+        operation_metadata = report_operation_metadata(root, state)
+        decision.idempotency_key = hashlib.sha256(
+            str(operation_metadata["operation_key"]).encode()
+        ).hexdigest()
     open_agent_pr_numbers: list[int] = []
+    open_operation_pr_numbers: list[int] = []
     if github_client is not None:
         try:
+            open_pulls = github_client.open_agent_pull_requests()
+            if operation_metadata.get("operation_key"):
+                open_operation_pr_numbers = _matching_operation_pr_numbers(
+                    open_pulls,
+                    operation_key=str(operation_metadata["operation_key"]),
+                )
             open_agent_pr_numbers = _matching_agent_pr_numbers(
-                github_client.open_agent_pull_requests(),
+                open_pulls,
                 lifecycle_stage=state.lifecycle_stage.value,
                 active_problem_id=state.active_problem_id,
             )
@@ -354,10 +408,19 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     decision.lifecycle_stage = state.lifecycle_stage
     decision.active_problem_id = state.active_problem_id
     decision.expected_action_type = expected_action_type
-    decision.open_agent_pr_count = len(open_agent_pr_numbers)
-    decision.open_agent_pr_numbers = open_agent_pr_numbers
-    decision.idempotency_key_seen = decision.idempotency_key in checkpoint.idempotency_keys
+    duplicate_pr_numbers = open_operation_pr_numbers or open_agent_pr_numbers
+    decision.open_agent_pr_count = len(duplicate_pr_numbers)
+    decision.open_agent_pr_numbers = duplicate_pr_numbers
+    artifact_path = operation_metadata.get("artifact_path")
+    artifact_exists = bool(artifact_path and (root / str(artifact_path)).exists())
+    decision.idempotency_key_seen = (
+        decision.idempotency_key in checkpoint.idempotency_keys or artifact_exists
+    )
     decision.concurrent_run_detected = active > 0
+    decision.report_type = operation_metadata.get("report_type")
+    decision.report_period = operation_metadata.get("report_period")
+    decision.artifact_path = operation_metadata.get("artifact_path")
+    decision.operation_key = operation_metadata.get("operation_key")
     if event_name == "schedule":
         decision.schedule_cron = SCHEDULE_CRON
         decision.next_schedule_note = "다음 실행은 GitHub 스케줄에 따라 진행됩니다."
@@ -371,21 +434,29 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
         pass
     elif decision.concurrent_run_detected:
         _apply_skip(decision, "concurrent_run_active", state=state)
-    elif open_agent_pr_numbers:
+    elif duplicate_pr_numbers:
         _apply_skip(
             decision,
             "open_agent_pr_exists",
             state=state,
-            pr_numbers=open_agent_pr_numbers,
+            pr_numbers=duplicate_pr_numbers,
         )
     elif state.lifecycle_stage.value == "FOUNDER_APPROVAL":
         _apply_skip(decision, "approval_required", state=state)
     elif expected_action_type is None:
         _apply_skip(decision, "no_actionable_state", state=state)
+    elif decision.idempotency_key_seen:
+        detail = None
+        if artifact_exists and artifact_path:
+            detail = f"이번 보고서 산출물이 이미 존재합니다: {artifact_path}"
+        _apply_skip(
+            decision,
+            "idempotency_key_already_processed",
+            state=state,
+            detail=detail,
+        )
     elif not decision.should_call_model:
         _apply_skip(decision, decision.skip_reason or "no_new_trigger", state=state)
-    elif decision.idempotency_key_seen:
-        _apply_skip(decision, "idempotency_key_already_processed", state=state)
     elif not allowed:
         _apply_skip(decision, "model_call_limit_reached", state=state)
     return decision.model_dump(mode="json", by_alias=True)
@@ -558,6 +629,24 @@ def build_model_instruction(
                 "DISTRIBUTION_CHECK only after evaluation is complete"
             ),
             ActionType.WRITE_REPORT.value: "omit state_transition",
+            ActionType.NO_OP.value: "state_transition is forbidden",
+        }
+    elif state.lifecycle_stage.value == "DISTRIBUTION_CHECK":
+        preferred = [
+            ActionType.WRITE_REPORT,
+            ActionType.CHECK_DISTRIBUTION,
+            ActionType.NO_OP,
+        ]
+        guidance = (
+            "Write a structured weekly operating report when a report is due. "
+            "Do not provide files, filenames, artifact paths, or placeholder paths; "
+            "trusted repository code will materialize the report."
+        )
+        transition_policy = {
+            ActionType.WRITE_REPORT.value: "omit state_transition",
+            ActionType.CHECK_DISTRIBUTION.value: (
+                "omit it or transition DISTRIBUTION_CHECK only when distribution data exists"
+            ),
             ActionType.NO_OP.value: "state_transition is forbidden",
         }
     payload = {

@@ -224,6 +224,45 @@ def test_create_problem_candidate_rejects_deletion_and_multiple_problem_files():
     assert multiple.status == "invalid_problem_path"
 
 
+def test_write_report_allows_only_trusted_weekly_report_and_checkpoint():
+    result = validate_changed_file_contract(
+        "agent/29757293895-write-report",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "reports/weekly_report_2026-W30.pdf", "status": "added"},
+        ],
+    )
+    assert result.status == "valid"
+    assert result.allowed_files == (
+        "company/checkpoints.json",
+        "reports/weekly_report_2026-W30.pdf",
+    )
+    assert result.report_type == "weekly"
+    assert result.report_period == "2026-W30"
+    assert result.artifact_path == "reports/weekly_report_2026-W30.pdf"
+
+
+def test_write_report_rejects_bad_period_and_extra_reports_file():
+    bad_period = validate_changed_file_contract(
+        "agent/29757293895-write-report",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "reports/weekly_report_2023_10.pdf", "status": "added"},
+        ],
+    )
+    assert bad_period.status == "invalid_report_path"
+
+    extra = validate_changed_file_contract(
+        "agent/29757293895-write-report",
+        [
+            {"filename": "company/checkpoints.json", "status": "modified"},
+            {"filename": "reports/weekly_report_2026-W30.pdf", "status": "added"},
+            {"filename": "reports/other.pdf", "status": "added"},
+        ],
+    )
+    assert extra.status == "invalid_report_path"
+
+
 def test_quality_success_and_failure_outputs():
     assert summarize_check_results([("pytest", "success"), ("ruff", "success")]) == (
         "passed",
@@ -383,7 +422,11 @@ def test_quality_result_json_contains_only_safe_rejection_diagnostics(
         "quality_run_url",
         "rejection_code",
         "rejection_reason",
-        "rejected_files",
-        "allowed_files",
-        "changed_files_count",
-    }
+            "rejected_files",
+            "allowed_files",
+            "changed_files_count",
+            "report_type",
+            "report_period",
+            "artifact_path",
+            "operation_key",
+        }

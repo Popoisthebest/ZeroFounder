@@ -27,6 +27,7 @@ from agents.schemas import (
     ModelRequestMode,
     ModelSelection,
     PydanticErrorDiagnostic,
+    ReportProposal,
     RiskLevel,
 )
 from agents.usage_limiter import UsageLimiter, UsageLimitReached, request_fingerprint
@@ -166,7 +167,8 @@ class WriteReportActionEnvelope(BaseModel):
     risk_level: RiskLevel
     requires_approval: bool
     evidence_ids: list[str] = Field(default_factory=list, max_length=100)
-    files: list[Any] = Field(default_factory=list, min_length=1, max_length=50)
+    report: ReportProposal
+    files: list[Any] = Field(default_factory=list, max_length=0)
     state_transition: Any | None = None
 
     def to_action_envelope(self) -> ActionEnvelope:
@@ -638,8 +640,9 @@ class RequestBudgetManager:
             action_type=ActionType.WRITE_REPORT,
             response_model=WriteReportActionEnvelope,
             system_instruction=(
-                "Return one write_report JSON object only. Use the report target, "
-                "required evidence, and allowed file path policy. "
+                "Return one write_report JSON object only. Provide report structure only. "
+                "Do not include files, file paths, artifact paths, placeholder paths, or "
+                "state_transition; trusted repository code will materialize the report file. "
                 + korean_output_contract()
             ),
             removed_sections=[
@@ -1186,6 +1189,35 @@ class RequestBudgetManager:
                 "idea_id": "lowercase id matching ^[a-z0-9][a-z0-9._:-]{0,127}$",
                 "string_rules": "No URLs, execution results, or invented metrics.",
             }
+        if action_type == ActionType.WRITE_REPORT:
+            return {
+                "action_type": action_type.value,
+                "required_fields": [
+                    "role",
+                    "action_type",
+                    "title",
+                    "summary",
+                    "rationale",
+                    "risk_level",
+                    "requires_approval",
+                    "evidence_ids",
+                    "report",
+                ],
+                "report_fields": [
+                    "report_type",
+                    "title",
+                    "summary",
+                    "period_summary",
+                    "sections",
+                    "evidence_ids",
+                ],
+                "forbidden_fields": ["files", "state_transition"],
+                "forbidden_path_values": [
+                    "missing_file.txt",
+                    "placeholder.pdf",
+                    "example/path",
+                ],
+            }
         return {
             "action_type": action_type.value,
             "schema_subset": [
@@ -1215,6 +1247,13 @@ class RequestBudgetManager:
         allowed_evidence_ids: list[str],
     ) -> PromptVariant:
         user_content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        extra = ""
+        if action_type == ActionType.WRITE_REPORT:
+            extra = (
+                " For write_report, correct only the report structure. Do not include files, "
+                "file paths, artifact paths, missing_file.txt, placeholder.pdf, example/path, "
+                "or state_transition. Preserve IDs, evidence, and report meaning."
+            )
         return self._copy_variant(
             variant,
             messages=[
@@ -1223,6 +1262,7 @@ class RequestBudgetManager:
                     "content": (
                         f"Return one corrected {action_type.value} JSON object only. "
                         "Do not quote the previous full response. "
+                        f"{extra} "
                         + korean_output_contract()
                     ),
                 },

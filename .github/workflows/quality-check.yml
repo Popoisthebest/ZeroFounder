@@ -44,6 +44,18 @@ on:
       changed_files_count:
         description: PR 변경 파일 수
         value: ${{ jobs.finalize.outputs.changed_files_count }}
+      report_type:
+        description: 보고서 유형
+        value: ${{ jobs.finalize.outputs.report_type }}
+      report_period:
+        description: 보고서 기간
+        value: ${{ jobs.finalize.outputs.report_period }}
+      artifact_path:
+        description: 보고서 산출물 경로
+        value: ${{ jobs.finalize.outputs.artifact_path }}
+      operation_key:
+        description: 안정적 작업 키
+        value: ${{ jobs.finalize.outputs.operation_key }}
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -77,6 +89,10 @@ jobs:
       rejected_files: ${{ steps.verify.outputs.rejected_files }}
       allowed_files: ${{ '[]' }}
       changed_files_count: ${{ steps.verify.outputs.changed_files_count }}
+      report_type: ""
+      report_period: ""
+      artifact_path: ""
+      operation_key: ""
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v7
@@ -215,6 +231,10 @@ jobs:
       rejected_files: ${{ steps.candidate_validation.outputs.rejected_files }}
       allowed_files: ${{ steps.candidate_validation.outputs.allowed_files }}
       changed_files_count: ${{ steps.candidate_validation.outputs.changed_files_count }}
+      report_type: ${{ steps.candidate_validation.outputs.report_type }}
+      report_period: ${{ steps.candidate_validation.outputs.report_period }}
+      artifact_path: ${{ steps.candidate_validation.outputs.artifact_path }}
+      operation_key: ${{ steps.candidate_validation.outputs.operation_key }}
       workflow_result: ${{ steps.workflow.outcome }}
       security_result: ${{ steps.security.outcome }}
     steps:
@@ -296,6 +316,10 @@ jobs:
       rejected_files: ${{ steps.result.outputs.rejected_files }}
       allowed_files: ${{ steps.result.outputs.allowed_files }}
       changed_files_count: ${{ steps.result.outputs.changed_files_count }}
+      report_type: ${{ steps.result.outputs.report_type }}
+      report_period: ${{ steps.result.outputs.report_period }}
+      artifact_path: ${{ steps.result.outputs.artifact_path }}
+      operation_key: ${{ steps.result.outputs.operation_key }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v7
@@ -340,6 +364,10 @@ jobs:
           REJECTED_FILES: ${{ needs.policy.outputs.rejected_files || needs.verify-head.outputs.rejected_files || '[]' }}
           ALLOWED_FILES: ${{ needs.policy.outputs.allowed_files || needs.verify-head.outputs.allowed_files || '[]' }}
           CHANGED_FILES_COUNT: ${{ needs.policy.outputs.changed_files_count || needs.verify-head.outputs.changed_files_count || '0' }}
+          REPORT_TYPE: ${{ needs.policy.outputs.report_type || needs.verify-head.outputs.report_type }}
+          REPORT_PERIOD: ${{ needs.policy.outputs.report_period || needs.verify-head.outputs.report_period }}
+          ARTIFACT_PATH: ${{ needs.policy.outputs.artifact_path || needs.verify-head.outputs.artifact_path }}
+          OPERATION_KEY: ${{ needs.policy.outputs.operation_key || needs.verify-head.outputs.operation_key }}
         run: >-
           python -m scripts.summarize_quality_checks
           --results-dir "$GITHUB_WORKSPACE/runtime/quality-results"
@@ -354,6 +382,10 @@ jobs:
           --rejected-files "$REJECTED_FILES"
           --allowed-files "$ALLOWED_FILES"
           --changed-files-count "$CHANGED_FILES_COUNT"
+          --report-type "$REPORT_TYPE"
+          --report-period "$REPORT_PERIOD"
+          --artifact-path "$ARTIFACT_PATH"
+          --operation-key "$OPERATION_KEY"
 
   manual-result:
     name: 수동 품질검사 결과 저장
@@ -388,6 +420,10 @@ jobs:
           REJECTED_FILES: ${{ needs.finalize.outputs.rejected_files }}
           ALLOWED_FILES: ${{ needs.finalize.outputs.allowed_files }}
           CHANGED_FILES_COUNT: ${{ needs.finalize.outputs.changed_files_count }}
+          REPORT_TYPE: ${{ needs.finalize.outputs.report_type }}
+          REPORT_PERIOD: ${{ needs.finalize.outputs.report_period }}
+          ARTIFACT_PATH: ${{ needs.finalize.outputs.artifact_path }}
+          OPERATION_KEY: ${{ needs.finalize.outputs.operation_key }}
           QUALITY_RESULT_PATH: ${{ github.workspace }}/runtime/quality-result.json
         run: python -m scripts.write_quality_result
       - name: 수동 실행 결과 요약
@@ -438,6 +474,10 @@ jobs:
           REJECTED_FILES: ${{ needs.finalize.outputs.rejected_files }}
           ALLOWED_FILES: ${{ needs.finalize.outputs.allowed_files }}
           CHANGED_FILES_COUNT: ${{ needs.finalize.outputs.changed_files_count }}
+          REPORT_TYPE: ${{ needs.finalize.outputs.report_type }}
+          REPORT_PERIOD: ${{ needs.finalize.outputs.report_period }}
+          ARTIFACT_PATH: ${{ needs.finalize.outputs.artifact_path }}
+          OPERATION_KEY: ${{ needs.finalize.outputs.operation_key }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"

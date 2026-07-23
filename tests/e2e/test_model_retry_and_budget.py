@@ -9,6 +9,7 @@ import pytest
 import agents.orchestrator as orchestrator
 from agents.context_builder import build_context_bundle
 from agents.github_models import GitHubModelsClient
+from agents.report_materializer import report_artifact_path, report_period
 from agents.schemas import ActionType, CompanyState, LifecycleStage
 from agents.usage_limiter import UsageLimiter
 from tests.e2e.conftest import (
@@ -151,13 +152,19 @@ def _write_report_action() -> dict[str, object]:
         "risk_level": "low",
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
-        "files": [
-            {
-                "path": "reports/request-budget.md",
-                "content": "# 요청 예산\n\n근거가 있는 보고서입니다.\n",
-                "operation": "upsert",
-            }
-        ],
+        "report": {
+            "report_type": "weekly",
+            "title": "주간 운영 보고서",
+            "summary": "근거가 있는 짧은 운영 보고서를 작성합니다.",
+            "period_summary": "요청 예산 회귀 테스트 기간의 핵심 흐름을 요약합니다.",
+            "sections": [
+                {
+                    "heading": "핵심 판단",
+                    "content": "저장된 근거를 바탕으로 다음 운영 판단을 정리합니다.",
+                }
+            ],
+            "evidence_ids": list(SIGNAL_IDS),
+        },
     }
 
 
@@ -173,7 +180,7 @@ def _invalid_for(action_type: str, valid: dict[str, object]) -> dict[str, object
         invalid.pop("idea_candidate_ids", None)
         invalid.pop("idea_evaluations", None)
     elif action_type == "write_report":
-        invalid["files"] = []
+        invalid.pop("report", None)
     return invalid
 
 
@@ -575,3 +582,87 @@ def test_e2e_default_model_selection_reaches_evaluate_ideas_http_call(
         ).content
     )
     assert next_context["recent_idea_evaluations"][0]["problem_id"] == PROBLEM_ID
+
+
+def test_e2e_distribution_check_write_report_materializes_and_blocks_duplicate(
+    e2e_harness,
+    monkeypatch,
+) -> None:
+    requests: list[dict[str, Any]] = []
+    e2e_harness.write_state(
+        CompanyState(lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK)
+    )
+    run_git(e2e_harness.repo, "add", "company/state.json")
+    run_git(e2e_harness.repo, "commit", "-m", "prepare distribution check fixture")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json=_completion(json.dumps(_write_report_action())))
+
+    class FakeGitHubModelsClient(GitHubModelsClient):
+        def __init__(self, token: str, limiter: UsageLimiter) -> None:
+            super().__init__(
+                token,
+                limiter,
+                transport=httpx.MockTransport(handler),
+                sleep=lambda _: None,
+            )
+
+        def catalog(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": "cohere/cohere-command-a",
+                    "supported_input_modalities": ["text"],
+                    "supported_output_modalities": ["text"],
+                    "supported_endpoints": ["inference/chat/completions"],
+                    "limits": {"context_window": 131072},
+                }
+            ]
+
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "")
+    monkeypatch.setenv("MAX_MODEL_INPUT_TOKENS", "6000")
+    monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeGitHubModelsClient)
+
+    outcome = orchestrator.run_model(
+        e2e_harness.repo,
+        e2e_harness.manual_decision("write-report"),
+    )
+
+    assert outcome.diagnostic.accepted
+    assert outcome.action.action_type == ActionType.WRITE_REPORT
+    assert outcome.action.files == []
+    assert outcome.action.report is not None
+    assert requests
+    prompt = "\n".join(message["content"] for message in requests[0]["messages"])
+    assert "write_report" in prompt
+    assert "missing_file.txt" not in json.dumps(outcome.action.model_dump(mode="json"))
+
+    run_id = "2002"
+    action_path = e2e_harness.write_model_action(outcome.action, run_id)
+    preflight_path = e2e_harness.write_preflight(
+        e2e_harness.manual_decision(run_id),
+        run_id,
+    )
+    step = e2e_harness.apply_commit_validate(
+        action_path=action_path,
+        preflight_path=preflight_path,
+        run_id=run_id,
+    )
+
+    expected_report = report_artifact_path(report_period(e2e_harness.repo))
+    assert step.changed_files == ["company/checkpoints.json", expected_report]
+    assert step.action.files[0].path == expected_report
+    assert step.validation.report_type == "weekly"
+    assert step.validation.artifact_path == expected_report
+    assert step.quality_result["artifact_path"] == expected_report
+    assert (e2e_harness.repo / expected_report).read_bytes().startswith(b"%PDF-")
+
+    decision = orchestrator.preflight(e2e_harness.repo, None, "schedule")
+
+    assert decision["should_call_model"] is False
+    assert decision["skip_reason"] == "idempotency_key_already_processed"
+    assert decision["artifact_path"] == expected_report
+    assert decision["operation_key"]
+    assert step.new_state.lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK
