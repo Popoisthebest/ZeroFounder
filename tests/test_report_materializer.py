@@ -124,3 +124,92 @@ def test_materialized_report_inserts_trusted_problem_context(tmp_path):
 
     assert "Inventory list navigation" in change.content
     assert "inventory operators" in change.content
+
+
+def test_materialized_report_does_not_require_model_problem_title_or_summary(tmp_path):
+    _write_repo(tmp_path)
+    (tmp_path / "research/problems").mkdir(parents=True)
+    (tmp_path / "research/problems/problem-001.json").write_text(
+        json.dumps(
+            {
+                "problem_id": "problem-001",
+                "title": "재고 목록 위치 복귀 문제",
+                "target_users": ["재고 관리자", "창고 운영자"],
+                "description": "긴 재고 목록에서 특정 위치나 항목으로 이동하기 어렵습니다.",
+                "current_workaround": "스크롤과 수동 기억을 조합합니다.",
+                "evidence_ids": [],
+                "evidence": [],
+                "frequency_score": 7,
+                "severity_score": 6,
+                "buildability_score": 8,
+                "confidence": 0.8,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "company/state.json").write_text(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK,
+            active_problem_id="problem-001",
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = _report_action().model_dump(mode="json")
+    payload["report"].pop("title")
+    payload["report"].pop("summary")
+    payload["report"]["findings"] = ["이번 기간에는 위치 복귀 문제가 반복됐습니다."]
+    payload["report"]["recommendations"] = ["목록 이동 부담을 줄이는 실험을 준비합니다."]
+    action = ActionEnvelope.model_validate(payload)
+
+    change = materialize_report(action, tmp_path)
+
+    assert "재고 목록 위치 복귀 문제" in change.content
+    assert "재고 관리자, 창고 운영자" in change.content
+    assert "재고 관리 시스템" in change.content
+    assert "긴 재고 목록에서 특정 위치나 항목으로 이동하기 어렵습니다." in change.content
+    assert "이번 기간에는 위치 복귀 문제가 반복됐습니다." in change.content
+
+
+def test_materialized_report_ignores_model_supplied_untrusted_domain_text(tmp_path):
+    _write_repo(tmp_path)
+    (tmp_path / "research/problems").mkdir(parents=True)
+    (tmp_path / "research/problems/problem-001.json").write_text(
+        json.dumps(
+            {
+                "problem_id": "problem-001",
+                "title": "재고 목록 탐색 문제",
+                "target_users": ["재고 관리자"],
+                "description": "긴 재고 목록에서 위치를 잃는 문제가 있습니다.",
+                "current_workaround": "수동으로 위치를 기억합니다.",
+                "evidence_ids": [],
+                "evidence": [],
+                "frequency_score": 7,
+                "severity_score": 6,
+                "buildability_score": 8,
+                "confidence": 0.8,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "company/state.json").write_text(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK,
+            active_problem_id="problem-001",
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    payload = _report_action().model_dump(mode="json")
+    payload["report"]["title"] = "게임 내 탐색 보고서"
+    payload["report"]["summary"] = "커뮤니티 선택 드롭다운 문제를 요약합니다."
+    action = ActionEnvelope.model_validate(payload)
+
+    change = materialize_report(action, tmp_path)
+
+    assert "재고 목록 탐색 문제" in change.content
+    assert "재고 관리자" in change.content
+    assert "게임 내 탐색 보고서" not in change.content
+    assert "커뮤니티 선택 드롭다운 문제" not in change.content

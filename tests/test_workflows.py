@@ -293,6 +293,13 @@ def test_quality_result_is_recorded_after_failure_and_final_gate_is_present():
 
 def test_model_preflight_and_diagnostic_inputs_remain_wired():
     agent = load_workflows()["agent.yml"]
+    model = agent["jobs"]["model"]
+    assert model["outputs"]["accepted"] == "${{ steps.model_run.outputs.accepted }}"
+    assert (
+        model["outputs"]["validated_action_type"]
+        == "${{ steps.model_run.outputs.validated_action_type }}"
+    )
+    assert model["outputs"]["rejection_code"] == "${{ steps.model_run.outputs.rejection_code }}"
     model_steps = agent["jobs"]["model"]["steps"]
     model_commands = "\n".join(str(step.get("run", "")) for step in model_steps)
     assert "--preflight runtime/preflight.json" in model_commands
@@ -317,6 +324,37 @@ def test_model_preflight_and_diagnostic_inputs_remain_wired():
     preflight_steps = agent["jobs"]["preflight"]["steps"]
     preflight_commands = "\n".join(str(step.get("run", "")) for step in preflight_steps)
     assert "scripts.write_preflight_summary" in preflight_commands
+
+
+def test_rejected_model_action_does_not_open_downstream_work():
+    agent = load_workflows()["agent.yml"]
+    create_branch = agent["jobs"]["create-branch"]
+    assert "needs.model.outputs.accepted == 'true'" in create_branch["if"]
+    assert "validated_action_type != 'no_op'" in create_branch["if"]
+    assert "validated_action_type != 'propose_dependency'" in create_branch["if"]
+
+    dependency = agent["jobs"]["dependency-request"]
+    assert dependency["name"] == "의존성 승인 필요 여부 확인"
+    assert "needs.model.outputs.accepted == 'true'" in dependency["if"]
+    assert dependency["outputs"]["required"] == "${{ steps.dependency.outputs.required }}"
+    assert dependency["outputs"]["created"] == "${{ steps.dependency.outputs.created }}"
+
+
+def test_workflow_outcome_summary_reports_rejected_actions_and_skips():
+    agent = load_workflows()["agent.yml"]
+    outcome = agent["jobs"]["workflow-outcome"]
+    assert outcome["if"] == "always()"
+    assert {"model", "dependency-request", "create-branch", "create-pr", "quality-check"}.issubset(
+        set(outcome["needs"])
+    )
+    env = next(step["env"] for step in outcome["steps"] if "MODEL_RESULT" in step.get("env", {}))
+    assert env["MODEL_ACCEPTED"] == "${{ needs.model.outputs.accepted || 'false' }}"
+    assert env["DEPENDENCY_APPROVAL_CREATED"] == (
+        "${{ needs.dependency-request.outputs.created || 'false' }}"
+    )
+    assert env["QUALITY_GATE_EXECUTED"] == "${{ needs.quality-check.result == 'success' }}"
+    commands = "\n".join(str(step.get("run", "")) for step in outcome["steps"])
+    assert "scripts.write_workflow_outcome_summary" in commands
 
 
 def test_agent_workflow_separates_model_and_materialized_action_artifacts():

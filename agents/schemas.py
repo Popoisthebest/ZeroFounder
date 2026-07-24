@@ -234,11 +234,13 @@ class ReportSection(StrictModel):
 class ReportProposal(StrictModel):
     problem_id: StrictId
     report_type: Literal["weekly"] = "weekly"
-    title: str = Field(min_length=3, max_length=200)
-    summary: str = Field(min_length=20, max_length=2000)
+    title: str | None = Field(default=None, min_length=3, max_length=200)
+    summary: str | None = Field(default=None, min_length=20, max_length=2000)
     period_summary: str = Field(min_length=10, max_length=1200)
     sections: list[ReportSection] = Field(min_length=1, max_length=8)
     evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    findings: list[str] = Field(default_factory=list, max_length=8)
+    recommendations: list[str] = Field(default_factory=list, max_length=8)
 
 
 class DependencyProposal(StrictModel):
@@ -564,6 +566,14 @@ class ModelInferenceDiagnostic(StrictModel):
     returned_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
     malformed_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
     evidence_ids_preserved_during_compaction: bool = True
+    trusted_problem_id: StrictId | None = None
+    returned_problem_id: StrictId | None = None
+    canonical_problem_domain: str | None = Field(default=None, max_length=200)
+    canonical_target_users: list[str] = Field(default_factory=list, max_length=20)
+    conflicting_domain_terms: list[str] = Field(default_factory=list, max_length=20)
+    mismatch_fields: list[str] = Field(default_factory=list, max_length=50)
+    initial_problem_context_mismatch: bool = False
+    correction_problem_context_mismatch: bool = False
     new_signal_count: int = Field(default=0, ge=0)
     problem_loaded: bool = False
     problem_evidence_count: int = Field(default=0, ge=0)

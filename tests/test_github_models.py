@@ -899,12 +899,113 @@ def test_write_report_unrelated_problem_domain_triggers_correction_retry():
     assert "재고 목록" in result.action.report.summary
     assert result.diagnostic.validation_correction_attempted
     assert result.diagnostic.pydantic_validation_error_paths == ["report"]
+    assert result.diagnostic.initial_problem_context_mismatch
+    assert not result.diagnostic.correction_problem_context_mismatch
+    assert result.diagnostic.trusted_problem_id == "problem-inventory-navigation"
+    assert result.diagnostic.returned_problem_id == "problem-inventory-navigation"
+    assert result.diagnostic.conflicting_domain_terms == ["게임", "커뮤니티 선택"]
+    assert result.diagnostic.mismatch_fields == ["report.summary"]
     correction_prompt = "\n".join(item["content"] for item in requests[1]["messages"])
     assert "problem_context_mismatch" in correction_prompt
     assert "Inventory list navigation" in correction_prompt
     assert "Do not copy these labels or context keys" in correction_prompt
     assert "Allowed top-level response fields" in correction_prompt
     assert "Valid response example" in correction_prompt
+    assert "Canonical domain" in correction_prompt
+    assert "Canonical target users" in correction_prompt
+    assert "게임 내 탐색과 커뮤니티 선택 드롭다운 문제" not in correction_prompt
+
+
+def test_write_report_accepts_inventory_navigation_phrasing_without_keyword_ratio():
+    valid = json.loads(json.dumps(VALID_WRITE_REPORT))
+    valid["report"].pop("title")
+    valid["report"].pop("summary")
+    valid["report"]["period_summary"] = (
+        "운영자가 긴 품목 목록에서 이전 위치로 돌아가기 어려운 흐름을 검토했습니다."
+    )
+    valid["report"]["sections"][0]["content"] = (
+        "특정 행으로 다시 이동하는 과정이 반복 작업의 흐름을 끊기 때문에 "
+        "위치 복귀와 항목 이동을 줄이는 운영 판단이 필요합니다."
+    )
+
+    result = _client(_single_response(_completion(json.dumps(valid)))).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "required_action": "write_report",
+                        "lifecycle_stage": "DISTRIBUTION_CHECK",
+                        "active_problem_id": "problem-inventory-navigation",
+                        "active_problem": {
+                            "problem_id": "problem-inventory-navigation",
+                            "title": "Inventory list navigation",
+                            "description": "Operators lose their place in long inventory lists.",
+                            "target_users": ["inventory operators"],
+                            "evidence_ids": ["signal-001", "signal-002"],
+                        },
+                        "allowed_evidence_ids": ["signal-001", "signal-002"],
+                    }
+                ),
+            },
+        ],
+        active_problem_id="problem-inventory-navigation",
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.action.report is not None
+    assert result.action.report.title is None
+    assert result.action.report.summary is None
+    assert result.diagnostic.conflicting_domain_terms == []
+
+
+def test_write_report_rejects_community_dropdown_domain_shift():
+    invalid = json.loads(json.dumps(VALID_WRITE_REPORT))
+    invalid["report"]["sections"][0]["content"] = (
+        "커뮤니티 선택 드롭다운에서 옵션을 고르기 어려운 사용자를 위한 보고서입니다."
+    )
+
+    result = _client(_single_response(_completion(json.dumps(invalid)))).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "required_action": "write_report",
+                        "lifecycle_stage": "DISTRIBUTION_CHECK",
+                        "active_problem_id": "problem-inventory-navigation",
+                        "active_problem": {
+                            "problem_id": "problem-inventory-navigation",
+                            "title": "Inventory list navigation",
+                            "description": "Operators lose their place in long inventory lists.",
+                            "target_users": ["inventory operators"],
+                            "evidence_ids": ["signal-001", "signal-002"],
+                        },
+                        "allowed_evidence_ids": ["signal-001", "signal-002"],
+                    }
+                ),
+            },
+        ],
+        active_problem_id="problem-inventory-navigation",
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code == ActionRejectionCode.PROBLEM_CONTEXT_MISMATCH
+    assert result.diagnostic.initial_problem_context_mismatch
+    assert result.diagnostic.correction_problem_context_mismatch
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.completed_inference_calls == 2
+    assert "커뮤니티 선택" in result.diagnostic.conflicting_domain_terms
+    assert result.diagnostic.mismatch_fields == ["report.sections[0].content"]
 
 
 def test_write_report_correction_request_echo_is_detected_and_reported():

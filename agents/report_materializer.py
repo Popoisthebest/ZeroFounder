@@ -92,6 +92,29 @@ def _problem_context(root: Path, problem_id: str | None) -> dict[str, object] | 
     return payload if isinstance(payload, dict) else None
 
 
+def _problem_domain(problem: dict[str, object] | None) -> str:
+    if not problem:
+        return "unknown"
+    explicit = problem.get("domain")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    text = json.dumps(problem, ensure_ascii=False).lower()
+    if any(term in text for term in ("재고", "inventory", "warehouse", "창고")):
+        return "재고 관리 시스템"
+    return "unknown"
+
+
+def _problem_summary(problem: dict[str, object] | None, action: ActionEnvelope) -> str:
+    if problem:
+        for key in ("summary", "problem_statement", "description"):
+            value = problem.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    if action.report and action.report.summary:
+        return action.report.summary
+    return action.summary
+
+
 def _pdf_escape(value: str) -> str:
     safe = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
     return safe[:1800]
@@ -151,18 +174,28 @@ def materialize_report(
     problem = _problem_context(root, state.active_problem_id)
     target_users = problem.get("target_users", []) if problem else []
     target_user_text = ", ".join(str(item) for item in target_users) if target_users else "unknown"
+    problem_title = problem.get("title") if problem else None
+    problem_title_text = str(problem_title) if problem_title else "unknown"
+    problem_summary = _problem_summary(problem, action)
+    problem_domain = _problem_domain(problem)
     lines = [
         f"Problem ID: {action.report.problem_id}",
-        f"Problem title: {problem.get('title') if problem else action.report.title}",
+        f"Problem title: {problem_title_text}",
+        f"Problem domain: {problem_domain}",
         f"Target users: {target_user_text}",
-        f"Problem description: {problem.get('description') if problem else action.report.summary}",
-        f"Report title: {action.report.title}",
+        f"Problem description: {problem_summary}",
         f"Report period: {metadata['report_period']}",
-        action.report.summary,
-        action.report.period_summary,
+        f"Report type: {action.report.report_type}",
+        f"Period analysis: {action.report.period_summary}",
     ]
     for section in action.report.sections:
         lines.extend([section.heading, section.content])
+    if action.report.findings:
+        lines.append("Findings")
+        lines.extend(action.report.findings)
+    if action.report.recommendations:
+        lines.append("Recommendations")
+        lines.extend(action.report.recommendations)
     if action.evidence_ids or action.report.evidence_ids:
         evidence = ", ".join(sorted(set(action.evidence_ids + action.report.evidence_ids)))
         lines.append(f"Evidence IDs: {evidence}")

@@ -1290,6 +1290,16 @@ def main() -> int:
         github_output = os.getenv("GITHUB_OUTPUT")
         if github_output:
             inference = outcome.diagnostic.inference
+            original_action = (
+                outcome.diagnostic.original_action_type.value
+                if outcome.diagnostic.original_action_type
+                else "none"
+            )
+            rejection_code = (
+                outcome.diagnostic.rejection_code.value
+                if outcome.diagnostic.rejection_code
+                else "none"
+            )
             with Path(github_output).open("a", encoding="utf-8") as handle:
                 handle.write(
                     f"completed_inference_calls={inference.completed_inference_calls}\n"
@@ -1302,6 +1312,28 @@ def main() -> int:
                 handle.write(
                     "response_validation_failed_calls="
                     f"{inference.response_validation_failed_calls}\n"
+                )
+                handle.write(
+                    f"original_action_type={original_action}\n"
+                )
+                handle.write(
+                    f"validated_action_type={outcome.diagnostic.validated_action_type.value}\n"
+                )
+                handle.write(f"accepted={str(outcome.diagnostic.accepted).lower()}\n")
+                handle.write(
+                    "failure_stage="
+                    f"{inference.failure_stage.value if inference.failure_stage else 'none'}\n"
+                )
+                handle.write(
+                    f"rejection_code={rejection_code}\n"
+                )
+                handle.write(
+                    "correction_attempted="
+                    f"{str(inference.validation_correction_attempted).lower()}\n"
+                )
+                handle.write(
+                    "correction_response_was_request_echo="
+                    f"{str(inference.correction_response_was_request_echo).lower()}\n"
                 )
         if args.diagnostics:
             args.diagnostics.parent.mkdir(parents=True, exist_ok=True)

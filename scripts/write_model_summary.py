@@ -134,6 +134,26 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
             "evidence_ids_preserved_during_compaction",
             str(inference.evidence_ids_preserved_during_compaction).lower(),
         ),
+        ("trusted_problem_id", inference.trusted_problem_id or "none"),
+        ("returned_problem_id", inference.returned_problem_id or "none"),
+        ("canonical_problem_domain", inference.canonical_problem_domain or "none"),
+        (
+            "canonical_target_users",
+            ", ".join(inference.canonical_target_users) or "none",
+        ),
+        (
+            "conflicting_domain_terms",
+            ", ".join(inference.conflicting_domain_terms) or "none",
+        ),
+        ("mismatch_fields", ", ".join(inference.mismatch_fields) or "none"),
+        (
+            "initial_problem_context_mismatch",
+            str(inference.initial_problem_context_mismatch).lower(),
+        ),
+        (
+            "correction_problem_context_mismatch",
+            str(inference.correction_problem_context_mismatch).lower(),
+        ),
         (
             "existing_idea_candidate_count",
             inference.existing_idea_candidate_count,

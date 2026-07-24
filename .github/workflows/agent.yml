@@ -70,6 +70,14 @@ jobs:
       contents: read
       models: read
     runs-on: ubuntu-latest
+    outputs:
+      original_action_type: ${{ steps.model_run.outputs.original_action_type }}
+      validated_action_type: ${{ steps.model_run.outputs.validated_action_type }}
+      accepted: ${{ steps.model_run.outputs.accepted }}
+      failure_stage: ${{ steps.model_run.outputs.failure_stage }}
+      rejection_code: ${{ steps.model_run.outputs.rejection_code }}
+      correction_attempted: ${{ steps.model_run.outputs.correction_attempted }}
+      correction_response_was_request_echo: ${{ steps.model_run.outputs.correction_response_was_request_echo }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -132,13 +140,16 @@ jobs:
           retention-days: 1
 
   dependency-request:
-    name: 의존성 승인 요청 생성
+    name: 의존성 승인 필요 여부 확인
     needs: model
-    if: needs.model.result == 'success'
+    if: needs.model.result == 'success' && needs.model.outputs.accepted == 'true'
     permissions:
       contents: read
       issues: write
     runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.dependency.outputs.required }}
+      created: ${{ steps.dependency.outputs.created }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -149,7 +160,8 @@ jobs:
         with:
           name: validated-action
           path: runtime
-      - env:
+      - id: dependency
+        env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python -m scripts.create_dependency_issue --action runtime/model-action.json
@@ -310,7 +322,7 @@ jobs:
   create-branch:
     name: 에이전트 변경 브랜치 생성
     needs: [preflight, model]
-    if: needs.model.result == 'success'
+    if: needs.model.result == 'success' && needs.model.outputs.accepted == 'true' && needs.model.outputs.validated_action_type != 'no_op' && needs.model.outputs.validated_action_type != 'propose_dependency'
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -491,3 +503,32 @@ jobs:
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"
         run: python -m scripts.quality_gate
+
+  workflow-outcome:
+    name: 최종 실행 결과 요약
+    needs: [preflight, model, dependency-request, create-branch, create-pr, quality-check]
+    if: always()
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -r requirements.txt
+      - env:
+          MODEL_RESULT: ${{ needs.model.result || 'skipped' }}
+          MODEL_ACTION_TYPE: ${{ needs.model.outputs.original_action_type || 'none' }}
+          VALIDATED_ACTION_TYPE: ${{ needs.model.outputs.validated_action_type || 'none' }}
+          MODEL_ACCEPTED: ${{ needs.model.outputs.accepted || 'false' }}
+          FAILURE_STAGE: ${{ needs.model.outputs.failure_stage || 'none' }}
+          REJECTION_CODE: ${{ needs.model.outputs.rejection_code || 'none' }}
+          CORRECTION_ATTEMPTED: ${{ needs.model.outputs.correction_attempted || 'false' }}
+          CORRECTION_RESPONSE_WAS_REQUEST_ECHO: ${{ needs.model.outputs.correction_response_was_request_echo || 'false' }}
+          DEPENDENCY_APPROVAL_REQUIRED: ${{ needs.dependency-request.outputs.required || 'false' }}
+          DEPENDENCY_APPROVAL_CREATED: ${{ needs.dependency-request.outputs.created || 'false' }}
+          BRANCH_CREATED: ${{ needs.create-branch.outputs.branch != '' }}
+          PR_CREATED: ${{ needs.create-pr.outputs.pr_number != '' }}
+          QUALITY_GATE_EXECUTED: ${{ needs.quality-check.result == 'success' }}
+        run: python -m scripts.write_workflow_outcome_summary

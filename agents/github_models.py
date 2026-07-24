@@ -122,7 +122,6 @@ WRITE_REPORT_RESPONSE_KEYS = {
     "risk_level",
     "requires_approval",
     "report",
-    "state_transition",
 }
 WRITE_REPORT_REQUIRED_KEYS = {
     "role",
@@ -223,7 +222,6 @@ class WriteReportActionEnvelope(BaseModel):
     evidence_ids: list[str] = Field(default_factory=list, max_length=100)
     report: ReportProposal
     files: list[Any] = Field(default_factory=list, max_length=0)
-    state_transition: Any | None = None
 
     def to_action_envelope(self) -> ActionEnvelope:
         return ActionEnvelope.model_validate(self.model_dump(mode="json"))
@@ -695,11 +693,20 @@ def _report_problem_failed_fragment(
     active_problem_id: str | None,
     active_problem: dict[str, Any],
     reason: str,
+    canonical_domain: str | None,
+    target_users: list[str],
+    conflicting_terms: list[str],
+    mismatch_fields: list[str],
 ) -> dict[str, Any]:
     dumped = action.model_dump(mode="json", by_alias=True)
     return {
         "action_type": action.action_type.value,
         "active_problem_id": active_problem_id,
+        "returned_problem_id": action.report.problem_id if action.report else None,
+        "canonical_problem_domain": canonical_domain,
+        "canonical_target_users": target_users,
+        "conflicting_domain_terms": conflicting_terms,
+        "mismatch_fields": mismatch_fields,
         "active_problem": _short_value(active_problem, max_chars=1000),
         "reason": reason,
         "returned_top_level_keys": _returned_top_level_keys(dumped),
@@ -707,9 +714,72 @@ def _report_problem_failed_fragment(
     }
 
 
+def _canonical_problem_domain(active_problem: dict[str, Any]) -> str | None:
+    explicit = active_problem.get("domain")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    text = json.dumps(active_problem, ensure_ascii=False).lower()
+    if any(term in text for term in ("재고", "inventory", "warehouse", "창고")):
+        return "재고 관리 시스템"
+    return None
+
+
+def _report_text_fields(action: ActionEnvelope) -> list[tuple[str, str]]:
+    if action.report is None:
+        return []
+    values: list[tuple[str, str | None]] = [
+        ("title", action.title),
+        ("summary", action.summary),
+        ("rationale", action.rationale),
+        ("report.title", action.report.title),
+        ("report.summary", action.report.summary),
+        ("report.period_summary", action.report.period_summary),
+    ]
+    for index, section in enumerate(action.report.sections):
+        values.extend(
+            [
+                (f"report.sections[{index}].heading", section.heading),
+                (f"report.sections[{index}].content", section.content),
+            ]
+        )
+    values.extend(
+        (f"report.findings[{index}]", item)
+        for index, item in enumerate(action.report.findings)
+    )
+    values.extend(
+        (f"report.recommendations[{index}]", item)
+        for index, item in enumerate(action.report.recommendations)
+    )
+    return [(path, value) for path, value in values if isinstance(value, str)]
+
+
+def _conflicting_report_domain_terms(
+    action: ActionEnvelope,
+    active_problem: dict[str, Any],
+) -> tuple[list[str], list[str]]:
+    problem_text = json.dumps(active_problem, ensure_ascii=False).lower()
+    conflicting_patterns = {
+        "게임": ("게임", "game", "in-game"),
+        "커뮤니티 선택": ("커뮤니티 선택", "community selection"),
+        "커뮤니티 드롭다운": ("커뮤니티 드롭다운", "community dropdown"),
+    }
+    found_terms: list[str] = []
+    fields: list[str] = []
+    for path, value in _report_text_fields(action):
+        lowered = value.lower()
+        for label, terms in conflicting_patterns.items():
+            if label in found_terms:
+                continue
+            if any(term in lowered and term not in problem_text for term in terms):
+                found_terms.append(label)
+                fields.append(path)
+    return found_terms, list(dict.fromkeys(fields))
+
+
 def _validate_write_report_problem_context(
     action: ActionEnvelope,
     variant: PromptVariant,
+    diagnostic: ModelInferenceDiagnostic,
 ) -> None:
     if action.action_type != ActionType.WRITE_REPORT or action.report is None:
         return
@@ -719,42 +789,36 @@ def _validate_write_report_problem_context(
     active_problem_id = variant.active_problem_id or (
         str(payload.get("active_problem_id")) if payload.get("active_problem_id") else None
     )
+    target_users = active_problem.get("target_users")
+    target_users = [str(item) for item in target_users] if isinstance(target_users, list) else []
+    canonical_domain = _canonical_problem_domain(active_problem)
+    diagnostic.trusted_problem_id = active_problem_id
+    diagnostic.returned_problem_id = action.report.problem_id
+    diagnostic.canonical_problem_domain = canonical_domain
+    diagnostic.canonical_target_users = target_users
     reason = ""
+    conflicting_terms: list[str] = []
+    mismatch_fields: list[str] = []
     if active_problem_id and action.report.problem_id != active_problem_id:
         reason = "report.problem_id must exactly match active_problem_id"
+        mismatch_fields = ["report.problem_id"]
     else:
-        report_text = " ".join(
-            [
-                action.report.title,
-                action.report.summary,
-                action.report.period_summary,
-                *[
-                    f"{section.heading} {section.content}"
-                    for section in action.report.sections
-                ],
-            ]
-        ).lower()
-        problem_text = json.dumps(active_problem, ensure_ascii=False).lower()
-        unrelated_terms = (
-            "게임",
-            "game",
-            "커뮤니티 선택",
-            "community selection",
-            "드롭다운",
-            "dropdown",
+        conflicting_terms, mismatch_fields = _conflicting_report_domain_terms(
+            action, active_problem
         )
-        leaked_terms = [
-            term
-            for term in unrelated_terms
-            if term in report_text and term not in problem_text
-        ]
-        if leaked_terms:
+        if conflicting_terms:
             reason = (
                 "report descriptive text shifted to an unrelated problem domain: "
-                + ", ".join(leaked_terms)
+                + ", ".join(conflicting_terms)
             )
     if not reason:
         return
+    diagnostic.conflicting_domain_terms = conflicting_terms
+    diagnostic.mismatch_fields = mismatch_fields
+    if variant.is_validation_correction:
+        diagnostic.correction_problem_context_mismatch = True
+    else:
+        diagnostic.initial_problem_context_mismatch = True
     errors = [
         PydanticErrorDiagnostic(
             path="report",
@@ -780,6 +844,10 @@ def _validate_write_report_problem_context(
             active_problem_id=active_problem_id,
             active_problem=active_problem,
             reason=reason,
+            canonical_domain=canonical_domain,
+            target_users=target_users,
+            conflicting_terms=conflicting_terms,
+            mismatch_fields=mismatch_fields,
         ),
         original_action_type=action.action_type,
     )
@@ -1146,6 +1214,16 @@ class RequestBudgetManager:
                     "dropdown domains unless they appear in active_problem."
                 ),
                 "active_problem": error.failed_action_fragment.get("active_problem", {}),
+                "canonical_problem_domain": error.failed_action_fragment.get(
+                    "canonical_problem_domain"
+                ),
+                "canonical_target_users": error.failed_action_fragment.get(
+                    "canonical_target_users", []
+                ),
+                "conflicting_domain_terms": error.failed_action_fragment.get(
+                    "conflicting_domain_terms", []
+                ),
+                "mismatch_fields": error.failed_action_fragment.get("mismatch_fields", []),
                 "action": error.failed_action_fragment.get("action", {}),
                 "validation_errors": safe_errors,
                 "schema_requirements": self._schema_requirements(ActionType.WRITE_REPORT),
@@ -1561,6 +1639,21 @@ class RequestBudgetManager:
                 variant,
                 level=level,
             ),
+            "trusted_problem_context": {
+                "problem_id": variant.active_problem_id or payload.get("active_problem_id"),
+                "domain": _canonical_problem_domain(
+                    payload.get("active_problem")
+                    if isinstance(payload.get("active_problem"), dict)
+                    else {}
+                ),
+                "model_must_not_rewrite": [
+                    "problem_id",
+                    "problem title",
+                    "problem statement",
+                    "target users",
+                    "domain",
+                ],
+            },
             "report_target": _short_value(payload.get("report_target") or payload, max_chars=limit),
             "allowed_evidence_ids": variant.allowed_evidence_ids,
             "required_evidence": _compact_evidence_records(
@@ -1575,7 +1668,7 @@ class RequestBudgetManager:
         if action_type == ActionType.CREATE_IDEA_CANDIDATES:
             return {
                 "action_type": action_type.value,
-                "forbidden_fields": ["files"],
+                "forbidden_fields": ["files", "state_transition"],
                 "candidate_count": {"min": 2, "max": 8},
                 "evidence_ids": "Use only allowed_evidence_ids.",
                 "idea_id": "lowercase id matching ^[a-z0-9][a-z0-9._:-]{0,127}$",
@@ -1595,14 +1688,16 @@ class RequestBudgetManager:
                     "evidence_ids",
                     "report",
                 ],
-                "report_fields": [
+                "required_report_fields": [
                     "problem_id",
                     "report_type",
-                    "title",
-                    "summary",
                     "period_summary",
                     "sections",
                     "evidence_ids",
+                ],
+                "optional_report_fields": [
+                    "findings",
+                    "recommendations",
                 ],
                 "forbidden_fields": ["files", "state_transition"],
                 "allowed_top_level_fields": sorted(WRITE_REPORT_RESPONSE_KEYS),
@@ -1644,13 +1739,11 @@ class RequestBudgetManager:
             or payload.get("action", {}).get("report", {}).get("problem_id")
         )
         problem_id = str(problem_id) if problem_id else "problem-context-required"
-        title = active_problem.get("title")
-        title = str(title) if title else "활성 문제 주간 보고서"
         evidence_ids = [item for item in allowed_evidence_ids if isinstance(item, str)][:3]
         return {
             "role": "researcher",
             "action_type": "write_report",
-            "title": f"{title} 주간 보고서"[:200],
+            "title": "주간 운영 보고서",
             "summary": "활성 문제와 검증된 근거를 바탕으로 이번 주 판단을 한국어로 요약합니다.",
             "rationale": "허용된 evidence ID와 저장된 문제 맥락만 사용해 보고서를 작성합니다.",
             "evidence_ids": evidence_ids,
@@ -1659,8 +1752,6 @@ class RequestBudgetManager:
             "report": {
                 "problem_id": problem_id,
                 "report_type": "weekly",
-                "title": f"{title} 주간 보고서"[:200],
-                "summary": "활성 문제의 현재 상태와 검증된 근거를 중심으로 운영 판단을 정리합니다.",
                 "period_summary": (
                     "이번 주에는 활성 문제의 근거와 다음 의사결정에 필요한 내용을 "
                     "검토했습니다."
@@ -1675,8 +1766,27 @@ class RequestBudgetManager:
                     }
                 ],
                 "evidence_ids": evidence_ids,
+                "findings": ["검증된 근거는 긴 목록 탐색의 반복 마찰을 보여줍니다."],
+                "recommendations": ["다음 실행에서는 목록 이동 부담을 줄이는 방안을 검토합니다."],
             },
-            "state_transition": None,
+        }
+
+    @staticmethod
+    def _write_report_preserved_fragment(payload: dict[str, Any]) -> dict[str, Any]:
+        action = payload.get("action")
+        action = action if isinstance(action, dict) else {}
+        report = action.get("report")
+        report = report if isinstance(report, dict) else {}
+        sections = report.get("sections")
+        return {
+            "action_type": action.get("action_type") or ActionType.WRITE_REPORT.value,
+            "evidence_ids": action.get("evidence_ids", []),
+            "report": {
+                "problem_id": report.get("problem_id"),
+                "report_type": report.get("report_type"),
+                "evidence_ids": report.get("evidence_ids", []),
+                "section_count": len(sections) if isinstance(sections, list) else 0,
+            },
         }
 
     def _write_report_correction_variant(
@@ -1689,8 +1799,16 @@ class RequestBudgetManager:
     ) -> PromptVariant:
         example = self._write_report_example(payload, allowed_evidence_ids)
         validation_errors = payload.get("validation_errors", [])
-        previous_action = payload.get("action", {})
+        previous_action = self._write_report_preserved_fragment(payload)
         active_problem = payload.get("active_problem", {})
+        active_problem = active_problem if isinstance(active_problem, dict) else {}
+        canonical_domain = _canonical_problem_domain(active_problem)
+        target_users = active_problem.get("target_users")
+        target_users = (
+            [str(item) for item in target_users] if isinstance(target_users, list) else []
+        )
+        conflicting_terms = payload.get("conflicting_domain_terms")
+        mismatch_fields = payload.get("mismatch_fields")
         lines = [
             "Correction context only. Do not copy these labels or context keys into the response.",
             "",
@@ -1710,13 +1828,31 @@ class RequestBudgetManager:
                 "shorten, prefix-match, or invent IDs."
             ),
             (
-                "All descriptive strings must be natural Korean. Keep ids, enum "
+            "All descriptive strings must be natural Korean. Keep ids, enum "
                 "values, action_type, and scores unchanged."
             ),
             "",
+            "Current problem definition is trusted and cannot be rewritten:",
             f"Active problem ID: {payload.get('active_problem_id') or variant.active_problem_id}",
+            f"Canonical domain: {canonical_domain or '저장된 문제 레코드의 도메인'}",
+            "Canonical target users: " + (", ".join(target_users) or "저장된 대상 사용자"),
+            (
+                "Forbidden domain shifts: 게임 탐색, 커뮤니티 선택, "
+                "커뮤니티 드롭다운, 다른 제품/산업/사용자 문제"
+            ),
+            "Do not reuse previous free-form text from mismatch fields.",
             "Allowed evidence IDs:",
             *[f"- {item}" for item in allowed_evidence_ids],
+            "",
+            "Previous mismatch diagnostics:",
+            json.dumps(
+                {
+                    "conflicting_domain_terms": conflicting_terms or [],
+                    "mismatch_fields": mismatch_fields or [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
             "",
             "Active problem context:",
             json.dumps(_short_value(active_problem, max_chars=1200), ensure_ascii=False, indent=2),
@@ -1724,7 +1860,10 @@ class RequestBudgetManager:
             "Previous validation errors:",
             json.dumps(validation_errors, ensure_ascii=False, indent=2),
             "",
-            "Previous invalid action fragment:",
+            (
+                "Previous action structure to preserve. Free-form title, summary, "
+                "rationale, and mismatched section text were removed:"
+            ),
             json.dumps(_short_value(previous_action, max_chars=1800), ensure_ascii=False, indent=2),
             "",
             "Valid response example using the current context:",
@@ -1903,6 +2042,7 @@ def _compact_problem(
             "title": None,
             "description": None,
             "target_users": [],
+            "domain": None,
             "evidence_ids": variant.allowed_evidence_ids,
         }
     return {
@@ -1910,6 +2050,7 @@ def _compact_problem(
         "title": _short_value(problem.get("title"), max_chars=140),
         "description": _short_value(problem.get("description"), max_chars=limit),
         "target_users": _short_value(problem.get("target_users", []), max_chars=140),
+        "domain": problem.get("domain"),
         "evidence_ids": problem.get("evidence_ids") or variant.allowed_evidence_ids,
         "validation_result": _short_value(
             problem.get("validation_result", {}),
@@ -2453,7 +2594,7 @@ class GitHubModelsClient:
                     response_model=active_variant.response_model,
                 )
                 _validate_action_allowed_evidence(action, active_variant, diagnostic)
-                _validate_write_report_problem_context(action, active_variant)
+                _validate_write_report_problem_context(action, active_variant, diagnostic)
             except ModelPipelineError as exc:
                 if request_id is not None:
                     self.limiter.mark_response_validation_failed(request_id)

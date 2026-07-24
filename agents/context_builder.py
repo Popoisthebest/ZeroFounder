@@ -140,6 +140,15 @@ def _active_problem_context(
     return active_problem_id, problem, list(problem.evidence_ids)
 
 
+def _derived_problem_domain(problem: ProblemCandidate | None) -> str | None:
+    if problem is None:
+        return None
+    text = " ".join([problem.title, problem.description, *problem.target_users]).lower()
+    if any(term in text for term in ("재고", "inventory", "warehouse", "창고")):
+        return "재고 관리 시스템"
+    return None
+
+
 def _idea_candidates_for_problem(root: Path, active_problem_id: str | None) -> list[dict[str, Any]]:
     if not active_problem_id:
         return []
@@ -367,6 +376,7 @@ def _distribution_check_context(
                 "title": problem.title,
                 "description": problem.description[: (280 if compact else 800)],
                 "target_users": problem.target_users,
+                "domain": _derived_problem_domain(problem),
                 "evidence_ids": problem.evidence_ids,
             }
             if problem
