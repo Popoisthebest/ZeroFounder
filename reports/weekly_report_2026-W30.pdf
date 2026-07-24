@@ -1,0 +1,65 @@
+%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj
+4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+5 0 obj << /Length 2486 >> stream
+BT
+/F1 10 Tf
+50 780 Td
+(Problem ID: problem-navigation-inefficiency) Tj
+0 -14 Td
+(Problem title: Inefficient List Navigation in Inventory Systems) Tj
+0 -14 Td
+(Problem domain: 재고 관리 시스템) Tj
+0 -14 Td
+(Target users: Inventory managers, Warehouse operators) Tj
+0 -14 Td
+(Problem description: Users experience inefficiency when navigating through lists in inventory systems, particularly when trying to move by specific increments like 5 or 10 lines.) Tj
+0 -14 Td
+(Report period: 2026-W30) Tj
+0 -14 Td
+(Report type: weekly) Tj
+0 -14 Td
+(Period analysis: 이번 주에는 재고 시스템 목록 탐색 효율성 문제에 대한 사용자 피드백을 분석하고, 개선 방안을 모색했습니다. 주요 이슈는 대량 항목 처리 시 탐색 비효율성으로, 이를 해결하기 위한 기능 제안이 이루어졌습니다.) Tj
+0 -14 Td
+(문제 설명) Tj
+0 -14 Td
+(재고 관리 시스템에서 사용자는 종종 대량 항목을 처리하며, 목록을 탐색할 때 5 또는 10줄 단위로 이동하는 기능이 필요합니다. 현재 시스템은 이러한 기능이 없어 사용자가 수동으로 항목을 찾아야 하는 불편함이 있습니다. 이로 인해 작업 시간이 증가하고, 사용자 경험이 저하되고 있습니다.) Tj
+0 -14 Td
+(사용자 피드백) Tj
+0 -14 Td
+(사용자들은 목록 탐색 시 특정 단위로 이동할 수 있는 기능이 필요하다고 피드백했습니다. 특히, 대량 항목을 처리할 때 이 기능이 필수적이라고 강조했습니다. 또한, 현재 시스템의 탐색 방식이 비효율적이며, 이를 개선해 달라는 요청이 있었습니다.) Tj
+0 -14 Td
+(제안 기능) Tj
+0 -14 Td
+(목록 탐색 시 5 또는 10줄 단위로 이동할 수 있는 기능을 추가할 것을 제안합니다. 이를 통해 사용자는 대량 항목을 더 빠르게 탐색할 수 있으며, 작업 효율성이 향상될 것입니다. 또한, 사용자가 원하는 항목을 더 쉽게 찾을 수 있도록 탐색 방식을 개선할 필요가 있습니다.) Tj
+0 -14 Td
+(Findings) Tj
+0 -14 Td
+(대량 항목 처리 시 목록 탐색 비효율성 문제 확인) Tj
+0 -14 Td
+(사용자 피드백을 통해 기능 개선 필요성 파악) Tj
+0 -14 Td
+(Recommendations) Tj
+0 -14 Td
+(목록 탐색 시 단위 이동 기능 추가) Tj
+0 -14 Td
+(탐색 방식 개선으로 사용자 경험 향상) Tj
+0 -14 Td
+(Evidence IDs: signal-34ca38432fa50f4d, signal-d38b3b6e3daaa7fc) Tj
+0 -14 Td
+ET
+endstream endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+2849
+%%EOF
