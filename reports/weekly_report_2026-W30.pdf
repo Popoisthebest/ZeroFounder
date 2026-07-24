@@ -1,0 +1,53 @@
+%PDF-1.4
+1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj
+2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj
+3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj
+4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj
+5 0 obj << /Length 1790 >> stream
+BT
+/F1 10 Tf
+50 780 Td
+(Problem ID: problem-navigation-inefficiency) Tj
+0 -14 Td
+(Problem title: Inefficient List Navigation in Inventory Systems) Tj
+0 -14 Td
+(Target users: Inventory managers, Warehouse operators) Tj
+0 -14 Td
+(Problem description: Users experience inefficiency when navigating through lists in inventory systems, particularly when trying to move by specific increments like 5 or 10 lines.) Tj
+0 -14 Td
+(Report title: 재고 시스템 목록 탐색 효율성 개선 보고서) Tj
+0 -14 Td
+(Report period: 2026-W30) Tj
+0 -14 Td
+(재고 시스템에서 목록 탐색 시 발생하는 비효율성을 분석하고, 이를 개선하기 위한 방안을 제시합니다.) Tj
+0 -14 Td
+(이번 주에는 재고 시스템 목록 탐색과 관련된 사용자 피드백을 수집하고, 주요 문제점을 파악했습니다.) Tj
+0 -14 Td
+(문제 정의) Tj
+0 -14 Td
+(재고 시스템에서 목록을 탐색할 때, 특히 5 또는 10줄 단위로 이동할 때 사용자가 겪는 비효율성을 해결해야 합니다. 이는 재고 관리자와 창고 운영자의 업무 효율성에 직접적인 영향을 미칩니다.) Tj
+0 -14 Td
+(사용자 피드백) Tj
+0 -14 Td
+(사용자들은 목록을 탐색할 때, 특정 항목을 찾기 위해 반복적으로 스크롤해야 하는 불편함을 호소했습니다. 특히 대량의 항목을 처리할 때 이 문제가 두드러집니다.) Tj
+0 -14 Td
+(개선 방안) Tj
+0 -14 Td
+(목록 탐색 시 5 또는 10줄 단위로 이동할 수 있는 기능을 추가하여 사용자의 편의성을 높일 수 있습니다. 또한, 검색 기능을 개선하여 원하는 항목을 빠르게 찾을 수 있도록 지원할 계획입니다.) Tj
+0 -14 Td
+(Evidence IDs: signal-34ca38432fa50f4d, signal-d38b3b6e3daaa7fc) Tj
+0 -14 Td
+ET
+endstream endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000311 00000 n 
+trailer << /Size 6 /Root 1 0 R >>
+startxref
+2153
+%%EOF
