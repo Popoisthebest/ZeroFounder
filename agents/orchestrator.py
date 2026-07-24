@@ -730,6 +730,45 @@ def _rejected_outcome(
     )
 
 
+def _collect_action_evidence_ids(action: ActionEnvelope) -> list[str]:
+    values: list[str] = []
+    values.extend(action.evidence_ids)
+    if action.report is not None:
+        values.extend(action.report.evidence_ids)
+    if action.idea_candidates:
+        for candidate in action.idea_candidates:
+            values.extend(candidate.evidence_ids)
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _allowed_evidence_ids_for_state(root: Path, state: CompanyState) -> list[str]:
+    if not state.active_problem_id:
+        return []
+    problem_path = root / f"research/problems/{state.active_problem_id}.json"
+    if not problem_path.exists():
+        return []
+    try:
+        payload = json.loads(problem_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    evidence_ids = payload.get("evidence_ids")
+    if not isinstance(evidence_ids, list):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in evidence_ids:
+        if isinstance(value, str) and value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
 def validate_model_action(
     root: Path,
     state: CompanyState,
@@ -768,6 +807,55 @@ def validate_model_action(
             state,
             code=ActionRejectionCode.INVALID_STATE_TRANSITION,
             reason="action requested a state transition that is not allowed",
+            original_action_type=action.action_type,
+            inference=inference,
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+        )
+    allowed_context_ids = _allowed_evidence_ids_for_state(root, state)
+    returned_context_ids = _collect_action_evidence_ids(action)
+    malformed_context_ids = [
+        evidence_id
+        for evidence_id in returned_context_ids
+        if allowed_context_ids and evidence_id not in allowed_context_ids
+    ]
+    if inference is None:
+        inference = ModelInferenceDiagnostic()
+    inference = inference.model_copy(
+        update={
+            "allowed_evidence_ids": allowed_context_ids or inference.allowed_evidence_ids,
+            "returned_evidence_ids": returned_context_ids,
+            "malformed_evidence_ids": (
+                malformed_context_ids or inference.malformed_evidence_ids
+            ),
+            "evidence_ids_preserved_during_compaction": True,
+        }
+    )
+    if malformed_context_ids:
+        if action.action_type == ActionType.CREATE_IDEA_CANDIDATES and action.idea_candidates:
+            allowed_set = set(allowed_context_ids)
+            rejected_count = sum(
+                1
+                for candidate in action.idea_candidates
+                if not set(candidate.evidence_ids).issubset(allowed_set)
+            )
+            inference = inference.model_copy(
+                update={
+                    "generated_idea_candidate_count": len(action.idea_candidates),
+                    "accepted_idea_candidate_count": 0,
+                    "rejected_idea_candidate_count": rejected_count,
+                    "idea_candidate_ids": [
+                        candidate.idea_id for candidate in action.idea_candidates
+                    ],
+                }
+            )
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
+            reason=(
+                "evidence_reference_rejected: evidence_ids must exactly match the "
+                "active problem allowed evidence IDs; partial or prefix IDs are invalid: "
+                f"{', '.join(malformed_context_ids)}"
+            ),
             original_action_type=action.action_type,
             inference=inference,
             failure_stage=FailureStage.LIFECYCLE_VALIDATION,
@@ -1084,6 +1172,7 @@ def run_model(
                 "candidate_evidence_id_count": context.candidate_evidence_id_count,
                 "resolved_evidence_count": context.resolved_evidence_count,
                 "unresolved_evidence_ids": context.unresolved_evidence_ids or [],
+                "allowed_evidence_ids": context.allowed_evidence_ids or [],
                 "new_signal_count": context.new_signal_count,
                 "problem_loaded": context.problem_loaded,
                 "problem_evidence_count": context.problem_evidence_count,

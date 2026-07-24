@@ -18,6 +18,7 @@ from tests.e2e.conftest import (
     active_problem_payload,
     idea_candidate,
     run_git,
+    signal_record,
     write_json,
 )
 
@@ -665,4 +666,109 @@ def test_e2e_distribution_check_write_report_materializes_and_blocks_duplicate(
     assert decision["skip_reason"] == "idempotency_key_already_processed"
     assert decision["artifact_path"] == expected_report
     assert decision["operation_key"]
+    assert step.new_state.lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK
+
+
+def test_e2e_distribution_check_write_report_corrects_truncated_evidence_ids(
+    e2e_harness,
+    monkeypatch,
+) -> None:
+    full_ids = ("signal-d38b3b6e3daaa7fc", "signal-34ca38432fa50f4d")
+    truncated_ids = ("signal-d38b3b6e3da", "signal-34ca38432fa")
+    write_json(
+        e2e_harness.repo / f"research/problems/{PROBLEM_ID}.json",
+        {**active_problem_payload(), "evidence_ids": list(full_ids)},
+    )
+    (e2e_harness.repo / "signals/raw/long-evidence.jsonl").write_text(
+        "\n".join(
+            json.dumps(signal_record(signal_id, index))
+            for index, signal_id in enumerate(full_ids, 1)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    e2e_harness.write_state(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK,
+            active_problem_id=PROBLEM_ID,
+        )
+    )
+    run_git(e2e_harness.repo, "add", "company/state.json", "research/problems", "signals/raw")
+    run_git(e2e_harness.repo, "commit", "-m", "prepare long evidence report fixture")
+
+    invalid = _write_report_action()
+    invalid["evidence_ids"] = list(truncated_ids)
+    invalid["report"]["evidence_ids"] = list(truncated_ids)
+    valid = _write_report_action()
+    valid["evidence_ids"] = list(full_ids)
+    valid["report"]["evidence_ids"] = list(full_ids)
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else valid
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    class FakeGitHubModelsClient(GitHubModelsClient):
+        def __init__(self, token: str, limiter: UsageLimiter) -> None:
+            super().__init__(
+                token,
+                limiter,
+                transport=httpx.MockTransport(handler),
+                sleep=lambda _: None,
+            )
+
+        def catalog(self) -> list[dict[str, object]]:
+            return [
+                {
+                    "id": "cohere/cohere-command-a",
+                    "supported_input_modalities": ["text"],
+                    "supported_output_modalities": ["text"],
+                    "supported_endpoints": ["inference/chat/completions"],
+                    "limits": {"context_window": 131072},
+                }
+            ]
+
+    monkeypatch.setenv("GITHUB_TOKEN", "fake-token")
+    monkeypatch.setenv("GITHUB_MODEL", "")
+    monkeypatch.setenv("GITHUB_FALLBACK_MODELS", "")
+    monkeypatch.setenv("MAX_MODEL_INPUT_TOKENS", "6000")
+    monkeypatch.setattr(orchestrator, "GitHubModelsClient", FakeGitHubModelsClient)
+
+    outcome = orchestrator.run_model(
+        e2e_harness.repo,
+        e2e_harness.manual_decision("write-report-long-ids"),
+    )
+
+    assert outcome.diagnostic.accepted
+    assert outcome.action.action_type == ActionType.WRITE_REPORT
+    assert outcome.action.evidence_ids == list(full_ids)
+    assert outcome.action.report is not None
+    assert outcome.action.report.evidence_ids == list(full_ids)
+    assert outcome.diagnostic.inference.validation_correction_attempted
+    assert outcome.diagnostic.inference.malformed_evidence_ids == list(truncated_ids)
+    assert outcome.diagnostic.inference.allowed_evidence_ids == list(full_ids)
+    assert len(requests) == 2
+    initial_prompt = "\n".join(message["content"] for message in requests[0]["messages"])
+    for evidence_id in full_ids:
+        assert evidence_id in initial_prompt
+
+    run_id = "2003"
+    action_path = e2e_harness.write_model_action(outcome.action, run_id)
+    preflight_path = e2e_harness.write_preflight(
+        e2e_harness.manual_decision(run_id),
+        run_id,
+    )
+    step = e2e_harness.apply_commit_validate(
+        action_path=action_path,
+        preflight_path=preflight_path,
+        run_id=run_id,
+    )
+
+    expected_report = report_artifact_path(report_period(e2e_harness.repo))
+    assert step.changed_files == ["company/checkpoints.json", expected_report]
+    assert step.action.files[0].path == expected_report
+    assert step.validation.artifact_path == expected_report
+    assert step.quality_result["artifact_path"] == expected_report
+    assert (e2e_harness.repo / expected_report).read_bytes().startswith(b"%PDF-")
     assert step.new_state.lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK

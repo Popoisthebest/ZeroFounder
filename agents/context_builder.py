@@ -7,6 +7,7 @@ from typing import Any
 
 from agents.safety import load_evidence_index
 from agents.schemas import (
+    ActionType,
     CompanyState,
     IdeaCandidate,
     LifecycleStage,
@@ -331,6 +332,74 @@ def _idea_evaluation_context(
     )
 
 
+def _distribution_check_context(
+    root: Path,
+    *,
+    compact: bool,
+    max_chars: int,
+) -> ContextBundle:
+    active_problem_id, problem, candidate_evidence_ids = _active_problem_context(root)
+    candidate_evidence_ids = _ordered_unique(candidate_evidence_ids)
+    evidence_index = load_evidence_index(root)
+    included_records = [
+        _signal_payload(evidence_id, evidence_index[evidence_id], compact=compact)
+        for evidence_id in candidate_evidence_ids
+        if evidence_id in evidence_index
+    ]
+    unresolved_ids = [
+        evidence_id for evidence_id in candidate_evidence_ids if evidence_id not in evidence_index
+    ]
+    recent_idea_evaluations = _recent_json_records(
+        root / "ideas/evaluations",
+        limit=3 if compact else 5,
+    )
+    payload: dict[str, Any] = {
+        "lifecycle_stage": LifecycleStage.DISTRIBUTION_CHECK.value,
+        "required_action": ActionType.WRITE_REPORT.value,
+        "mission": _read(root / "company/mission.md", 900 if compact else 1600),
+        "safety_constraints": _read(
+            root / "company/constitution.md", 700 if compact else 1200
+        ),
+        "active_problem_id": active_problem_id,
+        "active_problem": (
+            {
+                "problem_id": problem.problem_id,
+                "title": problem.title,
+                "description": problem.description[: (280 if compact else 800)],
+                "target_users": problem.target_users,
+                "evidence_ids": problem.evidence_ids,
+            }
+            if problem
+            else None
+        ),
+        "allowed_evidence_ids": candidate_evidence_ids,
+        "included_signal_records": included_records,
+        "unresolved_evidence_ids": unresolved_ids,
+        "recent_idea_evaluations": recent_idea_evaluations,
+        "report_target": {
+            "type": "weekly",
+            "instruction": (
+                "Write report content only. Trusted repository code will create the PDF."
+            ),
+        },
+    }
+    return ContextBundle(
+        content=_fit_payload(payload, max_chars),
+        included_signal_count=len(included_records),
+        excluded_signal_count=0,
+        active_problem_id=active_problem_id,
+        candidate_evidence_id_count=len(candidate_evidence_ids),
+        resolved_evidence_count=len(included_records),
+        unresolved_evidence_ids=unresolved_ids,
+        new_signal_count=0,
+        problem_loaded=problem is not None,
+        problem_evidence_count=len(candidate_evidence_ids),
+        idea_context_ready=bool(candidate_evidence_ids)
+        and len(included_records) == len(candidate_evidence_ids),
+        allowed_evidence_ids=candidate_evidence_ids,
+    )
+
+
 def _general_context(root: Path, *, compact: bool, max_chars: int) -> ContextBundle:
     fixed_names = [
         "mission",
@@ -388,6 +457,12 @@ def build_context_bundle(
         )
     if lifecycle_stage == LifecycleStage.IDEA_EVALUATION:
         return _idea_evaluation_context(
+            root,
+            compact=compact,
+            max_chars=configured_max,
+        )
+    if lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK:
+        return _distribution_check_context(
             root,
             compact=compact,
             max_chars=configured_max,

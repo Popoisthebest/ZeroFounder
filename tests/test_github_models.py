@@ -738,6 +738,124 @@ def test_evaluate_ideas_language_mismatch_correction_preserves_ids_and_transitio
     assert json.dumps(ENGLISH_EVALUATE_IDEAS) not in correction_text
 
 
+def test_write_report_truncated_evidence_ids_trigger_correction_and_preserve_full_ids():
+    full_ids = ["signal-d38b3b6e3daaa7fc", "signal-34ca38432fa50f4d"]
+    truncated_ids = ["signal-d38b3b6e3da", "signal-34ca38432fa"]
+    valid = {
+        "role": "researcher",
+        "action_type": "write_report",
+        "title": "보고서 작성",
+        "summary": "검증된 근거 식별자를 보존한 보고서를 작성합니다.",
+        "rationale": "허용된 전체 근거 ID만 사용해야 하므로 재작성 결과를 검증합니다.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": full_ids,
+        "report": {
+            "report_type": "weekly",
+            "title": "주간 운영 보고서",
+            "summary": "검증된 근거 식별자를 보존한 주간 운영 보고서를 작성합니다.",
+            "period_summary": "긴 근거 ID가 축약 과정과 correction 과정에서 보존됩니다.",
+            "sections": [
+                {
+                    "heading": "핵심 판단",
+                    "content": "허용된 전체 근거 ID와 연결된 판단만 보고서에 포함합니다.",
+                }
+            ],
+            "evidence_ids": full_ids,
+        },
+    }
+    invalid = json.loads(json.dumps(valid))
+    invalid["evidence_ids"] = truncated_ids
+    invalid["report"]["evidence_ids"] = truncated_ids
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else valid
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    context = {
+        "required_action": "write_report",
+        "lifecycle_stage": "DISTRIBUTION_CHECK",
+        "active_problem_id": "problem-navigation-inefficiency",
+        "allowed_evidence_ids": full_ids,
+        "included_signal_records": [
+            {
+                "signal_id": full_ids[0],
+                "title": "긴 근거 식별자 보존",
+                "summary": "근거 요약입니다. " + "세부 내용 " * 900,
+            },
+            {
+                "signal_id": full_ids[1],
+                "title": "두 번째 긴 근거 식별자 보존",
+                "summary": "두 번째 근거 요약입니다. " + "세부 내용 " * 900,
+            },
+        ],
+        "report_target": "주간 보고서 " * 900,
+        "mission": "mission " * 900,
+        "safety_constraints": "safety " * 900,
+    }
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {"role": "user", "content": json.dumps(context)},
+        ],
+        active_problem_id="problem-navigation-inefficiency",
+        allowed_evidence_ids=full_ids,
+        included_signal_count=2,
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.action.action_type == ActionType.WRITE_REPORT
+    assert result.action.evidence_ids == full_ids
+    assert result.action.report is not None
+    assert result.action.report.evidence_ids == full_ids
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.malformed_evidence_ids == truncated_ids
+    assert result.diagnostic.allowed_evidence_ids == full_ids
+    assert result.diagnostic.evidence_ids_preserved_during_compaction
+    assert len(requests) == 2
+    initial_prompt = "\n".join(item["content"] for item in requests[0]["messages"])
+    correction_prompt = "\n".join(item["content"] for item in requests[1]["messages"])
+    for evidence_id in full_ids:
+        assert evidence_id in initial_prompt
+        assert evidence_id in correction_prompt
+    assert '"id":"' + full_ids[0] in initial_prompt
+    assert "prefix-match" in correction_prompt
+
+
+def test_short_value_preserves_opaque_identifiers_for_all_action_contexts():
+    payload = {
+        "evidence_id": "signal-d38b3b6e3daaa7fc",
+        "evidence_ids": ["signal-d38b3b6e3daaa7fc", "signal-34ca38432fa50f4d"],
+        "signal_id": "signal-d38b3b6e3daaa7fc",
+        "idea_id": "idea-navigation-return-helper-001",
+        "problem_id": "problem-navigation-inefficiency",
+        "operation_key": (
+            "DISTRIBUTION_CHECK|write_report|weekly|2026-W30|"
+            "problem-navigation-inefficiency"
+        ),
+        "lifecycle_stage": "DISTRIBUTION_CHECK",
+        "path": "reports/weekly_report_2026-W30.pdf",
+        "summary": "설명은 축약 대상입니다." * 20,
+    }
+
+    compacted = github_models._short_value(payload, max_chars=12)
+
+    assert compacted["evidence_id"] == payload["evidence_id"]
+    assert compacted["evidence_ids"] == payload["evidence_ids"]
+    assert compacted["signal_id"] == payload["signal_id"]
+    assert compacted["idea_id"] == payload["idea_id"]
+    assert compacted["problem_id"] == payload["problem_id"]
+    assert compacted["operation_key"] == payload["operation_key"]
+    assert compacted["lifecycle_stage"] == payload["lifecycle_stage"]
+    assert compacted["path"] == payload["path"]
+    assert len(compacted["summary"]) <= 6
+
+
 def test_initial_idea_context_compacts_below_reserved_budget_before_http():
     requests: list[dict] = []
     active_problem = {

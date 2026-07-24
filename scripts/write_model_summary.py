@@ -111,6 +111,13 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("problem_loaded", str(inference.problem_loaded).lower()),
         ("problem_evidence_count", inference.problem_evidence_count),
         ("resolved_evidence_count", inference.resolved_evidence_count),
+        ("allowed_evidence_ids", ", ".join(inference.allowed_evidence_ids) or "none"),
+        ("returned_evidence_ids", ", ".join(inference.returned_evidence_ids) or "none"),
+        ("malformed_evidence_ids", ", ".join(inference.malformed_evidence_ids) or "none"),
+        (
+            "evidence_ids_preserved_during_compaction",
+            str(inference.evidence_ids_preserved_during_compaction).lower(),
+        ),
         (
             "existing_idea_candidate_count",
             inference.existing_idea_candidate_count,

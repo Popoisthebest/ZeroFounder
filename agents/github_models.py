@@ -43,6 +43,27 @@ TOKEN_PATTERNS = (
     re.compile(r"github_pat_[A-Za-z0-9_]{20,}"),
     re.compile(r"Bearer\s+[A-Za-z0-9._-]+", re.I),
 )
+OPAQUE_IDENTIFIER_KEYS = {
+    "evidence_id",
+    "evidence_ids",
+    "signal_id",
+    "signal_ids",
+    "idea_id",
+    "idea_ids",
+    "idea_candidate_id",
+    "idea_candidate_ids",
+    "problem_id",
+    "active_problem_id",
+    "operation_key",
+    "lifecycle_stage",
+    "from",
+    "to",
+    "from_stage",
+    "to_stage",
+    "path",
+    "file_path",
+    "artifact_path",
+}
 STRUCTURED_OUTPUT_CAPABILITIES = {
     "structured-output",
     "structured-outputs",
@@ -241,6 +262,18 @@ def mask_secrets(value: str) -> str:
     return value
 
 
+def _is_opaque_identifier_key(key: str | None) -> bool:
+    if key is None:
+        return False
+    normalized = key.lower()
+    return (
+        normalized in OPAQUE_IDENTIFIER_KEYS
+        or normalized.endswith("_id")
+        or normalized.endswith("_ids")
+        or normalized.endswith("_path")
+    )
+
+
 def strip_markdown_fence(value: str) -> str:
     match = FENCE.fullmatch(value)
     return match.group(1).strip() if match else value.strip()
@@ -390,15 +423,25 @@ def _validation_error_details(
     return details[:50]
 
 
-def _short_value(value: Any, *, max_chars: int = 500) -> Any:
+def _short_value(value: Any, *, max_chars: int = 500, key: str | None = None) -> Any:
     if isinstance(value, str):
-        return mask_secrets(value)[:max_chars]
+        masked = mask_secrets(value)
+        return masked if _is_opaque_identifier_key(key) else masked[:max_chars]
     if isinstance(value, list):
+        if _is_opaque_identifier_key(key):
+            return [
+                mask_secrets(item) if isinstance(item, str) else item
+                for item in value
+            ]
         return [_short_value(item, max_chars=max_chars // 2) for item in value[:8]]
     if isinstance(value, dict):
         return {
-            str(key)[:80]: _short_value(item, max_chars=max_chars // 2)
-            for key, item in list(value.items())[:20]
+            str(item_key)[:80]: _short_value(
+                item,
+                max_chars=max_chars // 2,
+                key=str(item_key),
+            )
+            for item_key, item in list(value.items())[:20]
         }
     return value
 
@@ -454,6 +497,85 @@ def _language_failed_fragment(
         "mismatch_paths": [item.path for item in mismatches],
         "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1200),
     }
+
+
+def _collect_returned_evidence_ids(action: ActionEnvelope) -> list[str]:
+    values: list[str] = []
+    values.extend(action.evidence_ids)
+    if action.report is not None:
+        values.extend(action.report.evidence_ids)
+    if action.idea_candidates:
+        for candidate in action.idea_candidates:
+            values.extend(candidate.evidence_ids)
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value not in seen:
+            result.append(value)
+            seen.add(value)
+    return result
+
+
+def _evidence_failed_fragment(
+    action: ActionEnvelope,
+    *,
+    allowed_evidence_ids: list[str],
+    returned_evidence_ids: list[str],
+    malformed_evidence_ids: list[str],
+) -> dict[str, Any]:
+    payload = {
+        "action_type": action.action_type.value,
+        "active_problem_id": None,
+        "allowed_evidence_ids": allowed_evidence_ids,
+        "returned_evidence_ids": returned_evidence_ids,
+        "malformed_evidence_ids": malformed_evidence_ids,
+        "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1600),
+    }
+    return payload
+
+
+def _validate_action_allowed_evidence(
+    action: ActionEnvelope,
+    variant: PromptVariant,
+    diagnostic: ModelInferenceDiagnostic,
+) -> None:
+    allowed = list(dict.fromkeys(variant.allowed_evidence_ids or []))
+    returned = _collect_returned_evidence_ids(action)
+    malformed = [value for value in returned if allowed and value not in allowed]
+    diagnostic.allowed_evidence_ids = allowed
+    diagnostic.returned_evidence_ids = returned
+    if malformed or not diagnostic.malformed_evidence_ids:
+        diagnostic.malformed_evidence_ids = malformed
+    if not malformed:
+        return
+    errors = [
+        PydanticErrorDiagnostic(
+            path="evidence_ids",
+            error_type=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED.value,
+            message=(
+                "evidence_ids must exactly match one of the allowed evidence IDs; "
+                "partial, prefix, or fuzzy matches are not allowed"
+            ),
+            validator_name="allowed_evidence_ids_exact_match",
+            failure_field_path="evidence_ids",
+        )
+    ]
+    raise ModelPipelineError(
+        FailureStage.SCHEMA_VALIDATION,
+        "evidence_reference_rejected: returned evidence_ids are outside the allowed context",
+        code=ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED,
+        retryable=True,
+        fallback_eligible=True,
+        validation_paths=[item.path for item in errors],
+        validation_errors=errors,
+        failed_action_fragment=_evidence_failed_fragment(
+            action,
+            allowed_evidence_ids=allowed,
+            returned_evidence_ids=returned,
+            malformed_evidence_ids=malformed,
+        ),
+        original_action_type=action.action_type,
+    )
 
 
 def _validate_action_language(action: ActionEnvelope) -> None:
@@ -771,6 +893,37 @@ class RequestBudgetManager:
                 response_model=self.PROFILES[action_type].response_model,
                 allowed_evidence_ids=variant.allowed_evidence_ids,
             )
+        if (
+            error.code == ActionRejectionCode.EVIDENCE_REFERENCE_REJECTED
+            and action_type in self.PROFILES
+        ):
+            correction_payload = {
+                "action_type": action_type.value,
+                "active_problem_id": variant.active_problem_id,
+                "allowed_evidence_ids": variant.allowed_evidence_ids,
+                "returned_evidence_ids": error.failed_action_fragment.get(
+                    "returned_evidence_ids", []
+                ),
+                "malformed_evidence_ids": error.failed_action_fragment.get(
+                    "malformed_evidence_ids", []
+                ),
+                "instruction": (
+                    "Rewrite only evidence_id/evidence_ids fields so every returned ID "
+                    "is an exact member of allowed_evidence_ids. Do not infer, prefix-match, "
+                    "or invent IDs. Preserve report content, scores, state_transition, and "
+                    "other opaque identifiers."
+                ),
+                "action": error.failed_action_fragment.get("action", {}),
+                "validation_errors": safe_errors,
+                "schema_requirements": self._schema_requirements(action_type),
+            }
+            return self._correction_variant(
+                variant,
+                action_type=action_type,
+                payload=correction_payload,
+                response_model=self.PROFILES[action_type].response_model,
+                allowed_evidence_ids=variant.allowed_evidence_ids,
+            )
         if action_type == ActionType.CREATE_IDEA_CANDIDATES:
             allowed_evidence_ids = variant.allowed_evidence_ids or [
                 str(item)
@@ -780,7 +933,7 @@ class RequestBudgetManager:
             correction_payload = {
                 "action_type": ActionType.CREATE_IDEA_CANDIDATES.value,
                 "active_problem_id": variant.active_problem_id,
-                "allowed_evidence_ids": allowed_evidence_ids[:20],
+                "allowed_evidence_ids": allowed_evidence_ids,
                 "failed_candidates": error.failed_action_fragment.get(
                     "failed_candidates", []
                 ),
@@ -794,7 +947,7 @@ class RequestBudgetManager:
                 action_type=ActionType.CREATE_IDEA_CANDIDATES,
                 payload=correction_payload,
                 response_model=CreateIdeaCandidatesCorrectionEnvelope,
-                allowed_evidence_ids=allowed_evidence_ids[:20],
+                allowed_evidence_ids=allowed_evidence_ids,
             )
 
         target_action = (
@@ -804,7 +957,7 @@ class RequestBudgetManager:
             correction_payload = {
                 "action_type": target_action.value,
                 "active_problem_id": variant.active_problem_id,
-                "allowed_evidence_ids": variant.allowed_evidence_ids[:20],
+                "allowed_evidence_ids": variant.allowed_evidence_ids,
                 "validation_errors": safe_errors,
                 "schema_requirements": self._schema_requirements(target_action),
             }
@@ -1092,7 +1245,7 @@ class RequestBudgetManager:
                 variant.allowed_evidence_ids,
                 limit=limit,
             ),
-            "allowed_evidence_ids": variant.allowed_evidence_ids[:20],
+            "allowed_evidence_ids": variant.allowed_evidence_ids,
             "output_rules": {
                 "candidate_count": "2..8",
                 "forbidden_fields": ["files", "state_transition"],
@@ -1171,6 +1324,7 @@ class RequestBudgetManager:
             "required_action": ActionType.WRITE_REPORT.value,
             "active_problem_id": variant.active_problem_id or payload.get("active_problem_id"),
             "report_target": _short_value(payload.get("report_target") or payload, max_chars=limit),
+            "allowed_evidence_ids": variant.allowed_evidence_ids,
             "required_evidence": _compact_evidence_records(
                 payload.get("included_signal_records", []),
                 variant.allowed_evidence_ids,
@@ -1286,7 +1440,7 @@ class RequestBudgetManager:
         minimal_payload = {
             "action_type": user_payload.get("action_type"),
             "active_problem_id": user_payload.get("active_problem_id"),
-            "allowed_evidence_ids": user_payload.get("allowed_evidence_ids", [])[:20],
+            "allowed_evidence_ids": user_payload.get("allowed_evidence_ids", []),
             "validation_errors": user_payload.get("validation_errors", [])[:20],
             "schema_requirements": user_payload.get("schema_requirements", {}),
         }
@@ -1406,9 +1560,11 @@ def _compact_evidence_records(
             if not isinstance(record, dict):
                 continue
             evidence_id = record.get("signal_id") or record.get("evidence_id") or record.get("id")
+            if evidence_id is not None and not isinstance(evidence_id, str):
+                evidence_id = str(evidence_id)
             evidence.append(
                 {
-                    "evidence_id": evidence_id,
+                    "id": evidence_id,
                     "title": _short_value(
                         record.get("title")
                         or record.get("title_or_summary")
@@ -1420,7 +1576,7 @@ def _compact_evidence_records(
             )
     if evidence:
         return evidence
-    return [{"evidence_id": evidence_id, "summary": None} for evidence_id in fallback_ids[:8]]
+    return [{"id": evidence_id, "summary": None} for evidence_id in fallback_ids[:8]]
 
 
 class GitHubModelsClient:
@@ -1926,6 +2082,7 @@ class GitHubModelsClient:
                     max_output_chars=max_output_chars,
                     response_model=active_variant.response_model,
                 )
+                _validate_action_allowed_evidence(action, active_variant, diagnostic)
             except ModelPipelineError as exc:
                 if request_id is not None:
                     self.limiter.mark_response_validation_failed(request_id)
@@ -2023,6 +2180,8 @@ class GitHubModelsClient:
         diagnostic.candidate_evidence_id_count = variant.candidate_evidence_id_count
         diagnostic.resolved_evidence_count = variant.resolved_evidence_count
         diagnostic.unresolved_evidence_ids = variant.unresolved_evidence_ids or []
+        diagnostic.allowed_evidence_ids = variant.allowed_evidence_ids or []
+        diagnostic.evidence_ids_preserved_during_compaction = True
         diagnostic.new_signal_count = variant.new_signal_count
         diagnostic.problem_loaded = variant.problem_loaded
         diagnostic.problem_evidence_count = variant.problem_evidence_count

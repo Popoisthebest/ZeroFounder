@@ -537,6 +537,10 @@ class ModelInferenceDiagnostic(StrictModel):
     candidate_evidence_id_count: int = Field(default=0, ge=0)
     resolved_evidence_count: int = Field(default=0, ge=0)
     unresolved_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    allowed_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    returned_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    malformed_evidence_ids: list[StrictId] = Field(default_factory=list, max_length=100)
+    evidence_ids_preserved_during_compaction: bool = True
     new_signal_count: int = Field(default=0, ge=0)
     problem_loaded: bool = False
     problem_evidence_count: int = Field(default=0, ge=0)
