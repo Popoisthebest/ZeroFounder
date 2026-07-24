@@ -7,6 +7,7 @@
     "signal-0f60119456da3cbd",
     "signal-1b76f9748056cbd5",
     "signal-20f336c650ea5216",
+    "signal-24c698e18f5a08e9",
     "signal-345c6df790b440fb",
     "signal-34ca38432fa50f4d",
     "signal-398d811553f6faa9",
@@ -21,6 +22,7 @@
     "signal-61781bb8d47daa24",
     "signal-6ec7927018b63d78",
     "signal-70963ad472b53b95",
+    "signal-70c8f9576f680267",
     "signal-7fd8a154c56e244f",
     "signal-8123344b4fe27eff",
     "signal-8131fab567fb8b38",
@@ -60,11 +62,12 @@
     "957fa237547126e04fbc4d46470c739cb25e56f9357e9b76d3a994120fed7276",
     "209367309aac8461ddc922b4c865347892d4255e335b694148910af37c27db8c",
     "5d9ae3032b5499e68ae90786675c12eb5eebc67a4e3dfd365f410384f921185e",
-    "5d9ae3032b5499e68ae90786675c12eb5eebc67a4e3dfd365f410384f921185e"
+    "5d9ae3032b5499e68ae90786675c12eb5eebc67a4e3dfd365f410384f921185e",
+    "80c126d9184a6095c775c5d214e8bd1e924c740fa8c0fa8632b10c004bee1469"
   ],
   "last_product_sha": null,
-  "last_metrics_hash": "ef5adff5ff12e28e5b2e4b5f4492804a6fb1acd38d0d42769893a481a2ef16d3",
-  "last_daily_review": "2026-07-21",
+  "last_metrics_hash": "0c2395c8bca3e1098ada339d8bab0c0d0aea2ae2ca2ae292d5a7075ca1dacbd9",
+  "last_daily_review": "2026-07-22",
   "last_weekly_review": "2026-07-20",
-  "updated_at": "2026-07-21T12:23:23.671946Z"
+  "updated_at": "2026-07-22T14:24:55.562378Z"
 }
