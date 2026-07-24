@@ -73,8 +73,71 @@ def test_missing_korean_font_fails_in_github_actions(monkeypatch):
     monkeypatch.delenv("ZEROFOUNDER_REPORT_FONT_PATH", raising=False)
     monkeypatch.setattr(pdf_report, "_fc_match", lambda _family: None)
 
-    with pytest.raises(ReportPdfError, match="No Korean"):
+    with pytest.raises(ReportPdfError) as exc_info:
         pdf_report.register_report_font()
+    assert exc_info.value.code == "korean_font_not_installed"
+
+
+def test_configured_missing_font_path_has_clear_error(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZEROFOUNDER_REPORT_FONT_PATH", str(tmp_path / "missing.ttf"))
+
+    with pytest.raises(ReportPdfError) as exc_info:
+        pdf_report.register_report_font()
+    assert exc_info.value.code == "korean_font_not_found"
+
+
+def test_find_korean_font_uses_fontconfig_path(monkeypatch, tmp_path):
+    font = tmp_path / "NanumGothic.ttf"
+    font.write_bytes(b"not a real font")
+    monkeypatch.delenv("ZEROFOUNDER_REPORT_FONT_PATH", raising=False)
+    monkeypatch.setattr(
+        pdf_report,
+        "_fc_match",
+        lambda family: font if family == "NanumGothic" else None,
+    )
+
+    detection = pdf_report.detect_korean_font()
+
+    assert pdf_report.find_korean_font() == str(font)
+    assert detection.path == str(font)
+    assert detection.family == "NanumGothic"
+    assert detection.format == "ttf"
+    assert detection.exists is True
+    assert detection.size == len(b"not a real font")
+
+
+def test_register_report_font_accepts_configured_nanum_path(monkeypatch, tmp_path):
+    font = tmp_path / "NanumGothic.ttf"
+    font.write_bytes(b"fake font")
+    monkeypatch.setenv("ZEROFOUNDER_REPORT_FONT_PATH", str(font))
+    monkeypatch.setattr(
+        pdf_report,
+        "_register_ttf_font",
+        lambda path: ("ZeroFounderKoreanTest", True),
+    )
+
+    assert pdf_report.register_report_font() == ("ZeroFounderKoreanTest", True)
+
+
+def test_strict_font_pdf_generation_with_installed_ttf(monkeypatch):
+    font_path = pdf_report.find_korean_font()
+    if font_path is None:
+        pytest.skip("Nanum/Noto Korean TTF is not installed in this environment")
+    monkeypatch.setenv("ZEROFOUNDER_PDF_STRICT_FONT", "1")
+
+    source = _source()
+    pdf = build_report_pdf(source)
+    validation = validate_report_pdf_bytes(
+        pdf,
+        required_text=source.required_text,
+        require_embedded_font=True,
+    )
+
+    assert validation.status == "valid"
+    assert validation.fonts_embedded is True
+    assert validation.extracted_text_check == "passed"
+    assert validation.mojibake_detected is False
+    assert validation.render_check in {"passed", "not_available"}
 
 
 def test_unicode_pdf_generation_extracts_korean_and_evidence_ids():

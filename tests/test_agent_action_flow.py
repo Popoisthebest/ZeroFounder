@@ -379,12 +379,15 @@ def test_create_branch_job_applies_then_tests_before_commit_and_push():
         return next(index for index, step in enumerate(steps) if predicate(step))
 
     checkout = step_index(lambda step: step.get("uses", "").startswith("actions/checkout@"))
+    pdf_deps = step_index(
+        lambda step: step.get("run") == "bash scripts/install_pdf_dependencies.sh"
+    )
     branch = step_index(lambda step: step.get("id") == "prepare_branch")
     apply = step_index(lambda step: step.get("id") == "apply")
     upload = step_index(lambda step: step.get("uses") == "actions/upload-artifact@v7")
     pytest_step = step_index(lambda step: step.get("run") == "python -m pytest")
     commit = step_index(lambda step: step.get("id") == "commit")
-    assert checkout < branch < apply < upload < pytest_step < commit
+    assert checkout < pdf_deps < branch < apply < upload < pytest_step < commit
     assert "continue-on-error" not in steps[pytest_step]
 
 

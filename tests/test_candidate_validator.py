@@ -705,6 +705,10 @@ def test_write_report_rejects_mojibake_or_helvetica_only_pdf(tmp_path: Path):
         "invalid_pdf_encoding",
         "mojibake_detected",
         "missing_unicode_font",
+        "korean_font_not_installed",
+        "korean_font_not_found",
+        "korean_font_registration_failed",
+        "korean_font_missing_glyphs",
         "pdf_text_roundtrip_failed",
     }
     assert result.pdf_validation_status != "valid"

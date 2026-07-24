@@ -15,6 +15,7 @@ from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFError, TTFont
+from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 MOJIBAKE_PATTERNS = (
@@ -31,6 +32,7 @@ KOREAN_SAMPLE_TEXT = [
     "5 또는 10줄 단위로 이동",
 ]
 FONT_ENV = "ZEROFOUNDER_REPORT_FONT_PATH"
+STRICT_FONT_ENVS = ("ZEROFOUNDER_PDF_STRICT_FONT", "ZEROfOUNDER_PDF_STRICT_FONT")
 CID_FALLBACK_FONT = "HYSMyeongJo-Medium"
 
 
@@ -89,6 +91,25 @@ class ReportPdfSource:
     required_text: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class KoreanFontDetection:
+    path: str | None = None
+    family: str = ""
+    format: str = ""
+    exists: bool = False
+    size: int = 0
+    source: str = ""
+
+    def model_summary(self) -> dict[str, Any]:
+        return {
+            "detected_font_path": self.path or "",
+            "detected_font_family": self.family,
+            "detected_font_format": self.format,
+            "font_file_exists": self.exists,
+            "font_file_size": self.size,
+        }
+
+
 def contains_mojibake(value: str) -> bool:
     if REPLACEMENT_CHARACTER in value:
         return True
@@ -119,51 +140,111 @@ def _fc_match(family: str) -> Path | None:
     return Path(path) if path else None
 
 
-def discover_korean_font() -> Path | None:
+def _font_detection(path: Path, *, family: str, source: str) -> KoreanFontDetection:
+    exists = path.exists()
+    return KoreanFontDetection(
+        path=str(path),
+        family=family,
+        format=path.suffix.lower().lstrip("."),
+        exists=exists,
+        size=path.stat().st_size if exists else 0,
+        source=source,
+    )
+
+
+def detect_korean_font() -> KoreanFontDetection:
     configured = os.getenv(FONT_ENV)
-    candidates: list[Path] = []
     if configured:
-        candidates.append(Path(configured))
+        return _font_detection(Path(configured), family="configured", source=FONT_ENV)
     for family in ("NanumGothic", "Noto Sans CJK KR", "Noto Sans KR"):
         matched = _fc_match(family)
         if matched and any(token in matched.name.lower() for token in ("nanum", "noto")):
-            candidates.append(matched)
-    candidates.extend(
-        [
-            Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"),
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
-            Path("/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf"),
-        ]
-    )
-    for path in candidates:
-        if path.exists() and path.suffix.lower() in {".ttf", ".ttc", ".otf"}:
-            return path
+            return _font_detection(matched, family=family, source="fontconfig")
+    candidates = [
+        (Path("/usr/share/fonts/truetype/nanum/NanumGothic.ttf"), "NanumGothic"),
+        (Path("/usr/share/fonts/truetype/nanum/NanumGothicBold.ttf"), "NanumGothic"),
+        (Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"), "Noto Sans CJK KR"),
+        (Path("/usr/share/fonts/opentype/noto/NotoSansCJKkr-Regular.otf"), "Noto Sans KR"),
+    ]
+    for path, family in candidates:
+        if path.exists():
+            return _font_detection(path, family=family, source="known_path")
+    return KoreanFontDetection(family="NanumGothic")
+
+
+def discover_korean_font() -> Path | None:
+    detection = detect_korean_font()
+    if detection.path and detection.exists:
+        return Path(detection.path)
     return None
 
 
+def find_korean_font() -> str | None:
+    font = discover_korean_font()
+    return str(font) if font else None
+
+
+def strict_font_required() -> bool:
+    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
+        return True
+    return any(
+        os.getenv(name, "").strip() in {"1", "true", "TRUE", "yes"}
+        for name in STRICT_FONT_ENVS
+    )
+
+
+def _verify_korean_glyphs(font_name: str) -> None:
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    pdf.setFont(font_name, 10)
+    pdf.drawString(20 * mm, 270 * mm, "재고 관리 시스템")
+    pdf.save()
+    text = extract_pdf_text(buffer.getvalue())
+    if "재고 관리 시스템" not in text:
+        raise ReportPdfError(
+            "korean_font_missing_glyphs",
+            "registered Korean font failed Hangul text extraction check",
+        )
+
+
 def _register_ttf_font(font_path: Path) -> tuple[str, bool]:
-    last_error: Exception | None = None
-    for index in range(16 if font_path.suffix.lower() == ".ttc" else 1):
-        name = f"ZeroFounderKorean{abs(hash((str(font_path), index))) % 1_000_000}"
-        try:
-            pdfmetrics.registerFont(TTFont(name, str(font_path), subfontIndex=index))
-            return name, True
-        except TTFError as exc:
-            last_error = exc
-            if "bad subfontIndex" in str(exc):
-                break
+    if not font_path.exists():
+        raise ReportPdfError(
+            "korean_font_not_found",
+            f"Korean font path does not exist: {font_path}",
+        )
+    if font_path.suffix.lower() not in {".ttf", ".ttc", ".otf"}:
+        raise ReportPdfError(
+            "korean_font_not_found",
+            f"Korean font path is not TTF/TTC/OTF: {font_path}",
+        )
+    candidates: list[Path] = [font_path]
+    for path in candidates:
+        last_error: Exception | None = None
+        for index in range(16 if path.suffix.lower() == ".ttc" else 1):
+            name = f"ZeroFounderKorean{abs(hash((str(path), index))) % 1_000_000}"
+            try:
+                pdfmetrics.registerFont(TTFont(name, str(path), subfontIndex=index))
+                _verify_korean_glyphs(name)
+                return name, True
+            except TTFError as exc:
+                last_error = exc
+                if "bad subfontIndex" in str(exc):
+                    break
+            except ReportPdfError:
+                raise
     raise ReportPdfError(
-        "missing_korean_font",
+        "korean_font_registration_failed",
         f"Korean font could not be registered: {font_path} ({last_error})",
     )
 
 
 def register_report_font() -> tuple[str, bool]:
-    font_path = discover_korean_font()
-    if font_path:
-        return _register_ttf_font(font_path)
-    if os.getenv("GITHUB_ACTIONS", "").lower() == "true":
-        raise ReportPdfError("missing_korean_font", "No Korean TTF/TTC/OTF font found")
+    detection = detect_korean_font()
+    if detection.path:
+        return _register_ttf_font(Path(detection.path))
+    if strict_font_required():
+        raise ReportPdfError("korean_font_not_installed", "No Korean TTF/TTC/OTF font found")
     pdfmetrics.registerFont(UnicodeCIDFont(CID_FALLBACK_FONT))
     return CID_FALLBACK_FONT, False
 
@@ -265,7 +346,10 @@ def build_report_pdf(source: ReportPdfSource) -> bytes:
     doc.build(story)
     pdf = buffer.getvalue()
     if embedded and b"/FontFile" not in pdf:
-        raise ReportPdfError("missing_unicode_font", "registered Korean font was not embedded")
+        raise ReportPdfError(
+            "korean_font_registration_failed",
+            "registered Korean font was not embedded",
+        )
     return pdf
 
 
@@ -350,7 +434,7 @@ def validate_report_pdf_bytes(
         or (set(font_names) <= {"Helvetica"})
         or (require_embedded_font and not fonts_embedded)
     ):
-        code = "missing_unicode_font"
+        code = "korean_font_not_installed"
     elif missing:
         code = "pdf_text_roundtrip_failed"
     elif render in {"blank_page", "failed"}:

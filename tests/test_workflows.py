@@ -60,6 +60,53 @@ def test_agent_workflow_concurrency_prevents_parallel_material_work():
     }
 
 
+def test_pdf_dependency_script_installs_and_verifies_nanum_font():
+    script = (ROOT / "scripts/install_pdf_dependencies.sh").read_text(encoding="utf-8")
+
+    assert "apt-get install -y --no-install-recommends" in script
+    assert "fonts-nanum" in script
+    assert "fontconfig" in script
+    assert "poppler-utils" in script
+    assert "fc-cache -f -v" in script
+    assert 'fc-list | grep -i "NanumGothic"' in script
+    assert 'fc-match "NanumGothic"' in script
+    assert "detect_korean_font" in script
+    assert "find_korean_font" in script
+
+
+def test_agent_create_branch_installs_pdf_dependencies_before_apply():
+    agent = load_workflows()["agent.yml"]
+    steps = agent["jobs"]["create-branch"]["steps"]
+
+    install_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("run") == "bash scripts/install_pdf_dependencies.sh"
+    )
+    apply_index = next(index for index, step in enumerate(steps) if step.get("id") == "apply")
+
+    assert install_index < apply_index
+
+
+def test_quality_workflow_installs_pdf_dependencies_for_policy_and_candidate_jobs():
+    quality = load_workflows()["quality-check.yml"]
+    policy_commands = "\n".join(
+        str(step.get("run", "")) for step in quality["jobs"]["policy"]["steps"]
+    )
+    quality_commands = "\n".join(
+        str(step.get("run", "")) for step in quality["jobs"]["quality"]["steps"]
+    )
+
+    assert "bash control/scripts/install_pdf_dependencies.sh" in policy_commands
+    assert "bash control/scripts/install_pdf_dependencies.sh" in quality_commands
+    assert policy_commands.index("install_pdf_dependencies.sh") < policy_commands.index(
+        "scripts.validate_candidate_change"
+    )
+    assert quality_commands.index("install_pdf_dependencies.sh") < quality_commands.index(
+        "python -m pytest"
+    )
+
+
 def test_workflows_do_not_use_deprecated_action_majors():
     for workflow_name, workflow in load_workflows().items():
         for job in workflow["jobs"].values():

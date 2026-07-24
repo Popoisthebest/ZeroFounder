@@ -115,13 +115,16 @@ def main() -> int:
         checkout = step_index(
             lambda step: str(step.get("uses", "")).startswith("actions/checkout@")
         )
+        pdf_deps = step_index(
+            lambda step: step.get("run") == "bash scripts/install_pdf_dependencies.sh"
+        )
         branch = step_index(lambda step: step.get("id") == "prepare_branch")
         apply = step_index(lambda step: step.get("id") == "apply")
         tests = step_index(lambda step: step.get("run") == "python -m pytest")
         commit = step_index(lambda step: step.get("id") == "commit")
     except StopIteration as exc:
         raise SystemExit("create-branch에 필수 보호 단계가 없습니다.") from exc
-    if not checkout < branch < apply < tests < commit:
+    if not checkout < pdf_deps < branch < apply < tests < commit:
         raise SystemExit("create-branch는 branch, apply, test, commit/push 순서여야 합니다.")
     if steps[tests].get("continue-on-error"):
         raise SystemExit("create-branch Pytest 실패는 push 전에 실행을 중단해야 합니다.")
@@ -157,6 +160,28 @@ def main() -> int:
     }
     if not required_jobs.issubset(quality_jobs):
         raise SystemExit("quality-check control/candidate job이 불완전합니다.")
+    policy_commands = "\n".join(
+        str(step.get("run", "")) for step in quality_jobs["policy"].get("steps", [])
+    )
+    quality_commands = "\n".join(
+        str(step.get("run", "")) for step in quality_jobs["quality"].get("steps", [])
+    )
+    if "bash control/scripts/install_pdf_dependencies.sh" not in policy_commands:
+        raise SystemExit("quality-check policy job은 PDF 의존성을 설치해야 합니다.")
+    if "bash control/scripts/install_pdf_dependencies.sh" not in quality_commands:
+        raise SystemExit("quality-check quality job은 PDF 의존성을 설치해야 합니다.")
+    if policy_commands.index("install_pdf_dependencies.sh") > policy_commands.index(
+        "scripts.validate_candidate_change"
+    ):
+        raise SystemExit(
+            "quality-check policy job은 candidate 검증 전에 PDF 의존성을 설치해야 합니다."
+        )
+    if quality_commands.index("install_pdf_dependencies.sh") > quality_commands.index(
+        "python -m pytest"
+    ):
+        raise SystemExit(
+            "quality-check quality job은 candidate 테스트 전에 PDF 의존성을 설치해야 합니다."
+        )
     quality_call = agent_document["jobs"].get("quality-check", {})
     expected_quality_permissions = max_job_permissions(quality)
     if quality_call.get("permissions") != expected_quality_permissions:
