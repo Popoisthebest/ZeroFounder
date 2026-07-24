@@ -11,6 +11,7 @@ from agents.candidate_validator import (
     validate_validate_evidence_content,
     validate_write_report_content,
 )
+from agents.pdf_report import ReportPdfSource, build_report_pdf
 from agents.quality import ChangeValidation, validate_changed_file_contract
 from agents.report_materializer import (
     report_artifact_path,
@@ -32,6 +33,32 @@ VALIDATE_BRANCH = "agent/29757293893-validate-evidence"
 IDEA_BRANCH = "agent/29757293894-create-idea-candidates"
 REPORT_BRANCH = "agent/29757293895-write-report"
 PROBLEM_ID = "problem-navigation-inefficiency"
+
+
+def _valid_report_pdf_bytes(period: str) -> bytes:
+    return build_report_pdf(
+        ReportPdfSource(
+            title="ZeroFounder 주간 운영 보고서",
+            problem_id="problem-001",
+            problem_title="목록 탐색 비효율성",
+            problem_domain="재고 관리 시스템",
+            target_users="재고 관리자, 창고 운영자",
+            problem_summary="긴 재고 목록에서 특정 위치나 항목으로 이동하기 어렵습니다.",
+            report_period=period,
+            report_type="weekly",
+            period_summary="5 또는 10줄 단위로 이동하는 요구를 포함해 이번 주 흐름을 요약합니다.",
+            sections=[
+                (
+                    "핵심 판단",
+                    "재고 관리 시스템에서 목록 탐색 비효율성이 반복되어 개선 검토가 필요합니다.",
+                )
+            ],
+            findings=["재고 관리자와 창고 운영자가 위치 복귀에 시간을 씁니다."],
+            recommendations=["목록 이동 단위를 줄이는 실험을 준비합니다."],
+            evidence_ids=[],
+            required_text=["problem-001", period, "재고 관리 시스템"],
+        )
+    )
 
 
 def _signal(signal_id: str) -> dict[str, object]:
@@ -529,9 +556,10 @@ def _prepare_write_report_candidate(
 
 
 def test_write_report_candidate_requires_real_pdf_and_checkpoint_only(tmp_path: Path):
+    period = report_period(tmp_path / "valid" / "control")
     control, candidate, contract = _prepare_write_report_candidate(
         tmp_path / "valid",
-        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+        pdf_content=_valid_report_pdf_bytes(period),
     )
 
     result = validate_write_report_content(
@@ -547,6 +575,9 @@ def test_write_report_candidate_requires_real_pdf_and_checkpoint_only(tmp_path: 
     assert result.operation_key_hash
     assert result.appended_checkpoint_key == result.expected_checkpoint_key
     assert result.checkpoint_key_match is True
+    assert result.pdf_validation_status == "valid"
+    assert result.mojibake_detected is False
+    assert result.required_text_found is True
 
     control, candidate, contract = _prepare_write_report_candidate(
         tmp_path / "fake",
@@ -557,7 +588,7 @@ def test_write_report_candidate_requires_real_pdf_and_checkpoint_only(tmp_path: 
         candidate_root=candidate,
         contract=contract,
     )
-    assert result.status == "invalid_report_path"
+    assert result.status == "invalid_pdf_encoding"
 
 
 def test_write_report_requires_operation_metadata_and_exact_checkpoint_hash(
@@ -565,7 +596,9 @@ def test_write_report_requires_operation_metadata_and_exact_checkpoint_hash(
 ):
     control, candidate, contract = _prepare_write_report_candidate(
         tmp_path / "missing-key",
-        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+        pdf_content=_valid_report_pdf_bytes(
+            report_period(tmp_path / "missing-key" / "control")
+        ),
     )
     missing = ChangeValidation(
         **{
@@ -585,7 +618,9 @@ def test_write_report_requires_operation_metadata_and_exact_checkpoint_hash(
 
     control, candidate, contract = _prepare_write_report_candidate(
         tmp_path / "wrong-hash",
-        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+        pdf_content=_valid_report_pdf_bytes(
+            report_period(tmp_path / "wrong-hash" / "control")
+        ),
     )
     checkpoint_path = candidate / "company/checkpoints.json"
     checkpoint = RepositoryCheckpoint.model_validate_json(
@@ -614,7 +649,7 @@ def test_write_report_requires_operation_metadata_and_exact_checkpoint_hash(
 def test_write_report_checkpoint_preserves_existing_duplicate_keys(tmp_path: Path):
     control, candidate, contract = _prepare_write_report_candidate(
         tmp_path,
-        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+        pdf_content=_valid_report_pdf_bytes(report_period(tmp_path / "control")),
     )
     old_checkpoint = RepositoryCheckpoint(idempotency_keys=["a" * 64, "a" * 64])
     (control / "company/checkpoints.json").write_text(
@@ -640,6 +675,39 @@ def test_write_report_checkpoint_preserves_existing_duplicate_keys(tmp_path: Pat
 
     assert result.status == "valid"
     assert result.appended_checkpoint_key == contract.operation_key_hash
+
+
+def test_write_report_rejects_mojibake_or_helvetica_only_pdf(tmp_path: Path):
+    broken = (
+        b"%PDF-1.4\n"
+        b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n"
+        b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj\n"
+        b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj\n"
+        b"4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj\n"
+        b"5 0 obj << /Length 88 >> stream\n"
+        b"BT /F1 10 Tf 50 780 Td (\xec\x9e\xac\xea\xb3\xa0 "
+        b"\xc3\xac\xc5\x92\xc2\xba) Tj ET\nendstream endobj\n"
+        b"trailer << /Root 1 0 R >>\n%%EOF\n"
+    )
+    control, candidate, contract = _prepare_write_report_candidate(
+        tmp_path / "broken",
+        pdf_content=broken,
+    )
+
+    result = validate_write_report_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+
+    assert result.status in {
+        "invalid_pdf_encoding",
+        "mojibake_detected",
+        "missing_unicode_font",
+        "pdf_text_roundtrip_failed",
+    }
+    assert result.pdf_validation_status != "valid"
 
     control, candidate, contract = _prepare_create_idea_candidate(tmp_path / "metrics")
     checkpoint_path = candidate / "company/checkpoints.json"

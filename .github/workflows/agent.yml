@@ -236,6 +236,11 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
+      - name: 한글 PDF 글꼴 설치
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-nanum fontconfig poppler-utils
+          fc-match --format='%{file}\n' NanumGothic
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -473,6 +478,15 @@ jobs:
           APPENDED_CHECKPOINT_KEY: ${{ needs.quality-check.outputs.appended_checkpoint_key }}
           EXPECTED_CHECKPOINT_KEY: ${{ needs.quality-check.outputs.expected_checkpoint_key }}
           CHECKPOINT_KEY_MATCH: ${{ needs.quality-check.outputs.checkpoint_key_match }}
+          PDF_FONT_NAMES: ${{ needs.quality-check.outputs.pdf_font_names }}
+          PDF_FONTS_EMBEDDED: ${{ needs.quality-check.outputs.pdf_fonts_embedded }}
+          PDF_UNICODE_MAPPING_AVAILABLE: ${{ needs.quality-check.outputs.pdf_unicode_mapping_available }}
+          EXTRACTED_TEXT_CHECK: ${{ needs.quality-check.outputs.extracted_text_check }}
+          MOJIBAKE_DETECTED: ${{ needs.quality-check.outputs.mojibake_detected }}
+          REQUIRED_TEXT_FOUND: ${{ needs.quality-check.outputs.required_text_found }}
+          RENDER_CHECK: ${{ needs.quality-check.outputs.render_check }}
+          PAGE_COUNT: ${{ needs.quality-check.outputs.page_count }}
+          PDF_VALIDATION_STATUS: ${{ needs.quality-check.outputs.pdf_validation_status }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"

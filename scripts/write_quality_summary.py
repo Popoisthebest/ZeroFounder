@@ -29,6 +29,15 @@ def main() -> int:
 - append된 checkpoint key: `{result.get('appended_checkpoint_key') or '없음'}`
 - 기대 checkpoint key: `{result.get('expected_checkpoint_key') or '없음'}`
 - checkpoint key 일치: `{result.get('checkpoint_key_match') or '없음'}`
+- PDF 검증: `{result.get('pdf_validation_status') or '없음'}`
+- PDF 글꼴: `{', '.join(result.get('pdf_font_names', [])) or '없음'}`
+- PDF 글꼴 임베딩: `{result.get('pdf_fonts_embedded') or '없음'}`
+- PDF Unicode mapping: `{result.get('pdf_unicode_mapping_available') or '없음'}`
+- PDF 텍스트 추출: `{result.get('extracted_text_check') or '없음'}`
+- PDF mojibake 감지: `{result.get('mojibake_detected') or '없음'}`
+- PDF 필수 텍스트: `{result.get('required_text_found') or '없음'}`
+- PDF 렌더: `{result.get('render_check') or '없음'}`
+- PDF 페이지 수: `{result.get('page_count') or '없음'}`
 - 실행 URL: {result['quality_run_url'] or '확인 불가'}
 
 검증 대상은 전달받은 PR head SHA와 일치하는 경우에만 checkout했습니다.

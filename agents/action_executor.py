@@ -80,7 +80,10 @@ class ActionExecutor:
                 backups[target] = target.read_bytes() if target.exists() else None
                 target.parent.mkdir(parents=True, exist_ok=True)
                 temporary = target.with_name(f".{target.name}.zerofounder-{os.getpid()}")
-                temporary.write_text(change.content, encoding="utf-8")
+                if change.encoding == "base64":
+                    temporary.write_bytes(change.content_bytes())
+                else:
+                    temporary.write_text(change.content, encoding="utf-8")
                 temporary.replace(target)
                 changed.append(target)
         except OSError as exc:

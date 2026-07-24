@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from agents.pdf_report import extract_pdf_text, validate_report_pdf_bytes
 from agents.report_materializer import (
     materialize_report,
     report_artifact_path,
@@ -63,7 +64,8 @@ def test_trusted_weekly_report_path_uses_operating_timezone(tmp_path):
     change = materialize_report(_report_action(), tmp_path, now=now)
 
     assert change.path == "reports/weekly_report_2026-W30.pdf"
-    assert change.content.startswith("%PDF-")
+    assert change.encoding == "base64"
+    assert change.content_bytes().startswith(b"%PDF-")
     assert "2023_10" not in change.path
 
 
@@ -122,8 +124,9 @@ def test_materialized_report_inserts_trusted_problem_context(tmp_path):
 
     change = materialize_report(_report_action(), tmp_path)
 
-    assert "Inventory list navigation" in change.content
-    assert "inventory operators" in change.content
+    text = extract_pdf_text(change.content_bytes())
+    assert "Inventory list navigation" in text
+    assert "inventory operators" in text
 
 
 def test_materialized_report_does_not_require_model_problem_title_or_summary(tmp_path):
@@ -165,11 +168,19 @@ def test_materialized_report_does_not_require_model_problem_title_or_summary(tmp
 
     change = materialize_report(action, tmp_path)
 
-    assert "재고 목록 위치 복귀 문제" in change.content
-    assert "재고 관리자, 창고 운영자" in change.content
-    assert "재고 관리 시스템" in change.content
-    assert "긴 재고 목록에서 특정 위치나 항목으로 이동하기 어렵습니다." in change.content
-    assert "이번 기간에는 위치 복귀 문제가 반복됐습니다." in change.content
+    text = extract_pdf_text(change.content_bytes())
+    assert "재고 목록 위치 복귀 문제" in text
+    assert "재고 관리자, 창고 운영자" in text
+    assert "재고 관리 시스템" in text
+    assert "긴 재고 목록에서 특정 위치나 항목으로 이동하기 어렵습니다." in text
+    assert "이번 기간에는 위치 복귀 문제가 반복됐습니다." in text
+    validation = validate_report_pdf_bytes(
+        change.content_bytes(),
+        required_text=["problem-001", "재고 목록 위치 복귀 문제"],
+        require_embedded_font=False,
+    )
+    assert validation.status == "valid"
+    assert validation.render_check in {"passed", "not_available"}
 
 
 def test_materialized_report_ignores_model_supplied_untrusted_domain_text(tmp_path):
@@ -209,7 +220,8 @@ def test_materialized_report_ignores_model_supplied_untrusted_domain_text(tmp_pa
 
     change = materialize_report(action, tmp_path)
 
-    assert "재고 목록 탐색 문제" in change.content
-    assert "재고 관리자" in change.content
-    assert "게임 내 탐색 보고서" not in change.content
-    assert "커뮤니티 선택 드롭다운 문제" not in change.content
+    text = extract_pdf_text(change.content_bytes())
+    assert "재고 목록 탐색 문제" in text
+    assert "재고 관리자" in text
+    assert "게임 내 탐색 보고서" not in text
+    assert "커뮤니티 선택 드롭다운 문제" not in text

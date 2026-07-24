@@ -50,6 +50,17 @@ def main() -> int:
                 "appended_checkpoint_key": os.getenv("APPENDED_CHECKPOINT_KEY", ""),
                 "expected_checkpoint_key": os.getenv("EXPECTED_CHECKPOINT_KEY", ""),
                 "checkpoint_key_match": os.getenv("CHECKPOINT_KEY_MATCH", ""),
+                "pdf_font_names": json.loads(os.getenv("PDF_FONT_NAMES", "[]") or "[]"),
+                "pdf_fonts_embedded": os.getenv("PDF_FONTS_EMBEDDED", ""),
+                "pdf_unicode_mapping_available": os.getenv(
+                    "PDF_UNICODE_MAPPING_AVAILABLE", ""
+                ),
+                "extracted_text_check": os.getenv("EXTRACTED_TEXT_CHECK", ""),
+                "mojibake_detected": os.getenv("MOJIBAKE_DETECTED", ""),
+                "required_text_found": os.getenv("REQUIRED_TEXT_FOUND", ""),
+                "render_check": os.getenv("RENDER_CHECK", ""),
+                "page_count": os.getenv("PAGE_COUNT", ""),
+                "pdf_validation_status": os.getenv("PDF_VALIDATION_STATUS", ""),
             },
             ensure_ascii=False,
             indent=2,

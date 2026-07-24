@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import re
 from datetime import date, datetime
 from enum import StrEnum
@@ -155,8 +156,28 @@ class StateTransition(StrictModel):
 
 class FileChange(StrictModel):
     path: str = Field(min_length=1, max_length=240)
-    content: str = Field(max_length=200_000)
+    content: str = Field(max_length=8_000_000)
     operation: Literal["upsert"] = "upsert"
+    encoding: Literal["text", "base64"] = "text"
+
+    @model_validator(mode="after")
+    def validate_content_encoding(self) -> FileChange:
+        if self.encoding == "base64":
+            try:
+                base64.b64decode(self.content.encode("ascii"), validate=True)
+            except (ValueError, UnicodeEncodeError) as exc:
+                raise ValueError("base64 file content is invalid") from exc
+        return self
+
+    def content_bytes(self) -> bytes:
+        if self.encoding == "base64":
+            return base64.b64decode(self.content.encode("ascii"), validate=True)
+        return self.content.encode("utf-8")
+
+    def content_text(self) -> str:
+        if self.encoding == "base64":
+            return self.content_bytes().decode("utf-8")
+        return self.content
 
 
 class ProblemCandidateProposal(StrictModel):
@@ -416,7 +437,8 @@ class MaterializedActionEnvelope(StrictModel):
                 raise ValueError("write_report materialization requires one report file")
             if not re.fullmatch(r"reports/weekly_report_\d{4}-W\d{2}\.pdf", self.files[0].path):
                 raise ValueError("write_report materialized path is invalid")
-            if not self.files[0].content.startswith("%PDF-") or len(self.files[0].content) < 20:
+            pdf_bytes = self.files[0].content_bytes()
+            if not pdf_bytes.startswith(b"%PDF-") or len(pdf_bytes) < 20:
                 raise ValueError("write_report materialized file must be a non-empty PDF")
         if any(change.path == "company/checkpoints.json" for change in self.files):
             raise ValueError("checkpoint changes are trusted commit metadata, not action files")

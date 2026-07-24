@@ -155,6 +155,15 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
         "appended_checkpoint_key": result.appended_checkpoint_key,
         "expected_checkpoint_key": result.expected_checkpoint_key,
         "checkpoint_key_match": result.checkpoint_key_match,
+        "pdf_font_names": list(result.pdf_font_names),
+        "pdf_fonts_embedded": result.pdf_fonts_embedded,
+        "pdf_unicode_mapping_available": result.pdf_unicode_mapping_available,
+        "extracted_text_check": result.extracted_text_check,
+        "mojibake_detected": result.mojibake_detected,
+        "required_text_found": result.required_text_found,
+        "render_check": result.render_check,
+        "page_count": result.page_count,
+        "pdf_validation_status": result.pdf_validation_status,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -175,6 +184,14 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
                 "appended_checkpoint_key",
                 "expected_checkpoint_key",
                 "checkpoint_key_match",
+                "pdf_fonts_embedded",
+                "pdf_unicode_mapping_available",
+                "extracted_text_check",
+                "mojibake_detected",
+                "required_text_found",
+                "render_check",
+                "page_count",
+                "pdf_validation_status",
             ):
                 value = payload[key]
                 if isinstance(value, bool):
@@ -188,6 +205,11 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
             handle.write(
                 "allowed_files="
                 + json.dumps(payload["allowed_files"], ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
+            handle.write(
+                "pdf_font_names="
+                + json.dumps(payload["pdf_font_names"], ensure_ascii=False, separators=(",", ":"))
                 + "\n"
             )
 

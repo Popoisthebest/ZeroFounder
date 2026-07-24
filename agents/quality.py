@@ -21,6 +21,12 @@ VerificationStatus = Literal[
     "invalid_state_change",
     "invalid_problem_path",
     "invalid_report_path",
+    "invalid_pdf_encoding",
+    "missing_unicode_font",
+    "mojibake_detected",
+    "pdf_text_roundtrip_failed",
+    "pdf_layout_overflow",
+    "pdf_render_failed",
     "missing_operation_key",
     "operation_key_mismatch",
 ]
@@ -39,6 +45,12 @@ ValidationStatus = Literal[
     "invalid_state_change",
     "invalid_problem_path",
     "invalid_report_path",
+    "invalid_pdf_encoding",
+    "missing_unicode_font",
+    "mojibake_detected",
+    "pdf_text_roundtrip_failed",
+    "pdf_layout_overflow",
+    "pdf_render_failed",
     "missing_operation_key",
     "operation_key_mismatch",
     "quality_check_not_started",
@@ -139,6 +151,15 @@ class ChangeValidation:
     appended_checkpoint_key: str | None = None
     expected_checkpoint_key: str | None = None
     checkpoint_key_match: bool | None = None
+    pdf_font_names: tuple[str, ...] = ()
+    pdf_fonts_embedded: bool | None = None
+    pdf_unicode_mapping_available: bool | None = None
+    extracted_text_check: str | None = None
+    mojibake_detected: bool | None = None
+    required_text_found: bool | None = None
+    render_check: str | None = None
+    page_count: int | None = None
+    pdf_validation_status: str | None = None
 
 
 def _change_result(
@@ -158,6 +179,15 @@ def _change_result(
     appended_checkpoint_key: str | None = None,
     expected_checkpoint_key: str | None = None,
     checkpoint_key_match: bool | None = None,
+    pdf_font_names: tuple[str, ...] = (),
+    pdf_fonts_embedded: bool | None = None,
+    pdf_unicode_mapping_available: bool | None = None,
+    extracted_text_check: str | None = None,
+    mojibake_detected: bool | None = None,
+    required_text_found: bool | None = None,
+    render_check: str | None = None,
+    page_count: int | None = None,
+    pdf_validation_status: str | None = None,
 ) -> ChangeValidation:
     return ChangeValidation(
         status=status,
@@ -176,6 +206,15 @@ def _change_result(
         appended_checkpoint_key=appended_checkpoint_key,
         expected_checkpoint_key=expected_checkpoint_key,
         checkpoint_key_match=checkpoint_key_match,
+        pdf_font_names=pdf_font_names,
+        pdf_fonts_embedded=pdf_fonts_embedded,
+        pdf_unicode_mapping_available=pdf_unicode_mapping_available,
+        extracted_text_check=extracted_text_check,
+        mojibake_detected=mojibake_detected,
+        required_text_found=required_text_found,
+        render_check=render_check,
+        page_count=page_count,
+        pdf_validation_status=pdf_validation_status,
     )
 
 

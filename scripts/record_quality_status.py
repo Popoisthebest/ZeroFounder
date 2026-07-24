@@ -29,6 +29,16 @@ def _allowed_files() -> list[str]:
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
 
 
+def _pdf_font_names() -> list[str]:
+    import json
+
+    try:
+        value = json.loads(os.getenv("PDF_FONT_NAMES", "[]"))
+    except json.JSONDecodeError:
+        return []
+    return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pr", type=int, required=True)
@@ -56,6 +66,15 @@ def main() -> int:
         appended_checkpoint_key=os.getenv("APPENDED_CHECKPOINT_KEY", ""),
         expected_checkpoint_key=os.getenv("EXPECTED_CHECKPOINT_KEY", ""),
         checkpoint_key_match=os.getenv("CHECKPOINT_KEY_MATCH", ""),
+        pdf_font_names=_pdf_font_names(),
+        pdf_fonts_embedded=os.getenv("PDF_FONTS_EMBEDDED", ""),
+        pdf_unicode_mapping_available=os.getenv("PDF_UNICODE_MAPPING_AVAILABLE", ""),
+        extracted_text_check=os.getenv("EXTRACTED_TEXT_CHECK", ""),
+        mojibake_detected=os.getenv("MOJIBAKE_DETECTED", ""),
+        required_text_found=os.getenv("REQUIRED_TEXT_FOUND", ""),
+        render_check=os.getenv("RENDER_CHECK", ""),
+        page_count=os.getenv("PAGE_COUNT", ""),
+        pdf_validation_status=os.getenv("PDF_VALIDATION_STATUS", ""),
     )
     client.update_pull_request_body(args.pr, body)
     output = os.getenv("GITHUB_OUTPUT")

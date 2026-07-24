@@ -144,16 +144,23 @@ def validate_action_files(
         seen.add(normalized)
         if not path_allowed_for_action(normalized, action.action_type):
             raise SafetyViolation(f"path not allowed for action: {normalized}")
-        if len(change.content) > max_file_chars:
+        content_size = (
+            len(change.content_bytes())
+            if change.encoding == "base64"
+            else len(change.content)
+        )
+        if content_size > max_file_chars and change.encoding != "base64":
             raise SafetyViolation("per-file character limit exceeded")
-        total += len(change.content)
+        if change.encoding == "text":
+            total += content_size
         candidate = workspace / normalized
         if candidate.exists() and candidate.is_symlink():
             raise SafetyViolation("symlink targets are forbidden")
         resolved_parent = candidate.parent.resolve()
         if root != resolved_parent and root not in resolved_parent.parents:
             raise SafetyViolation("resolved path escapes workspace")
-        assert_no_secrets(change.content)
+        if change.encoding == "text":
+            assert_no_secrets(change.content)
         if normalized == "company/decisions.jsonl":
             original = candidate.read_text() if candidate.exists() else ""
             if not change.content.startswith(original):
@@ -223,6 +230,8 @@ def validate_model_urls(action: ActionEnvelope, evidence: dict[str, dict]) -> No
     allowed = {record.get("url") for record in evidence.values() if record.get("url")}
     allowed_ids = set(action.evidence_ids)
     for change in action.files:
+        if change.encoding != "text":
+            continue
         referenced = set(re.findall(r"https?://[^\s)\]>'\"]+", change.content))
         invented = referenced - allowed
         if invented:

@@ -80,7 +80,8 @@ def validate_materialized_action_for_commit(
             raise ValueError("write_report cannot change lifecycle stage")
         if paths != [expected]:
             raise ValueError("write_report materialized file path is not allowed")
-        if not action.files[0].content.startswith("%PDF-") or len(action.files[0].content) < 20:
+        pdf_bytes = action.files[0].content_bytes()
+        if not pdf_bytes.startswith(b"%PDF-") or len(pdf_bytes) < 20:
             raise ValueError("write_report materialized file must be a non-empty PDF")
 
 

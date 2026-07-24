@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import re
@@ -7,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from agents.pdf_report import ReportPdfSource, build_report_pdf, validate_report_pdf_bytes
 from agents.schemas import ActionEnvelope, CompanyState, FileChange
 
 REPORT_PATH = re.compile(r"^reports/weekly_report_(?P<period>\d{4}-W\d{2})\.pdf$")
@@ -115,44 +117,6 @@ def _problem_summary(problem: dict[str, object] | None, action: ActionEnvelope) 
     return action.summary
 
 
-def _pdf_escape(value: str) -> str:
-    safe = value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    return safe[:1800]
-
-
-def _minimal_pdf(lines: list[str]) -> str:
-    stream_lines = ["BT", "/F1 10 Tf", "50 780 Td"]
-    for line in lines[:45]:
-        stream_lines.append(f"({_pdf_escape(line)}) Tj")
-        stream_lines.append("0 -14 Td")
-    stream_lines.append("ET")
-    stream = "\n".join(stream_lines)
-    objects = [
-        "1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj",
-        "2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj",
-        (
-            "3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
-            "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >> endobj"
-        ),
-        "4 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj",
-        f"5 0 obj << /Length {len(stream.encode('utf-8'))} >> stream\n{stream}\nendstream endobj",
-    ]
-    content = "%PDF-1.4\n"
-    offsets = [0]
-    for item in objects:
-        offsets.append(len(content.encode("utf-8")))
-        content += item + "\n"
-    xref_at = len(content.encode("utf-8"))
-    content += f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n"
-    for offset in offsets[1:]:
-        content += f"{offset:010d} 00000 n \n"
-    content += (
-        f"trailer << /Size {len(objects) + 1} /Root 1 0 R >>\n"
-        f"startxref\n{xref_at}\n%%EOF\n"
-    )
-    return content
-
-
 def materialize_report(
     action: ActionEnvelope,
     root: Path,
@@ -179,14 +143,13 @@ def materialize_report(
     problem_summary = _problem_summary(problem, action)
     problem_domain = _problem_domain(problem)
     lines = [
-        f"Problem ID: {action.report.problem_id}",
-        f"Problem title: {problem_title_text}",
-        f"Problem domain: {problem_domain}",
-        f"Target users: {target_user_text}",
-        f"Problem description: {problem_summary}",
-        f"Report period: {metadata['report_period']}",
-        f"Report type: {action.report.report_type}",
-        f"Period analysis: {action.report.period_summary}",
+        action.report.problem_id,
+        problem_title_text,
+        problem_domain,
+        target_user_text,
+        problem_summary,
+        str(metadata["report_period"]),
+        action.report.period_summary,
     ]
     for section in action.report.sections:
         lines.extend([section.heading, section.content])
@@ -198,6 +161,46 @@ def materialize_report(
         lines.extend(action.report.recommendations)
     if action.evidence_ids or action.report.evidence_ids:
         evidence = ", ".join(sorted(set(action.evidence_ids + action.report.evidence_ids)))
-        lines.append(f"Evidence IDs: {evidence}")
-    content = _minimal_pdf(lines)
-    return FileChange(path=str(metadata["artifact_path"]), content=content)
+        lines.append(evidence)
+    source = ReportPdfSource(
+        title="ZeroFounder 주간 운영 보고서",
+        problem_id=action.report.problem_id,
+        problem_title=problem_title_text,
+        problem_domain=problem_domain,
+        target_users=target_user_text,
+        problem_summary=problem_summary,
+        report_period=str(metadata["report_period"]),
+        report_type=action.report.report_type,
+        period_summary=action.report.period_summary,
+        sections=[(section.heading, section.content) for section in action.report.sections],
+        findings=action.report.findings,
+        recommendations=action.report.recommendations,
+        evidence_ids=sorted(set(action.evidence_ids + action.report.evidence_ids)),
+        operation_key=str(metadata.get("operation_key") or ""),
+        operation_key_hash=str(metadata.get("operation_key_hash") or ""),
+        required_text=[
+            action.report.problem_id,
+            str(metadata["report_period"]),
+            *sorted(set(action.evidence_ids + action.report.evidence_ids)),
+            *[
+                sample
+                for sample in [
+                    "재고 관리 시스템",
+                    "재고 관리자",
+                    "창고 운영자",
+                    "목록 탐색 비효율성",
+                    "5 또는 10줄 단위로 이동",
+                ]
+                if sample in " ".join(lines)
+            ],
+        ],
+    )
+    pdf_bytes = build_report_pdf(source)
+    validation = validate_report_pdf_bytes(pdf_bytes, required_text=source.required_text)
+    if validation.status != "valid":
+        raise ValueError(validation.rejection_code or "invalid_pdf_encoding")
+    return FileChange(
+        path=str(metadata["artifact_path"]),
+        content=base64.b64encode(pdf_bytes).decode("ascii"),
+        encoding="base64",
+    )

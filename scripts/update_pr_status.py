@@ -22,6 +22,12 @@ STATUS_LABELS = {
     "invalid_state_change": "상태 변경 검증 실패",
     "invalid_problem_path": "문제 후보 경로 또는 내용 검증 실패",
     "invalid_report_path": "보고서 경로 또는 내용 검증 실패",
+    "invalid_pdf_encoding": "PDF 인코딩 검증 실패",
+    "missing_unicode_font": "PDF 한글 글꼴 검증 실패",
+    "mojibake_detected": "PDF mojibake 감지",
+    "pdf_text_roundtrip_failed": "PDF 텍스트 추출 검증 실패",
+    "pdf_layout_overflow": "PDF 레이아웃 검증 실패",
+    "pdf_render_failed": "PDF 렌더 검증 실패",
     "quality_check_not_started": "품질검사 시작 안 됨",
 }
 
@@ -46,6 +52,15 @@ def render_status_body(
     appended_checkpoint_key: str = "",
     expected_checkpoint_key: str = "",
     checkpoint_key_match: str = "",
+    pdf_font_names: list[str] | None = None,
+    pdf_fonts_embedded: str = "",
+    pdf_unicode_mapping_available: str = "",
+    extracted_text_check: str = "",
+    mojibake_detected: str = "",
+    required_text_found: str = "",
+    render_check: str = "",
+    page_count: str = "",
+    pdf_validation_status: str = "",
 ) -> str:
     if status not in STATUS_LABELS:
         raise ValueError("invalid quality review status")
@@ -70,6 +85,15 @@ def render_status_body(
         f"- append된 checkpoint key: `{appended_checkpoint_key or '없음'}`",
         f"- 기대 checkpoint key: `{expected_checkpoint_key or '없음'}`",
         f"- checkpoint key 일치: `{checkpoint_key_match or '없음'}`",
+        f"- PDF 검증: `{pdf_validation_status or '없음'}`",
+        f"- PDF 글꼴: `{', '.join(pdf_font_names or []) or '없음'}`",
+        f"- PDF 글꼴 임베딩: `{pdf_fonts_embedded or '없음'}`",
+        f"- PDF Unicode mapping: `{pdf_unicode_mapping_available or '없음'}`",
+        f"- PDF 텍스트 추출: `{extracted_text_check or '없음'}`",
+        f"- PDF mojibake 감지: `{mojibake_detected or '없음'}`",
+        f"- PDF 필수 텍스트: `{required_text_found or '없음'}`",
+        f"- PDF 렌더: `{render_check or '없음'}`",
+        f"- PDF 페이지 수: `{page_count or '없음'}`",
         f"- 검사 실행: {run_url or '확인 불가'}",
         "",
         "자동 병합은 수행되지 않으며 창업자의 최종 검토가 필요합니다.",
@@ -101,6 +125,15 @@ def main() -> int:
     parser.add_argument("--appended-checkpoint-key", default="")
     parser.add_argument("--expected-checkpoint-key", default="")
     parser.add_argument("--checkpoint-key-match", default="")
+    parser.add_argument("--pdf-font-name", action="append", default=[])
+    parser.add_argument("--pdf-fonts-embedded", default="")
+    parser.add_argument("--pdf-unicode-mapping-available", default="")
+    parser.add_argument("--extracted-text-check", default="")
+    parser.add_argument("--mojibake-detected", default="")
+    parser.add_argument("--required-text-found", default="")
+    parser.add_argument("--render-check", default="")
+    parser.add_argument("--page-count", default="")
+    parser.add_argument("--pdf-validation-status", default="")
     args = parser.parse_args()
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
     pull = client.pull_request(args.pr)
@@ -124,6 +157,15 @@ def main() -> int:
         appended_checkpoint_key=args.appended_checkpoint_key,
         expected_checkpoint_key=args.expected_checkpoint_key,
         checkpoint_key_match=args.checkpoint_key_match,
+        pdf_font_names=args.pdf_font_name,
+        pdf_fonts_embedded=args.pdf_fonts_embedded,
+        pdf_unicode_mapping_available=args.pdf_unicode_mapping_available,
+        extracted_text_check=args.extracted_text_check,
+        mojibake_detected=args.mojibake_detected,
+        required_text_found=args.required_text_found,
+        render_check=args.render_check,
+        page_count=args.page_count,
+        pdf_validation_status=args.pdf_validation_status,
     )
     client.update_pull_request_body(args.pr, updated)
     return 0

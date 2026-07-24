@@ -68,6 +68,33 @@ on:
       checkpoint_key_match:
         description: checkpoint key 일치 여부
         value: ${{ jobs.finalize.outputs.checkpoint_key_match }}
+      pdf_font_names:
+        description: PDF font names JSON 배열
+        value: ${{ jobs.finalize.outputs.pdf_font_names }}
+      pdf_fonts_embedded:
+        description: PDF font embedded 여부
+        value: ${{ jobs.finalize.outputs.pdf_fonts_embedded }}
+      pdf_unicode_mapping_available:
+        description: PDF Unicode mapping 여부
+        value: ${{ jobs.finalize.outputs.pdf_unicode_mapping_available }}
+      extracted_text_check:
+        description: PDF 텍스트 추출 검사
+        value: ${{ jobs.finalize.outputs.extracted_text_check }}
+      mojibake_detected:
+        description: mojibake 감지 여부
+        value: ${{ jobs.finalize.outputs.mojibake_detected }}
+      required_text_found:
+        description: 필수 텍스트 포함 여부
+        value: ${{ jobs.finalize.outputs.required_text_found }}
+      render_check:
+        description: PDF 렌더 검사
+        value: ${{ jobs.finalize.outputs.render_check }}
+      page_count:
+        description: PDF 페이지 수
+        value: ${{ jobs.finalize.outputs.page_count }}
+      pdf_validation_status:
+        description: PDF 검증 상태
+        value: ${{ jobs.finalize.outputs.pdf_validation_status }}
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -109,6 +136,15 @@ jobs:
       appended_checkpoint_key: ""
       expected_checkpoint_key: ""
       checkpoint_key_match: ""
+      pdf_font_names: "[]"
+      pdf_fonts_embedded: ""
+      pdf_unicode_mapping_available: ""
+      extracted_text_check: ""
+      mojibake_detected: ""
+      required_text_found: ""
+      render_check: ""
+      page_count: ""
+      pdf_validation_status: ""
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v7
@@ -174,6 +210,11 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: candidate/requirements.txt
+      - name: 한글 PDF 글꼴 및 렌더 도구 설치
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-nanum fontconfig poppler-utils
+          fc-match --format='%{file}\n' NanumGothic
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
@@ -255,6 +296,15 @@ jobs:
       appended_checkpoint_key: ${{ steps.candidate_validation.outputs.appended_checkpoint_key }}
       expected_checkpoint_key: ${{ steps.candidate_validation.outputs.expected_checkpoint_key }}
       checkpoint_key_match: ${{ steps.candidate_validation.outputs.checkpoint_key_match }}
+      pdf_font_names: ${{ steps.candidate_validation.outputs.pdf_font_names }}
+      pdf_fonts_embedded: ${{ steps.candidate_validation.outputs.pdf_fonts_embedded }}
+      pdf_unicode_mapping_available: ${{ steps.candidate_validation.outputs.pdf_unicode_mapping_available }}
+      extracted_text_check: ${{ steps.candidate_validation.outputs.extracted_text_check }}
+      mojibake_detected: ${{ steps.candidate_validation.outputs.mojibake_detected }}
+      required_text_found: ${{ steps.candidate_validation.outputs.required_text_found }}
+      render_check: ${{ steps.candidate_validation.outputs.render_check }}
+      page_count: ${{ steps.candidate_validation.outputs.page_count }}
+      pdf_validation_status: ${{ steps.candidate_validation.outputs.pdf_validation_status }}
       workflow_result: ${{ steps.workflow.outcome }}
       security_result: ${{ steps.security.outcome }}
     steps:
@@ -344,6 +394,15 @@ jobs:
       appended_checkpoint_key: ${{ steps.result.outputs.appended_checkpoint_key }}
       expected_checkpoint_key: ${{ steps.result.outputs.expected_checkpoint_key }}
       checkpoint_key_match: ${{ steps.result.outputs.checkpoint_key_match }}
+      pdf_font_names: ${{ steps.result.outputs.pdf_font_names }}
+      pdf_fonts_embedded: ${{ steps.result.outputs.pdf_fonts_embedded }}
+      pdf_unicode_mapping_available: ${{ steps.result.outputs.pdf_unicode_mapping_available }}
+      extracted_text_check: ${{ steps.result.outputs.extracted_text_check }}
+      mojibake_detected: ${{ steps.result.outputs.mojibake_detected }}
+      required_text_found: ${{ steps.result.outputs.required_text_found }}
+      render_check: ${{ steps.result.outputs.render_check }}
+      page_count: ${{ steps.result.outputs.page_count }}
+      pdf_validation_status: ${{ steps.result.outputs.pdf_validation_status }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v7
@@ -396,6 +455,15 @@ jobs:
           APPENDED_CHECKPOINT_KEY: ${{ needs.policy.outputs.appended_checkpoint_key || needs.verify-head.outputs.appended_checkpoint_key }}
           EXPECTED_CHECKPOINT_KEY: ${{ needs.policy.outputs.expected_checkpoint_key || needs.verify-head.outputs.expected_checkpoint_key }}
           CHECKPOINT_KEY_MATCH: ${{ needs.policy.outputs.checkpoint_key_match || needs.verify-head.outputs.checkpoint_key_match }}
+          PDF_FONT_NAMES: ${{ needs.policy.outputs.pdf_font_names || needs.verify-head.outputs.pdf_font_names || '[]' }}
+          PDF_FONTS_EMBEDDED: ${{ needs.policy.outputs.pdf_fonts_embedded || needs.verify-head.outputs.pdf_fonts_embedded }}
+          PDF_UNICODE_MAPPING_AVAILABLE: ${{ needs.policy.outputs.pdf_unicode_mapping_available || needs.verify-head.outputs.pdf_unicode_mapping_available }}
+          EXTRACTED_TEXT_CHECK: ${{ needs.policy.outputs.extracted_text_check || needs.verify-head.outputs.extracted_text_check }}
+          MOJIBAKE_DETECTED: ${{ needs.policy.outputs.mojibake_detected || needs.verify-head.outputs.mojibake_detected }}
+          REQUIRED_TEXT_FOUND: ${{ needs.policy.outputs.required_text_found || needs.verify-head.outputs.required_text_found }}
+          RENDER_CHECK: ${{ needs.policy.outputs.render_check || needs.verify-head.outputs.render_check }}
+          PAGE_COUNT: ${{ needs.policy.outputs.page_count || needs.verify-head.outputs.page_count }}
+          PDF_VALIDATION_STATUS: ${{ needs.policy.outputs.pdf_validation_status || needs.verify-head.outputs.pdf_validation_status }}
         run: >-
           python -m scripts.summarize_quality_checks
           --results-dir "$GITHUB_WORKSPACE/runtime/quality-results"
@@ -418,6 +486,15 @@ jobs:
           --appended-checkpoint-key "$APPENDED_CHECKPOINT_KEY"
           --expected-checkpoint-key "$EXPECTED_CHECKPOINT_KEY"
           --checkpoint-key-match "$CHECKPOINT_KEY_MATCH"
+          --pdf-font-names "$PDF_FONT_NAMES"
+          --pdf-fonts-embedded "$PDF_FONTS_EMBEDDED"
+          --pdf-unicode-mapping-available "$PDF_UNICODE_MAPPING_AVAILABLE"
+          --extracted-text-check "$EXTRACTED_TEXT_CHECK"
+          --mojibake-detected "$MOJIBAKE_DETECTED"
+          --required-text-found "$REQUIRED_TEXT_FOUND"
+          --render-check "$RENDER_CHECK"
+          --page-count "$PAGE_COUNT"
+          --pdf-validation-status "$PDF_VALIDATION_STATUS"
 
   manual-result:
     name: 수동 품질검사 결과 저장

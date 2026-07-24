@@ -6,6 +6,7 @@ import re
 from datetime import timedelta
 from pathlib import Path
 
+from agents.pdf_report import validate_report_pdf_bytes
 from agents.quality import ChangeValidation, VerificationStatus
 from agents.report_materializer import (
     report_artifact_path,
@@ -51,6 +52,15 @@ def _reject(
         appended_checkpoint_key=contract.appended_checkpoint_key,
         expected_checkpoint_key=contract.expected_checkpoint_key,
         checkpoint_key_match=contract.checkpoint_key_match,
+        pdf_font_names=contract.pdf_font_names,
+        pdf_fonts_embedded=contract.pdf_fonts_embedded,
+        pdf_unicode_mapping_available=contract.pdf_unicode_mapping_available,
+        extracted_text_check=contract.extracted_text_check,
+        mojibake_detected=contract.mojibake_detected,
+        required_text_found=contract.required_text_found,
+        render_check=contract.render_check,
+        page_count=contract.page_count,
+        pdf_validation_status=contract.pdf_validation_status,
     )
 
 
@@ -452,30 +462,65 @@ def validate_write_report_content(
             "보고서 파일을 읽을 수 없습니다.",
             [report_path.as_posix()],
         )
-    if len(content) < 20 or not content.startswith(b"%PDF-"):
+    required_text = [old_state.active_problem_id or "", expected_period]
+    if old_state.active_problem_id:
+        problem_path = control_root / f"research/problems/{old_state.active_problem_id}.json"
+        try:
+            problem = ProblemCandidate.model_validate_json(
+                problem_path.read_text(encoding="utf-8")
+            )
+            required_text.extend(
+                [
+                    problem.problem_id,
+                    problem.title,
+                    problem.description,
+                    *problem.target_users,
+                    *problem.evidence_ids,
+                ]
+            )
+        except (OSError, ValueError):
+            required_text.append(old_state.active_problem_id)
+    pdf_validation = validate_report_pdf_bytes(
+        content,
+        required_text=[item for item in required_text if item],
+    )
+    pdf_contract = ChangeValidation(
+        **{
+            **checkpoint_contract.__dict__,
+            "pdf_font_names": pdf_validation.font_names,
+            "pdf_fonts_embedded": pdf_validation.fonts_embedded,
+            "pdf_unicode_mapping_available": pdf_validation.unicode_mapping_available,
+            "extracted_text_check": pdf_validation.extracted_text_check,
+            "mojibake_detected": pdf_validation.mojibake_detected,
+            "required_text_found": pdf_validation.required_text_found,
+            "render_check": pdf_validation.render_check,
+            "page_count": pdf_validation.page_count,
+            "pdf_validation_status": pdf_validation.status,
+        }
+    )
+    if pdf_validation.status != "valid":
         return _reject(
-            contract,
-            "invalid_report_path",
-            "보고서 파일은 비어 있지 않은 PDF여야 합니다.",
+            pdf_contract,
+            pdf_validation.rejection_code or "invalid_report_path",
+            pdf_validation.rejection_reason or "보고서 PDF 검증에 실패했습니다.",
             [report_path.as_posix()],
         )
     return ChangeValidation(
-        status=contract.status,
-        rejection_code=contract.rejection_code,
-        rejection_reason=contract.rejection_reason,
-        rejected_files=contract.rejected_files,
-        changed_files_count=contract.changed_files_count,
-        action_type=contract.action_type,
-        problem_id=contract.problem_id,
-        allowed_files=contract.allowed_files,
-        report_type="weekly",
-        report_period=expected_period,
-        artifact_path=expected_path,
-        operation_key=operation_key,
-        operation_key_hash=operation_key_hash,
-        appended_checkpoint_key=appended_key,
-        expected_checkpoint_key=operation_key_hash,
-        checkpoint_key_match=checkpoint_key_match,
+        **{
+            **pdf_contract.__dict__,
+            "status": contract.status,
+            "rejection_code": contract.rejection_code,
+            "rejection_reason": contract.rejection_reason,
+            "rejected_files": contract.rejected_files,
+            "report_type": "weekly",
+            "report_period": expected_period,
+            "artifact_path": expected_path,
+            "operation_key": operation_key,
+            "operation_key_hash": operation_key_hash,
+            "appended_checkpoint_key": appended_key,
+            "expected_checkpoint_key": operation_key_hash,
+            "checkpoint_key_match": checkpoint_key_match,
+        }
     )
 
 

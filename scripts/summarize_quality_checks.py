@@ -46,6 +46,15 @@ def aggregate_quality_results(
     appended_checkpoint_key: str = "",
     expected_checkpoint_key: str = "",
     checkpoint_key_match: str = "",
+    pdf_font_names: list[str] | None = None,
+    pdf_fonts_embedded: str = "",
+    pdf_unicode_mapping_available: str = "",
+    extracted_text_check: str = "",
+    mojibake_detected: str = "",
+    required_text_found: str = "",
+    render_check: str = "",
+    page_count: str = "",
+    pdf_validation_status: str = "",
 ) -> dict[str, object]:
     results_dir.mkdir(parents=True, exist_ok=True)
     checks = [(name, outcomes.get(variable, "skipped")) for name, variable in CHECKS]
@@ -80,6 +89,15 @@ def aggregate_quality_results(
         "appended_checkpoint_key": appended_checkpoint_key,
         "expected_checkpoint_key": expected_checkpoint_key,
         "checkpoint_key_match": checkpoint_key_match,
+        "pdf_font_names": pdf_font_names or [],
+        "pdf_fonts_embedded": pdf_fonts_embedded,
+        "pdf_unicode_mapping_available": pdf_unicode_mapping_available,
+        "extracted_text_check": extracted_text_check,
+        "mojibake_detected": mojibake_detected,
+        "required_text_found": required_text_found,
+        "render_check": render_check,
+        "page_count": page_count,
+        "pdf_validation_status": pdf_validation_status,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -108,6 +126,15 @@ def main() -> int:
     parser.add_argument("--appended-checkpoint-key", default="")
     parser.add_argument("--expected-checkpoint-key", default="")
     parser.add_argument("--checkpoint-key-match", default="")
+    parser.add_argument("--pdf-font-names", default="[]")
+    parser.add_argument("--pdf-fonts-embedded", default="")
+    parser.add_argument("--pdf-unicode-mapping-available", default="")
+    parser.add_argument("--extracted-text-check", default="")
+    parser.add_argument("--mojibake-detected", default="")
+    parser.add_argument("--required-text-found", default="")
+    parser.add_argument("--render-check", default="")
+    parser.add_argument("--page-count", default="")
+    parser.add_argument("--pdf-validation-status", default="")
     args = parser.parse_args()
     try:
         rejected_files = json.loads(args.rejected_files)
@@ -125,6 +152,14 @@ def main() -> int:
         isinstance(item, str) for item in allowed_files
     ):
         allowed_files = []
+    try:
+        pdf_font_names = json.loads(args.pdf_font_names)
+    except json.JSONDecodeError:
+        pdf_font_names = []
+    if not isinstance(pdf_font_names, list) or not all(
+        isinstance(item, str) for item in pdf_font_names
+    ):
+        pdf_font_names = []
     result = aggregate_quality_results(
         results_dir=args.results_dir,
         output=args.output,
@@ -147,6 +182,15 @@ def main() -> int:
         appended_checkpoint_key=args.appended_checkpoint_key,
         expected_checkpoint_key=args.expected_checkpoint_key,
         checkpoint_key_match=args.checkpoint_key_match,
+        pdf_font_names=pdf_font_names,
+        pdf_fonts_embedded=args.pdf_fonts_embedded,
+        pdf_unicode_mapping_available=args.pdf_unicode_mapping_available,
+        extracted_text_check=args.extracted_text_check,
+        mojibake_detected=args.mojibake_detected,
+        required_text_found=args.required_text_found,
+        render_check=args.render_check,
+        page_count=args.page_count,
+        pdf_validation_status=args.pdf_validation_status,
     )
     github_output = os.getenv("GITHUB_OUTPUT")
     if github_output:
@@ -167,6 +211,14 @@ def main() -> int:
                 "appended_checkpoint_key",
                 "expected_checkpoint_key",
                 "checkpoint_key_match",
+                "pdf_fonts_embedded",
+                "pdf_unicode_mapping_available",
+                "extracted_text_check",
+                "mojibake_detected",
+                "required_text_found",
+                "render_check",
+                "page_count",
+                "pdf_validation_status",
             ):
                 value = result[key]
                 handle.write(f"{key}={value}\n")
@@ -178,6 +230,11 @@ def main() -> int:
             handle.write(
                 "allowed_files="
                 + json.dumps(result["allowed_files"], ensure_ascii=False, separators=(",", ":"))
+                + "\n"
+            )
+            handle.write(
+                "pdf_font_names="
+                + json.dumps(result["pdf_font_names"], ensure_ascii=False, separators=(",", ":"))
                 + "\n"
             )
     summary_path = os.getenv("GITHUB_STEP_SUMMARY")
@@ -201,6 +258,9 @@ def main() -> int:
                 f"- append된 checkpoint key: `{result['appended_checkpoint_key'] or '없음'}`\n"
                 f"- 기대 checkpoint key: `{result['expected_checkpoint_key'] or '없음'}`\n"
                 f"- checkpoint key 일치: `{result['checkpoint_key_match'] or '없음'}`\n"
+                f"- PDF 검증: `{result['pdf_validation_status'] or '없음'}`\n"
+                f"- PDF 글꼴: `{', '.join(result['pdf_font_names']) or '없음'}`\n"
+                f"- PDF 렌더: `{result['render_check'] or '없음'}`\n"
                 f"- 검증 SHA: `{result['verified_sha'] or '없음'}`\n"
             )
     return 0
