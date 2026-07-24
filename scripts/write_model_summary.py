@@ -49,6 +49,22 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         for item in inference.pydantic_validation_errors
         if item.expected_type
     ) or "none"
+
+    def validation_error_summary(items: list[object]) -> str:
+        parts = []
+        for item in items:
+            path = getattr(item, "path", "<root>")
+            error_type = getattr(item, "error_type", "validation_error")
+            missing = getattr(item, "missing_field", None)
+            extra = getattr(item, "extra_field", None)
+            detail = f"{path}: {error_type}"
+            if missing:
+                detail += f" missing={missing}"
+            if extra:
+                detail += f" extra={extra}"
+            parts.append(detail)
+        return "; ".join(parts) or "none"
+
     rows = [
         ("lifecycle_stage", diagnostic.lifecycle_stage.value),
         ("allowed_action_types", allowed),
@@ -139,6 +155,26 @@ def render_summary(diagnostic: ModelActionDiagnostic) -> str:
         ("failure_stage", inference.failure_stage or "none"),
         ("rejection_code", rejection_code),
         ("rejection_reason", rejection_reason),
+        (
+            "initial_returned_top_level_keys",
+            ", ".join(inference.initial_returned_top_level_keys) or "none",
+        ),
+        (
+            "correction_returned_top_level_keys",
+            ", ".join(inference.correction_returned_top_level_keys) or "none",
+        ),
+        (
+            "correction_response_was_request_echo",
+            str(inference.correction_response_was_request_echo).lower(),
+        ),
+        (
+            "initial_response_validation_errors",
+            validation_error_summary(inference.initial_response_validation_errors),
+        ),
+        (
+            "correction_response_validation_errors",
+            validation_error_summary(inference.correction_response_validation_errors),
+        ),
         ("pydantic_validation_error_paths", validation_paths),
         ("pydantic_validation_errors", validation_errors),
         ("pydantic_validation_error_count", inference.pydantic_validation_error_count),

@@ -154,6 +154,31 @@ ENGLISH_EVALUATE_IDEAS = {
     ],
 }
 
+VALID_WRITE_REPORT = {
+    "role": "researcher",
+    "action_type": "write_report",
+    "title": "재고 목록 탐색 보고서",
+    "summary": "재고 운영자가 긴 목록에서 위치를 잃는 문제를 정리합니다.",
+    "rationale": "활성 문제의 재고 목록 탐색 맥락을 보존해야 합니다.",
+    "risk_level": "low",
+    "requires_approval": False,
+    "evidence_ids": ["signal-001", "signal-002"],
+    "report": {
+        "problem_id": "problem-inventory-navigation",
+        "report_type": "weekly",
+        "title": "재고 목록 탐색 보고서",
+        "summary": "재고 목록 위치 복귀 문제와 근거를 요약합니다.",
+        "period_summary": "이번 주에는 목록 탐색 마찰과 운영자 부담을 검토했습니다.",
+        "sections": [
+            {
+                "heading": "핵심 판단",
+                "content": "긴 재고 목록에서 위치 복귀를 돕는 방향을 유지합니다.",
+            }
+        ],
+        "evidence_ids": ["signal-001", "signal-002"],
+    },
+}
+
 
 def _completion(
     content: object = None,
@@ -829,30 +854,7 @@ def test_write_report_truncated_evidence_ids_trigger_correction_and_preserve_ful
 
 
 def test_write_report_unrelated_problem_domain_triggers_correction_retry():
-    valid = {
-        "role": "researcher",
-        "action_type": "write_report",
-        "title": "재고 목록 탐색 보고서",
-        "summary": "재고 운영자가 긴 목록에서 위치를 잃는 문제를 정리합니다.",
-        "rationale": "활성 문제의 재고 목록 탐색 맥락을 보존해야 합니다.",
-        "risk_level": "low",
-        "requires_approval": False,
-        "evidence_ids": ["signal-001", "signal-002"],
-        "report": {
-            "problem_id": "problem-inventory-navigation",
-            "report_type": "weekly",
-            "title": "재고 목록 탐색 보고서",
-            "summary": "재고 목록 위치 복귀 문제와 근거를 요약합니다.",
-            "period_summary": "이번 주에는 목록 탐색 마찰과 운영자 부담을 검토했습니다.",
-            "sections": [
-                {
-                    "heading": "핵심 판단",
-                    "content": "긴 재고 목록에서 위치 복귀를 돕는 방향을 유지합니다.",
-                }
-            ],
-            "evidence_ids": ["signal-001", "signal-002"],
-        },
-    }
+    valid = json.loads(json.dumps(VALID_WRITE_REPORT))
     invalid = json.loads(json.dumps(valid))
     invalid["report"]["summary"] = "게임 내 탐색과 커뮤니티 선택 드롭다운 문제를 요약합니다."
     requests: list[dict] = []
@@ -900,6 +902,82 @@ def test_write_report_unrelated_problem_domain_triggers_correction_retry():
     correction_prompt = "\n".join(item["content"] for item in requests[1]["messages"])
     assert "problem_context_mismatch" in correction_prompt
     assert "Inventory list navigation" in correction_prompt
+    assert "Do not copy these labels or context keys" in correction_prompt
+    assert "Allowed top-level response fields" in correction_prompt
+    assert "Valid response example" in correction_prompt
+
+
+def test_write_report_correction_request_echo_is_detected_and_reported():
+    invalid = json.loads(json.dumps(VALID_WRITE_REPORT))
+    invalid["report"]["summary"] = "게임 내 탐색과 커뮤니티 선택 드롭다운 문제를 요약합니다."
+    echo_payload = {
+        "action_type": "write_report",
+        "active_problem_id": "problem-inventory-navigation",
+        "allowed_evidence_ids": ["signal-001", "signal-002"],
+        "instruction": "Rewrite the report using the active problem context.",
+        "active_problem": {
+            "problem_id": "problem-inventory-navigation",
+            "title": "Inventory list navigation",
+            "description": "Operators lose their place in long inventory lists.",
+            "target_users": ["inventory operators"],
+            "evidence_ids": ["signal-001", "signal-002"],
+        },
+        "action": invalid,
+        "validation_errors": [{"path": "report", "type": "problem_context_mismatch"}],
+        "schema_requirements": {"action_type": "write_report"},
+    }
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else echo_payload
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "required_action": "write_report",
+                        "lifecycle_stage": "DISTRIBUTION_CHECK",
+                        "active_problem_id": "problem-inventory-navigation",
+                        "active_problem": echo_payload["active_problem"],
+                        "allowed_evidence_ids": ["signal-001", "signal-002"],
+                    }
+                ),
+            },
+        ],
+        active_problem_id="problem-inventory-navigation",
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.action.action_type == ActionType.NO_OP
+    assert result.rejection_code == ActionRejectionCode.CORRECTION_REQUEST_ECHO
+    assert result.diagnostic.failure_stage == FailureStage.RESPONSE_VALIDATION
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.correction_response_was_request_echo
+    assert result.diagnostic.completed_inference_calls == 2
+    assert result.diagnostic.response_validation_failed_calls == 2
+    assert result.diagnostic.initial_returned_top_level_keys
+    assert "report" in result.diagnostic.initial_returned_top_level_keys
+    assert "instruction" in result.diagnostic.correction_returned_top_level_keys
+    assert "active_problem" in result.diagnostic.correction_returned_top_level_keys
+    assert any(
+        error.error_type == ActionRejectionCode.CORRECTION_REQUEST_ECHO.value
+        for error in result.diagnostic.correction_response_validation_errors
+    )
+    assert any(
+        error.extra_field and "instruction" in error.extra_field
+        for error in result.diagnostic.pydantic_validation_errors
+    )
+    correction_prompt = "\n".join(item["content"] for item in requests[1]["messages"])
+    assert "No Markdown, no explanation, no copied input JSON." in correction_prompt
+    assert json.dumps(echo_payload, ensure_ascii=False) not in correction_prompt
 
 
 def test_short_value_preserves_opaque_identifiers_for_all_action_contexts():

@@ -95,6 +95,7 @@ class FailureStage(StrEnum):
     JSON_EXTRACTION = "json_extraction"
     JSON_PARSE = "json_parse"
     SCHEMA_VALIDATION = "schema_validation"
+    RESPONSE_VALIDATION = "response_validation"
     LIFECYCLE_VALIDATION = "lifecycle_validation"
 
 
@@ -128,6 +129,7 @@ class ActionRejectionCode(StrEnum):
     INPUT_BUDGET_EXCEEDED = "input_budget_exceeded"
     LANGUAGE_MISMATCH = "language_mismatch"
     PROBLEM_CONTEXT_MISMATCH = "problem_context_mismatch"
+    CORRECTION_REQUEST_ECHO = "correction_request_echo"
     MISSING_ACTIVE_PROBLEM = "missing_active_problem"
     MISSING_PROBLEM_RECORD = "missing_problem_record"
     INSUFFICIENT_VALIDATED_EVIDENCE = "insufficient_validated_evidence"
@@ -524,6 +526,15 @@ class ModelInferenceDiagnostic(StrictModel):
         default_factory=list, max_length=50
     )
     pydantic_validation_error_count: int = Field(default=0, ge=0, le=50)
+    initial_response_validation_errors: list[PydanticErrorDiagnostic] = Field(
+        default_factory=list, max_length=50
+    )
+    correction_response_validation_errors: list[PydanticErrorDiagnostic] = Field(
+        default_factory=list, max_length=50
+    )
+    initial_returned_top_level_keys: list[str] = Field(default_factory=list, max_length=50)
+    correction_returned_top_level_keys: list[str] = Field(default_factory=list, max_length=50)
+    correction_response_was_request_echo: bool = False
     validation_correction_attempted: bool = False
     completed_inference_calls: int = Field(default=0, ge=0, le=2)
     reserved_inference_calls: int = Field(default=0, ge=0, le=2)

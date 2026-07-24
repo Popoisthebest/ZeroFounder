@@ -103,6 +103,39 @@ DIAGNOSTIC_ACTION = {
     "files": [],
     "dependency_proposal": None,
 }
+CORRECTION_CONTEXT_RESPONSE_KEYS = {
+    "active_problem_id",
+    "allowed_evidence_ids",
+    "instruction",
+    "active_problem",
+    "action",
+    "validation_errors",
+    "schema_requirements",
+}
+WRITE_REPORT_RESPONSE_KEYS = {
+    "role",
+    "action_type",
+    "title",
+    "summary",
+    "rationale",
+    "evidence_ids",
+    "risk_level",
+    "requires_approval",
+    "report",
+    "state_transition",
+}
+WRITE_REPORT_REQUIRED_KEYS = {
+    "role",
+    "action_type",
+    "title",
+    "summary",
+    "rationale",
+    "risk_level",
+    "requires_approval",
+    "report",
+}
+
+
 class CreateIdeaCandidatesCorrectionEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -459,6 +492,79 @@ def _latest_user_json(messages: list[dict[str, str]]) -> dict[str, Any]:
     return {}
 
 
+def _returned_top_level_keys(parsed: dict[str, Any]) -> list[str]:
+    return sorted(str(key)[:100] for key in parsed)[:50]
+
+
+def _correction_echo_diagnostic(returned_keys: list[str]) -> PydanticErrorDiagnostic:
+    context_keys = sorted(set(returned_keys) & CORRECTION_CONTEXT_RESPONSE_KEYS)
+    return PydanticErrorDiagnostic(
+        path="<root>",
+        error_type=ActionRejectionCode.CORRECTION_REQUEST_ECHO.value,
+        message=(
+            "correction response copied prompt context keys instead of returning one "
+            "write_report action JSON object"
+        ),
+        validator_name="correction_response_contract",
+        failure_field_path="<root>",
+        extra_field=", ".join(context_keys)[:200] if context_keys else None,
+        expected_type="write_report action JSON",
+    )
+
+
+def _is_correction_request_echo(fragment: dict[str, Any]) -> bool:
+    returned_keys = fragment.get("returned_top_level_keys")
+    if not isinstance(returned_keys, list):
+        return False
+    key_set = {item for item in returned_keys if isinstance(item, str)}
+    if not key_set & CORRECTION_CONTEXT_RESPONSE_KEYS:
+        return False
+    required_present = len(key_set & WRITE_REPORT_REQUIRED_KEYS)
+    return required_present < max(4, len(WRITE_REPORT_REQUIRED_KEYS) // 2)
+
+
+def _record_response_validation_details(
+    diagnostic: ModelInferenceDiagnostic,
+    error: ModelPipelineError,
+    *,
+    is_correction: bool,
+) -> None:
+    returned_keys = [
+        item
+        for item in error.failed_action_fragment.get("returned_top_level_keys", [])
+        if isinstance(item, str)
+    ][:50]
+    if is_correction:
+        diagnostic.correction_response_validation_errors = error.validation_errors
+        diagnostic.correction_returned_top_level_keys = returned_keys
+    else:
+        diagnostic.initial_response_validation_errors = error.validation_errors
+        diagnostic.initial_returned_top_level_keys = returned_keys
+
+
+def _correction_request_echo_error(error: ModelPipelineError) -> ModelPipelineError:
+    returned_keys = [
+        item
+        for item in error.failed_action_fragment.get("returned_top_level_keys", [])
+        if isinstance(item, str)
+    ][:50]
+    diagnostics = [_correction_echo_diagnostic(returned_keys), *error.validation_errors]
+    return ModelPipelineError(
+        FailureStage.RESPONSE_VALIDATION,
+        (
+            "correction_request_echo: correction response copied request context "
+            "instead of action JSON"
+        ),
+        code=ActionRejectionCode.CORRECTION_REQUEST_ECHO,
+        retryable=False,
+        fallback_eligible=False,
+        validation_paths=[item.path for item in diagnostics],
+        validation_errors=diagnostics[:50],
+        failed_action_fragment=error.failed_action_fragment,
+        original_action_type=error.original_action_type,
+    )
+
+
 def _failed_action_fragment(
     parsed: dict[str, Any],
     validation_errors: list[PydanticErrorDiagnostic],
@@ -482,6 +588,7 @@ def _failed_action_fragment(
         "action_type": parsed.get("action_type"),
         "evidence_ids": evidence_ids if isinstance(evidence_ids, list) else [],
         "failed_candidates": failed_candidates,
+        "returned_top_level_keys": _returned_top_level_keys(parsed),
     }
 
 
@@ -489,13 +596,15 @@ def _language_failed_fragment(
     action: ActionEnvelope,
     mismatches: list[PydanticErrorDiagnostic],
 ) -> dict[str, Any]:
+    dumped = action.model_dump(mode="json", by_alias=True)
     return {
         "action_type": action.action_type.value,
         "evidence_ids": action.evidence_ids,
         "language_mismatch": True,
         "expected_language": operating_language(),
         "mismatch_paths": [item.path for item in mismatches],
-        "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1200),
+        "returned_top_level_keys": _returned_top_level_keys(dumped),
+        "action": _short_value(dumped, max_chars=1200),
     }
 
 
@@ -523,13 +632,15 @@ def _evidence_failed_fragment(
     returned_evidence_ids: list[str],
     malformed_evidence_ids: list[str],
 ) -> dict[str, Any]:
+    dumped = action.model_dump(mode="json", by_alias=True)
     payload = {
         "action_type": action.action_type.value,
         "active_problem_id": None,
         "allowed_evidence_ids": allowed_evidence_ids,
         "returned_evidence_ids": returned_evidence_ids,
         "malformed_evidence_ids": malformed_evidence_ids,
-        "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1600),
+        "returned_top_level_keys": _returned_top_level_keys(dumped),
+        "action": _short_value(dumped, max_chars=1600),
     }
     return payload
 
@@ -585,12 +696,14 @@ def _report_problem_failed_fragment(
     active_problem: dict[str, Any],
     reason: str,
 ) -> dict[str, Any]:
+    dumped = action.model_dump(mode="json", by_alias=True)
     return {
         "action_type": action.action_type.value,
         "active_problem_id": active_problem_id,
         "active_problem": _short_value(active_problem, max_chars=1000),
         "reason": reason,
-        "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1600),
+        "returned_top_level_keys": _returned_top_level_keys(dumped),
+        "action": _short_value(dumped, max_chars=1600),
     }
 
 
@@ -858,7 +971,7 @@ class RequestBudgetManager:
             system_instruction=(
                 "Return one write_report JSON object only. Provide report structure only. "
                 "Do not include files, file paths, artifact paths, placeholder paths, or "
-                "state_transition; trusted repository code will materialize the report file. "
+                "report artifact paths; trusted repository code will materialize the report file. "
                 + korean_output_contract()
             ),
             removed_sections=[
@@ -1462,7 +1575,7 @@ class RequestBudgetManager:
         if action_type == ActionType.CREATE_IDEA_CANDIDATES:
             return {
                 "action_type": action_type.value,
-                "forbidden_fields": ["files", "state_transition"],
+                "forbidden_fields": ["files"],
                 "candidate_count": {"min": 2, "max": 8},
                 "evidence_ids": "Use only allowed_evidence_ids.",
                 "idea_id": "lowercase id matching ^[a-z0-9][a-z0-9._:-]{0,127}$",
@@ -1492,6 +1605,7 @@ class RequestBudgetManager:
                     "evidence_ids",
                 ],
                 "forbidden_fields": ["files", "state_transition"],
+                "allowed_top_level_fields": sorted(WRITE_REPORT_RESPONSE_KEYS),
                 "forbidden_path_values": [
                     "missing_file.txt",
                     "placeholder.pdf",
@@ -1517,6 +1631,135 @@ class RequestBudgetManager:
             ],
         }
 
+    @staticmethod
+    def _write_report_example(
+        payload: dict[str, Any],
+        allowed_evidence_ids: list[str],
+    ) -> dict[str, Any]:
+        active_problem = payload.get("active_problem")
+        active_problem = active_problem if isinstance(active_problem, dict) else {}
+        problem_id = (
+            payload.get("active_problem_id")
+            or active_problem.get("problem_id")
+            or payload.get("action", {}).get("report", {}).get("problem_id")
+        )
+        problem_id = str(problem_id) if problem_id else "problem-context-required"
+        title = active_problem.get("title")
+        title = str(title) if title else "활성 문제 주간 보고서"
+        evidence_ids = [item for item in allowed_evidence_ids if isinstance(item, str)][:3]
+        return {
+            "role": "researcher",
+            "action_type": "write_report",
+            "title": f"{title} 주간 보고서"[:200],
+            "summary": "활성 문제와 검증된 근거를 바탕으로 이번 주 판단을 한국어로 요약합니다.",
+            "rationale": "허용된 evidence ID와 저장된 문제 맥락만 사용해 보고서를 작성합니다.",
+            "evidence_ids": evidence_ids,
+            "risk_level": "low",
+            "requires_approval": False,
+            "report": {
+                "problem_id": problem_id,
+                "report_type": "weekly",
+                "title": f"{title} 주간 보고서"[:200],
+                "summary": "활성 문제의 현재 상태와 검증된 근거를 중심으로 운영 판단을 정리합니다.",
+                "period_summary": (
+                    "이번 주에는 활성 문제의 근거와 다음 의사결정에 필요한 내용을 "
+                    "검토했습니다."
+                ),
+                "sections": [
+                    {
+                        "heading": "핵심 판단",
+                        "content": (
+                            "저장된 문제 제목, 대상 사용자, 허용된 evidence ID를 유지하며 "
+                            "다음 단계 판단에 필요한 내용을 한국어로 정리합니다."
+                        ),
+                    }
+                ],
+                "evidence_ids": evidence_ids,
+            },
+            "state_transition": None,
+        }
+
+    def _write_report_correction_variant(
+        self,
+        variant: PromptVariant,
+        *,
+        payload: dict[str, Any],
+        response_model: type[BaseModel],
+        allowed_evidence_ids: list[str],
+    ) -> PromptVariant:
+        example = self._write_report_example(payload, allowed_evidence_ids)
+        validation_errors = payload.get("validation_errors", [])
+        previous_action = payload.get("action", {})
+        active_problem = payload.get("active_problem", {})
+        lines = [
+            "Correction context only. Do not copy these labels or context keys into the response.",
+            "",
+            "Required response: one write_report action JSON object only.",
+            "No Markdown, no explanation, no copied input JSON.",
+            "Allowed top-level response fields: "
+            + ", ".join(sorted(WRITE_REPORT_RESPONSE_KEYS)),
+            "Forbidden response/context keys: "
+            + ", ".join(sorted(CORRECTION_CONTEXT_RESPONSE_KEYS)),
+            (
+                "active_problem_id and allowed_evidence_ids are validation context "
+                "only; do not return them as top-level fields."
+            ),
+            "report.problem_id must exactly equal the active problem ID.",
+            (
+                "evidence_ids must use only the full allowed IDs below. Do not "
+                "shorten, prefix-match, or invent IDs."
+            ),
+            (
+                "All descriptive strings must be natural Korean. Keep ids, enum "
+                "values, action_type, and scores unchanged."
+            ),
+            "",
+            f"Active problem ID: {payload.get('active_problem_id') or variant.active_problem_id}",
+            "Allowed evidence IDs:",
+            *[f"- {item}" for item in allowed_evidence_ids],
+            "",
+            "Active problem context:",
+            json.dumps(_short_value(active_problem, max_chars=1200), ensure_ascii=False, indent=2),
+            "",
+            "Previous validation errors:",
+            json.dumps(validation_errors, ensure_ascii=False, indent=2),
+            "",
+            "Previous invalid action fragment:",
+            json.dumps(_short_value(previous_action, max_chars=1800), ensure_ascii=False, indent=2),
+            "",
+            "Valid response example using the current context:",
+            json.dumps(example, ensure_ascii=False, indent=2),
+        ]
+        user_content = "\n".join(lines)
+        return self._copy_variant(
+            variant,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are correcting a failed write_report response. "
+                        "Return only one JSON object that conforms to the write_report "
+                        "response schema. Do not return correction context keys such as "
+                        "instruction, active_problem, allowed_evidence_ids, validation_errors, "
+                        "schema_requirements, or action. "
+                        + korean_output_contract()
+                    ),
+                },
+                {"role": "user", "content": user_content},
+            ],
+            response_model=response_model,
+            context_chars=len(user_content),
+            allowed_evidence_ids=allowed_evidence_ids,
+            is_validation_correction=True,
+            compacted_context=True,
+            removed_context_sections=[
+                "full_original_context",
+                "failed_model_response_text",
+                "full_action_schema",
+                "included_signal_records",
+            ],
+        )
+
     def _correction_variant(
         self,
         variant: PromptVariant,
@@ -1526,14 +1769,15 @@ class RequestBudgetManager:
         response_model: type[BaseModel],
         allowed_evidence_ids: list[str],
     ) -> PromptVariant:
+        if action_type == ActionType.WRITE_REPORT:
+            return self._write_report_correction_variant(
+                variant,
+                payload=payload,
+                response_model=response_model,
+                allowed_evidence_ids=allowed_evidence_ids,
+            )
         user_content = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
         extra = ""
-        if action_type == ActionType.WRITE_REPORT:
-            extra = (
-                " For write_report, correct only the report structure. Do not include files, "
-                "file paths, artifact paths, missing_file.txt, placeholder.pdf, example/path, "
-                "or state_transition. Preserve IDs, evidence, and report meaning."
-            )
         return self._copy_variant(
             variant,
             messages=[
@@ -2213,14 +2457,32 @@ class GitHubModelsClient:
             except ModelPipelineError as exc:
                 if request_id is not None:
                     self.limiter.mark_response_validation_failed(request_id)
+                if (
+                    active_variant.is_validation_correction
+                    and exc.stage == FailureStage.SCHEMA_VALIDATION
+                    and _is_correction_request_echo(exc.failed_action_fragment)
+                ):
+                    exc = _correction_request_echo_error(exc)
+                    diagnostic.correction_response_was_request_echo = True
                 last_error = exc
                 original_action_type = exc.original_action_type or original_action_type
                 self.limiter.record_failure()
-                if exc.stage == FailureStage.SCHEMA_VALIDATION:
+                if exc.stage in {
+                    FailureStage.SCHEMA_VALIDATION,
+                    FailureStage.RESPONSE_VALIDATION,
+                }:
+                    _record_response_validation_details(
+                        diagnostic,
+                        exc,
+                        is_correction=active_variant.is_validation_correction,
+                    )
                     diagnostic.pydantic_validation_error_paths = exc.validation_paths
                     diagnostic.pydantic_validation_errors = exc.validation_errors
                     diagnostic.pydantic_validation_error_count = len(exc.validation_errors)
-                    if calls < call_limit:
+                    if (
+                        exc.stage == FailureStage.SCHEMA_VALIDATION
+                        and calls < call_limit
+                    ):
                         diagnostic.validation_correction_attempted = True
                         diagnostic.retry_attempted = True
                         if current_mode == ModelRequestMode.JSON_SCHEMA:
