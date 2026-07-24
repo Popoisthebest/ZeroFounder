@@ -42,6 +42,10 @@ def aggregate_quality_results(
     report_period: str = "",
     artifact_path: str = "",
     operation_key: str = "",
+    operation_key_hash: str = "",
+    appended_checkpoint_key: str = "",
+    expected_checkpoint_key: str = "",
+    checkpoint_key_match: str = "",
 ) -> dict[str, object]:
     results_dir.mkdir(parents=True, exist_ok=True)
     checks = [(name, outcomes.get(variable, "skipped")) for name, variable in CHECKS]
@@ -72,6 +76,10 @@ def aggregate_quality_results(
         "report_period": report_period,
         "artifact_path": artifact_path,
         "operation_key": operation_key,
+        "operation_key_hash": operation_key_hash,
+        "appended_checkpoint_key": appended_checkpoint_key,
+        "expected_checkpoint_key": expected_checkpoint_key,
+        "checkpoint_key_match": checkpoint_key_match,
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -96,6 +104,10 @@ def main() -> int:
     parser.add_argument("--report-period", default="")
     parser.add_argument("--artifact-path", default="")
     parser.add_argument("--operation-key", default="")
+    parser.add_argument("--operation-key-hash", default="")
+    parser.add_argument("--appended-checkpoint-key", default="")
+    parser.add_argument("--expected-checkpoint-key", default="")
+    parser.add_argument("--checkpoint-key-match", default="")
     args = parser.parse_args()
     try:
         rejected_files = json.loads(args.rejected_files)
@@ -131,6 +143,10 @@ def main() -> int:
         report_period=args.report_period,
         artifact_path=args.artifact_path,
         operation_key=args.operation_key,
+        operation_key_hash=args.operation_key_hash,
+        appended_checkpoint_key=args.appended_checkpoint_key,
+        expected_checkpoint_key=args.expected_checkpoint_key,
+        checkpoint_key_match=args.checkpoint_key_match,
     )
     github_output = os.getenv("GITHUB_OUTPUT")
     if github_output:
@@ -147,6 +163,10 @@ def main() -> int:
                 "report_period",
                 "artifact_path",
                 "operation_key",
+                "operation_key_hash",
+                "appended_checkpoint_key",
+                "expected_checkpoint_key",
+                "checkpoint_key_match",
             ):
                 value = result[key]
                 handle.write(f"{key}={value}\n")
@@ -177,6 +197,10 @@ def main() -> int:
                 f"- 보고서 기간: `{result['report_period'] or '없음'}`\n"
                 f"- 산출물 경로: `{result['artifact_path'] or '없음'}`\n"
                 f"- operation key: `{result['operation_key'] or '없음'}`\n"
+                f"- operation key hash: `{result['operation_key_hash'] or '없음'}`\n"
+                f"- append된 checkpoint key: `{result['appended_checkpoint_key'] or '없음'}`\n"
+                f"- 기대 checkpoint key: `{result['expected_checkpoint_key'] or '없음'}`\n"
+                f"- checkpoint key 일치: `{result['checkpoint_key_match'] or '없음'}`\n"
                 f"- 검증 SHA: `{result['verified_sha'] or '없음'}`\n"
             )
     return 0

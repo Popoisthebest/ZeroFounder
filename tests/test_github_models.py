@@ -751,6 +751,7 @@ def test_write_report_truncated_evidence_ids_trigger_correction_and_preserve_ful
         "requires_approval": False,
         "evidence_ids": full_ids,
         "report": {
+            "problem_id": "problem-navigation-inefficiency",
             "report_type": "weekly",
             "title": "주간 운영 보고서",
             "summary": "검증된 근거 식별자를 보존한 주간 운영 보고서를 작성합니다.",
@@ -825,6 +826,80 @@ def test_write_report_truncated_evidence_ids_trigger_correction_and_preserve_ful
         assert evidence_id in correction_prompt
     assert '"id":"' + full_ids[0] in initial_prompt
     assert "prefix-match" in correction_prompt
+
+
+def test_write_report_unrelated_problem_domain_triggers_correction_retry():
+    valid = {
+        "role": "researcher",
+        "action_type": "write_report",
+        "title": "재고 목록 탐색 보고서",
+        "summary": "재고 운영자가 긴 목록에서 위치를 잃는 문제를 정리합니다.",
+        "rationale": "활성 문제의 재고 목록 탐색 맥락을 보존해야 합니다.",
+        "risk_level": "low",
+        "requires_approval": False,
+        "evidence_ids": ["signal-001", "signal-002"],
+        "report": {
+            "problem_id": "problem-inventory-navigation",
+            "report_type": "weekly",
+            "title": "재고 목록 탐색 보고서",
+            "summary": "재고 목록 위치 복귀 문제와 근거를 요약합니다.",
+            "period_summary": "이번 주에는 목록 탐색 마찰과 운영자 부담을 검토했습니다.",
+            "sections": [
+                {
+                    "heading": "핵심 판단",
+                    "content": "긴 재고 목록에서 위치 복귀를 돕는 방향을 유지합니다.",
+                }
+            ],
+            "evidence_ids": ["signal-001", "signal-002"],
+        },
+    }
+    invalid = json.loads(json.dumps(valid))
+    invalid["report"]["summary"] = "게임 내 탐색과 커뮤니티 선택 드롭다운 문제를 요약합니다."
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        content = invalid if len(requests) == 1 else valid
+        return httpx.Response(200, json=_completion(json.dumps(content)))
+
+    result = _client(handler).chat_action(
+        model="vendor/text",
+        messages=[
+            {"role": "system", "content": "Return JSON."},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "required_action": "write_report",
+                        "lifecycle_stage": "DISTRIBUTION_CHECK",
+                        "active_problem_id": "problem-inventory-navigation",
+                        "active_problem": {
+                            "problem_id": "problem-inventory-navigation",
+                            "title": "Inventory list navigation",
+                            "description": "Operators lose their place in long inventory lists.",
+                            "target_users": ["inventory operators"],
+                            "evidence_ids": ["signal-001", "signal-002"],
+                        },
+                        "allowed_evidence_ids": ["signal-001", "signal-002"],
+                    }
+                ),
+            },
+        ],
+        active_problem_id="problem-inventory-navigation",
+        allowed_evidence_ids=["signal-001", "signal-002"],
+        applied_input_budget=6000,
+        model_max_input_tokens=16000,
+    )
+
+    assert result.rejection_code is None
+    assert result.action.report is not None
+    assert result.action.report.problem_id == "problem-inventory-navigation"
+    assert "재고 목록" in result.action.report.summary
+    assert result.diagnostic.validation_correction_attempted
+    assert result.diagnostic.pydantic_validation_error_paths == ["report"]
+    correction_prompt = "\n".join(item["content"] for item in requests[1]["messages"])
+    assert "problem_context_mismatch" in correction_prompt
+    assert "Inventory list navigation" in correction_prompt
 
 
 def test_short_value_preserves_opaque_identifiers_for_all_action_contexts():

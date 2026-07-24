@@ -25,6 +25,7 @@ def apply_validated_action(
     applied_at: datetime | None = None,
 ) -> tuple[MaterializedActionEnvelope, bool]:
     action = ActionEnvelope.model_validate_json(action_path.read_text())
+    decision = PreflightDecision.model_validate_json(preflight_path.read_text())
     if action.action_type == ActionType.NO_OP:
         materialized = MaterializedActionEnvelope.from_model_action(action)
         if materialized_output_path:
@@ -35,6 +36,17 @@ def apply_validated_action(
         return materialized, False
     executor = ActionExecutor(root)
     materialized = executor.prepare(action)
+    if materialized.action_type == ActionType.WRITE_REPORT:
+        if not materialized.operation_key or not materialized.operation_key_hash:
+            raise ValueError("missing_operation_key")
+        if (
+            not decision.operation_key
+            or not decision.operation_key_hash
+            or decision.operation_key != materialized.operation_key
+            or decision.operation_key_hash != materialized.operation_key_hash
+            or decision.idempotency_key != materialized.operation_key_hash
+        ):
+            raise ValueError("operation_key_mismatch")
     if materialized_output_path:
         materialized_output_path.parent.mkdir(parents=True, exist_ok=True)
         materialized_output_path.write_text(
@@ -56,7 +68,6 @@ def apply_validated_action(
     if material:
         checkpoint_path = root / "company/checkpoints.json"
         checkpoint = RepositoryCheckpoint.model_validate_json(checkpoint_path.read_text())
-        decision = PreflightDecision.model_validate_json(preflight_path.read_text())
         updated = checkpoint_after_material_work(
             checkpoint,
             decision,

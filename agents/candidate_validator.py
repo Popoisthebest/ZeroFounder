@@ -11,6 +11,7 @@ from agents.report_materializer import (
     report_artifact_path,
     report_period,
     stable_report_operation_key,
+    stable_report_operation_key_hash,
 )
 from agents.safety import load_evidence_index
 from agents.schemas import (
@@ -46,6 +47,10 @@ def _reject(
         report_period=contract.report_period,
         artifact_path=contract.artifact_path,
         operation_key=contract.operation_key,
+        operation_key_hash=contract.operation_key_hash,
+        appended_checkpoint_key=contract.appended_checkpoint_key,
+        expected_checkpoint_key=contract.expected_checkpoint_key,
+        checkpoint_key_match=contract.checkpoint_key_match,
     )
 
 
@@ -70,6 +75,30 @@ def _checkpoint_updated_with_one_idempotency_key_only(
             len(new.idempotency_keys) == len(old.idempotency_keys) + 1,
             len(new.idempotency_keys) == len(set(new.idempotency_keys)),
             all(HEX_64.fullmatch(value) for value in new.idempotency_keys),
+            new.updated_at is not None,
+            old.updated_at is None
+            or (new.updated_at is not None and new.updated_at >= old.updated_at),
+        )
+    )
+
+
+def _checkpoint_updated_with_expected_operation_key_hash_only(
+    old: RepositoryCheckpoint,
+    new: RepositoryCheckpoint,
+    *,
+    expected_key_hash: str | None,
+) -> bool:
+    if not expected_key_hash:
+        return False
+    old_stable = old.model_dump(mode="json", exclude={"idempotency_keys", "updated_at"})
+    new_stable = new.model_dump(mode="json", exclude={"idempotency_keys", "updated_at"})
+    return all(
+        (
+            old_stable == new_stable,
+            new.idempotency_keys[:-1] == old.idempotency_keys,
+            len(new.idempotency_keys) == len(old.idempotency_keys) + 1,
+            new.idempotency_keys[-1] == expected_key_hash,
+            HEX_64.fullmatch(new.idempotency_keys[-1]) is not None,
             new.updated_at is not None,
             old.updated_at is None
             or (new.updated_at is not None and new.updated_at >= old.updated_at),
@@ -325,6 +354,42 @@ def validate_write_report_content(
             "보고서 경로가 trusted report_period와 일치하지 않습니다.",
             [contract.artifact_path],
         )
+    try:
+        old_state = CompanyState.model_validate_json(
+            (control_root / "company/state.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        old_state = CompanyState()
+    operation_key = stable_report_operation_key(
+        lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK.value,
+        report_type="weekly",
+        report_period_value=expected_period,
+        active_problem_id=old_state.active_problem_id,
+    )
+    operation_key_hash = stable_report_operation_key_hash(operation_key)
+    if not contract.operation_key or not contract.operation_key_hash:
+        return _reject(
+            contract,
+            "missing_operation_key",
+            "write_report PR metadata에 operation_key와 operation_key_hash가 필요합니다.",
+            [],
+        )
+    if (
+        contract.operation_key != operation_key
+        or contract.operation_key_hash != operation_key_hash
+    ):
+        return _reject(
+            ChangeValidation(
+                **{
+                    **contract.__dict__,
+                    "expected_checkpoint_key": operation_key_hash,
+                    "checkpoint_key_match": False,
+                }
+            ),
+            "operation_key_mismatch",
+            "write_report operation metadata가 canonical key/hash와 일치하지 않습니다.",
+            [],
+        )
     checkpoint_path = Path("company/checkpoints.json")
     report_path = Path(contract.artifact_path)
     if any((candidate_root / path).is_symlink() for path in (checkpoint_path, report_path)):
@@ -352,12 +417,28 @@ def validate_write_report_content(
             "checkpoint JSON 구조를 안전하게 검증할 수 없습니다.",
             [checkpoint_path.as_posix()],
         )
-    if not _checkpoint_updated_with_one_idempotency_key_only(old_checkpoint, new_checkpoint):
+    appended_key = new_checkpoint.idempotency_keys[-1] if new_checkpoint.idempotency_keys else None
+    checkpoint_key_match = appended_key == operation_key_hash
+    checkpoint_contract = ChangeValidation(
+        **{
+            **contract.__dict__,
+            "operation_key": operation_key,
+            "operation_key_hash": operation_key_hash,
+            "appended_checkpoint_key": appended_key,
+            "expected_checkpoint_key": operation_key_hash,
+            "checkpoint_key_match": checkpoint_key_match,
+        }
+    )
+    if not _checkpoint_updated_with_expected_operation_key_hash_only(
+        old_checkpoint,
+        new_checkpoint,
+        expected_key_hash=operation_key_hash,
+    ):
         return _reject(
-            contract,
+            checkpoint_contract,
             "invalid_checkpoint_change",
             (
-                "write_report checkpoint는 현재 실행 idempotency key와 "
+                "write_report checkpoint는 canonical operation_key_hash 1개와 "
                 "updated_at만 변경할 수 있습니다."
             ),
             [checkpoint_path.as_posix()],
@@ -378,18 +459,6 @@ def validate_write_report_content(
             "보고서 파일은 비어 있지 않은 PDF여야 합니다.",
             [report_path.as_posix()],
         )
-    try:
-        old_state = CompanyState.model_validate_json(
-            (control_root / "company/state.json").read_text(encoding="utf-8")
-        )
-    except (OSError, ValueError):
-        old_state = CompanyState()
-    operation_key = stable_report_operation_key(
-        lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK.value,
-        report_type="weekly",
-        report_period_value=expected_period,
-        active_problem_id=old_state.active_problem_id,
-    )
     return ChangeValidation(
         status=contract.status,
         rejection_code=contract.rejection_code,
@@ -403,6 +472,10 @@ def validate_write_report_content(
         report_period=expected_period,
         artifact_path=expected_path,
         operation_key=operation_key,
+        operation_key_hash=operation_key_hash,
+        appended_checkpoint_key=appended_key,
+        expected_checkpoint_key=operation_key_hash,
+        checkpoint_key_match=checkpoint_key_match,
     )
 
 

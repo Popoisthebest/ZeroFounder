@@ -154,6 +154,7 @@ def _write_report_action() -> dict[str, object]:
         "requires_approval": False,
         "evidence_ids": list(SIGNAL_IDS),
         "report": {
+            "problem_id": PROBLEM_ID,
             "report_type": "weekly",
             "title": "주간 운영 보고서",
             "summary": "근거가 있는 짧은 운영 보고서를 작성합니다.",

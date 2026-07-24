@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 
 from agents.candidate_validator import (
@@ -18,6 +19,21 @@ from agents.quality import (
     classify_pull_target,
     validate_changed_file_contract,
 )
+
+OPERATION_METADATA = re.compile(r"<!--\s*zerofounder-operation:\s*(\{.*?\})\s*-->", re.S)
+
+
+def _operation_metadata(body: object) -> dict[str, object]:
+    if not isinstance(body, str):
+        return {}
+    match = OPERATION_METADATA.search(body)
+    if not match:
+        return {}
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _metadata_failure(
@@ -68,6 +84,29 @@ def validate_candidate(
     if changed_count != len(files):
         return _metadata_failure("invalid_pr", changed_count), verified_sha
     contract = validate_changed_file_contract(branch, files)
+    if contract.action_type == "write_report":
+        metadata = _operation_metadata(pull.get("body"))
+        contract = ChangeValidation(
+            status=contract.status,
+            rejection_code=contract.rejection_code,
+            rejection_reason=contract.rejection_reason,
+            rejected_files=contract.rejected_files,
+            changed_files_count=contract.changed_files_count,
+            action_type=contract.action_type,
+            problem_id=contract.problem_id,
+            allowed_files=contract.allowed_files,
+            report_type=str(metadata.get("report_type") or contract.report_type or ""),
+            report_period=str(metadata.get("report_period") or contract.report_period or ""),
+            artifact_path=str(metadata.get("artifact_path") or contract.artifact_path or ""),
+            operation_key=(
+                str(metadata.get("operation_key")) if metadata.get("operation_key") else None
+            ),
+            operation_key_hash=(
+                str(metadata.get("operation_key_hash"))
+                if metadata.get("operation_key_hash")
+                else None
+            ),
+        )
     if contract.status != "valid":
         return contract, verified_sha
     if contract.action_type == "create_problem_candidate":
@@ -112,6 +151,10 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
         "report_period": result.report_period,
         "artifact_path": result.artifact_path,
         "operation_key": result.operation_key,
+        "operation_key_hash": result.operation_key_hash,
+        "appended_checkpoint_key": result.appended_checkpoint_key,
+        "expected_checkpoint_key": result.expected_checkpoint_key,
+        "checkpoint_key_match": result.checkpoint_key_match,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -128,8 +171,15 @@ def write_result(result: ChangeValidation, verified_sha: str, output_path: Path)
                 "report_period",
                 "artifact_path",
                 "operation_key",
+                "operation_key_hash",
+                "appended_checkpoint_key",
+                "expected_checkpoint_key",
+                "checkpoint_key_match",
             ):
-                handle.write(f"{key}={payload[key] or ''}\n")
+                value = payload[key]
+                if isinstance(value, bool):
+                    value = str(value).lower()
+                handle.write(f"{key}={value or ''}\n")
             handle.write(
                 "rejected_files="
                 + json.dumps(payload["rejected_files"], ensure_ascii=False, separators=(",", ":"))

@@ -4,7 +4,10 @@ import json
 import re
 
 from agents.language import language_mismatches, operating_language
-from agents.report_materializer import stable_report_operation_key
+from agents.report_materializer import (
+    stable_report_operation_key,
+    stable_report_operation_key_hash,
+)
 from agents.schemas import ActionEnvelope, ActionType, MaterializedActionEnvelope
 
 ACTION_TITLES = {
@@ -73,12 +76,19 @@ def _weekly_report_metadata(
     lifecycle_stage = _pr_lifecycle_stage(action) or "DISTRIBUTION_CHECK"
     active_problem_id = _pr_active_problem_id(action)
     period = match.group("period")
-    operation_key = stable_report_operation_key(
+    operation_key = getattr(action, "operation_key", None) or stable_report_operation_key(
         lifecycle_stage=lifecycle_stage,
         report_type="weekly",
         report_period_value=period,
         active_problem_id=active_problem_id,
     )
+    operation_key_hash = getattr(action, "operation_key_hash", None) or (
+        stable_report_operation_key_hash(operation_key) if operation_key else None
+    )
+    if operation_key:
+        parts = operation_key.split("|")
+        if len(parts) == 5:
+            active_problem_id = None if parts[4] == "null" else parts[4]
     return {
         "lifecycle_stage": lifecycle_stage,
         "action_type": action.action_type.value,
@@ -87,6 +97,7 @@ def _weekly_report_metadata(
         "artifact_path": path,
         "active_problem_id": active_problem_id,
         "operation_key": operation_key,
+        "operation_key_hash": operation_key_hash,
     }
 
 

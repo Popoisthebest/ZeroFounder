@@ -17,6 +17,8 @@ STATUS_LABELS = {
     "deleted_file": "파일 삭제 감지",
     "too_many_files": "변경 파일 수 제한 초과",
     "invalid_checkpoint_change": "checkpoint 변경 검증 실패",
+    "missing_operation_key": "operation key 누락",
+    "operation_key_mismatch": "operation key 불일치",
     "invalid_state_change": "상태 변경 검증 실패",
     "invalid_problem_path": "문제 후보 경로 또는 내용 검증 실패",
     "invalid_report_path": "보고서 경로 또는 내용 검증 실패",
@@ -40,6 +42,10 @@ def render_status_body(
     report_period: str = "",
     artifact_path: str = "",
     operation_key: str = "",
+    operation_key_hash: str = "",
+    appended_checkpoint_key: str = "",
+    expected_checkpoint_key: str = "",
+    checkpoint_key_match: str = "",
 ) -> str:
     if status not in STATUS_LABELS:
         raise ValueError("invalid quality review status")
@@ -60,6 +66,10 @@ def render_status_body(
         f"- 보고서 기간: `{report_period or '없음'}`",
         f"- 산출물 경로: `{artifact_path or '없음'}`",
         f"- operation key: `{operation_key or '없음'}`",
+        f"- operation key hash: `{operation_key_hash or '없음'}`",
+        f"- append된 checkpoint key: `{appended_checkpoint_key or '없음'}`",
+        f"- 기대 checkpoint key: `{expected_checkpoint_key or '없음'}`",
+        f"- checkpoint key 일치: `{checkpoint_key_match or '없음'}`",
         f"- 검사 실행: {run_url or '확인 불가'}",
         "",
         "자동 병합은 수행되지 않으며 창업자의 최종 검토가 필요합니다.",
@@ -83,6 +93,14 @@ def main() -> int:
     parser.add_argument("--rejected-file", action="append", default=[])
     parser.add_argument("--allowed-file", action="append", default=[])
     parser.add_argument("--changed-files-count", type=int, default=0)
+    parser.add_argument("--report-type", default="")
+    parser.add_argument("--report-period", default="")
+    parser.add_argument("--artifact-path", default="")
+    parser.add_argument("--operation-key", default="")
+    parser.add_argument("--operation-key-hash", default="")
+    parser.add_argument("--appended-checkpoint-key", default="")
+    parser.add_argument("--expected-checkpoint-key", default="")
+    parser.add_argument("--checkpoint-key-match", default="")
     args = parser.parse_args()
     client = GitHubClient(os.environ["GITHUB_TOKEN"], os.environ["GITHUB_REPOSITORY"])
     pull = client.pull_request(args.pr)
@@ -98,6 +116,14 @@ def main() -> int:
         rejected_files=args.rejected_file,
         allowed_files=args.allowed_file,
         changed_files_count=args.changed_files_count,
+        report_type=args.report_type,
+        report_period=args.report_period,
+        artifact_path=args.artifact_path,
+        operation_key=args.operation_key,
+        operation_key_hash=args.operation_key_hash,
+        appended_checkpoint_key=args.appended_checkpoint_key,
+        expected_checkpoint_key=args.expected_checkpoint_key,
+        checkpoint_key_match=args.checkpoint_key_match,
     )
     client.update_pull_request_body(args.pr, updated)
     return 0

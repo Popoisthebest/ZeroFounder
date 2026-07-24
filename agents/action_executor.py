@@ -8,7 +8,7 @@ from pathlib import Path
 from agents.idea_materializer import materialize_idea_candidates, materialize_idea_evaluation
 from agents.lifecycle import validate_transition
 from agents.problem_materializer import materialize_problem_candidate
-from agents.report_materializer import materialize_report
+from agents.report_materializer import materialize_report, report_operation_metadata
 from agents.safety import (
     validate_action_files,
     validate_evidence_references,
@@ -41,6 +41,8 @@ class ActionExecutor:
 
     def prepare(self, action: ActionEnvelope) -> MaterializedActionEnvelope:
         files = action.files
+        operation_key = None
+        operation_key_hash = None
         if action.action_type == ActionType.CREATE_PROBLEM_CANDIDATE:
             files = [materialize_problem_candidate(action, self.root)]
         if action.action_type == ActionType.CREATE_IDEA_CANDIDATES:
@@ -48,8 +50,25 @@ class ActionExecutor:
         if action.action_type == ActionType.EVALUATE_IDEAS and not files:
             files = [materialize_idea_evaluation(action, self.root)]
         if action.action_type == ActionType.WRITE_REPORT:
-            files = [materialize_report(action, self.root)]
-        return MaterializedActionEnvelope.from_model_action(action, files=files)
+            if action.report is None:
+                raise ActionExecutionError("write_report requires report")
+            state = CompanyState.model_validate_json(
+                (self.root / "company/state.json").read_text()
+            )
+            metadata = report_operation_metadata(
+                self.root,
+                state,
+                report_type=action.report.report_type,
+            )
+            operation_key = str(metadata["operation_key"])
+            operation_key_hash = str(metadata["operation_key_hash"])
+            files = [materialize_report(action, self.root, metadata=metadata)]
+        return MaterializedActionEnvelope.from_model_action(
+            action,
+            files=files,
+            operation_key=operation_key,
+            operation_key_hash=operation_key_hash,
+        )
 
     def apply_files(self, action: MaterializedActionEnvelope) -> list[Path]:
         self.validate(action)

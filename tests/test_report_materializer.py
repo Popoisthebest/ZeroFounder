@@ -8,6 +8,7 @@ from agents.report_materializer import (
     report_operation_metadata,
     report_period,
     stable_report_operation_key,
+    stable_report_operation_key_hash,
 )
 from agents.schemas import ActionEnvelope, CompanyState, LifecycleStage
 
@@ -35,6 +36,7 @@ def _report_action() -> ActionEnvelope:
             "requires_approval": False,
             "evidence_ids": [],
             "report": {
+                "problem_id": "problem-001",
                 "report_type": "weekly",
                 "title": "주간 운영 보고서",
                 "summary": "모델이 요청한 파일명 대신 trusted 경로로 저장됩니다.",
@@ -79,4 +81,46 @@ def test_report_operation_key_is_stable_without_run_specific_values(tmp_path):
         active_problem_id=None,
     )
     assert "run" not in str(metadata["operation_key"]).lower()
+    assert metadata["operation_key_hash"] == stable_report_operation_key_hash(
+        str(metadata["operation_key"])
+    )
     assert metadata["artifact_path"] == "reports/weekly_report_2026-W30.pdf"
+    later = report_operation_metadata(
+        tmp_path,
+        state,
+        now=datetime(2026, 7, 24, 23, 0, tzinfo=ZoneInfo("Asia/Seoul")),
+    )
+    assert later["operation_key"] == metadata["operation_key"]
+    assert later["operation_key_hash"] == metadata["operation_key_hash"]
+
+
+def test_materialized_report_inserts_trusted_problem_context(tmp_path):
+    _write_repo(tmp_path)
+    (tmp_path / "research/problems").mkdir(parents=True)
+    (tmp_path / "research/problems/problem-001.json").write_text(
+        json.dumps(
+            {
+                "problem_id": "problem-001",
+                "title": "Inventory list navigation",
+                "target_users": ["inventory operators"],
+                "description": "Operators lose their place in long inventory lists.",
+                "current_workaround": "Manual scrolling and memory.",
+                "evidence_ids": [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "company/state.json").write_text(
+        CompanyState(
+            lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK,
+            active_problem_id="problem-001",
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    change = materialize_report(_report_action(), tmp_path)
+
+    assert "Inventory list navigation" in change.content
+    assert "inventory operators" in change.content

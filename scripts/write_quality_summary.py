@@ -25,6 +25,10 @@ def main() -> int:
 - 보고서 기간: `{result.get('report_period') or '없음'}`
 - 산출물 경로: `{result.get('artifact_path') or '없음'}`
 - operation key: `{result.get('operation_key') or '없음'}`
+- operation key hash: `{result.get('operation_key_hash') or '없음'}`
+- append된 checkpoint key: `{result.get('appended_checkpoint_key') or '없음'}`
+- 기대 checkpoint key: `{result.get('expected_checkpoint_key') or '없음'}`
+- checkpoint key 일치: `{result.get('checkpoint_key_match') or '없음'}`
 - 실행 URL: {result['quality_run_url'] or '확인 불가'}
 
 검증 대상은 전달받은 PR head SHA와 일치하는 경우에만 checkout했습니다.

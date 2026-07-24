@@ -338,9 +338,7 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     operation_metadata: dict[str, str | None] = {}
     if expected_action_type == ActionType.WRITE_REPORT:
         operation_metadata = report_operation_metadata(root, state)
-        decision.idempotency_key = hashlib.sha256(
-            str(operation_metadata["operation_key"]).encode()
-        ).hexdigest()
+        decision.idempotency_key = str(operation_metadata["operation_key_hash"])
     open_agent_pr_numbers: list[int] = []
     open_operation_pr_numbers: list[int] = []
     if github_client is not None:
@@ -421,6 +419,7 @@ def preflight(root: Path, event_path: Path | None, event_name: str) -> dict:
     decision.report_period = operation_metadata.get("report_period")
     decision.artifact_path = operation_metadata.get("artifact_path")
     decision.operation_key = operation_metadata.get("operation_key")
+    decision.operation_key_hash = operation_metadata.get("operation_key_hash")
     if event_name == "schedule":
         decision.schedule_cron = SCHEDULE_CRON
         decision.next_schedule_note = "다음 실행은 GitHub 스케줄에 따라 진행됩니다."
@@ -856,6 +855,20 @@ def validate_model_action(
                 "active problem allowed evidence IDs; partial or prefix IDs are invalid: "
                 f"{', '.join(malformed_context_ids)}"
             ),
+            original_action_type=action.action_type,
+            inference=inference,
+            failure_stage=FailureStage.LIFECYCLE_VALIDATION,
+        )
+    if (
+        action.action_type == ActionType.WRITE_REPORT
+        and action.report is not None
+        and state.active_problem_id
+        and action.report.problem_id != state.active_problem_id
+    ):
+        return _rejected_outcome(
+            state,
+            code=ActionRejectionCode.PROBLEM_CONTEXT_MISMATCH,
+            reason="problem_context_mismatch: report.problem_id must match active_problem_id",
             original_action_type=action.action_type,
             inference=inference,
             failure_stage=FailureStage.LIFECYCLE_VALIDATION,

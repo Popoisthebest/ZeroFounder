@@ -41,6 +41,7 @@ def valid_action(**overrides):
 
 def report_payload(**overrides):
     payload = {
+        "problem_id": "problem-001",
         "report_type": "weekly",
         "title": "주간 운영 보고서",
         "summary": "이번 주 운영 판단과 근거를 요약한 보고서입니다.",
@@ -400,6 +401,8 @@ def test_materialized_write_report_requires_trusted_pdf_path():
         "requires_approval": False,
         "evidence_ids": [],
         "report": report_payload(),
+        "operation_key": "DISTRIBUTION_CHECK|write_report|weekly|2026-W30|null",
+        "operation_key_hash": "d" * 64,
         "files": [
             {
                 "path": "reports/weekly_report_2026-W30.pdf",

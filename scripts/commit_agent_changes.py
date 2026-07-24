@@ -7,7 +7,11 @@ import subprocess
 from pathlib import Path
 
 from agents.operating_output import action_commit_message
-from agents.report_materializer import report_artifact_path, report_period
+from agents.report_materializer import (
+    report_artifact_path,
+    report_operation_metadata,
+    report_period,
+)
 from agents.safety import SafetyViolation, validate_action_files
 from agents.schemas import (
     ActionEnvelope,
@@ -57,8 +61,21 @@ def validate_materialized_action_for_commit(
         if paths != [expected]:
             raise ValueError("create_idea_candidates materialized file path is not allowed")
     if action.action_type == ActionType.WRITE_REPORT:
+        state = CompanyState.model_validate_json((root / "company/state.json").read_text())
+        metadata = report_operation_metadata(
+            root,
+            state,
+            report_type=action.report.report_type if action.report else "weekly",
+        )
         expected = report_artifact_path(report_period(root))
         paths = [change.path for change in action.files]
+        if not action.operation_key or not action.operation_key_hash:
+            raise ValueError("missing_operation_key")
+        if (
+            action.operation_key != metadata["operation_key"]
+            or action.operation_key_hash != metadata["operation_key_hash"]
+        ):
+            raise ValueError("operation_key_mismatch")
         if action.state_transition is not None:
             raise ValueError("write_report cannot change lifecycle stage")
         if paths != [expected]:

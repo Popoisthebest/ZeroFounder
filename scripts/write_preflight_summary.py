@@ -39,6 +39,7 @@ def render_summary(decision: PreflightDecision) -> str:
         ("report_period", decision.report_period or "none"),
         ("artifact_path", decision.artifact_path or "none"),
         ("operation_key", decision.operation_key or "none"),
+        ("operation_key_hash", decision.operation_key_hash or "none"),
         ("오늘 완료된 호출", decision.completed_calls_today),
         ("활성 예약", decision.active_reservations),
         ("이번 실행 필요 호출", decision.required_calls),

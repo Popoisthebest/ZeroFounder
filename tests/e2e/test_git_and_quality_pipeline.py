@@ -142,6 +142,7 @@ def test_create_agent_pr_uses_branch_sha_and_quality_body(
         risk_level=RiskLevel.LOW,
         requires_approval=False,
         report={
+            "problem_id": "problem-001",
             "report_type": "weekly",
             "title": "주간 운영 보고서",
             "summary": "사람이 검토할 주간 운영 보고서입니다.",
@@ -160,6 +161,8 @@ def test_create_agent_pr_uses_branch_sha_and_quality_body(
                 content="%PDF-1.4\nbody body body\n%%EOF\n",
             )
         ],
+        operation_key="DISTRIBUTION_CHECK|write_report|weekly|2026-W30|null",
+        operation_key_hash="d" * 64,
     )
     action_path = tmp_path / "materialized-action.json"
     action_path.write_text(action.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -189,6 +192,9 @@ def test_create_agent_pr_uses_branch_sha_and_quality_body(
     assert pull["base"] == "main"
     assert "생애주기 검토 보고서" in pull["body"]
     assert "이번 실행에는" in pull["body"]
+    assert "zerofounder-operation" in pull["body"]
+    assert "operation_key_hash" in pull["body"]
+    assert "DISTRIBUTION_CHECK|write_report|weekly|2026-W30|null" in pull["body"]
     assert "`" + "c" * 40 + "`" in pull["body"]
     assert "quality_check_not_started" in pull["body"]
     assert captured["labels"] == {"number": 7, "labels": ["agent-generated"]}

@@ -56,6 +56,18 @@ on:
       operation_key:
         description: 안정적 작업 키
         value: ${{ jobs.finalize.outputs.operation_key }}
+      operation_key_hash:
+        description: 안정적 작업 키 SHA-256
+        value: ${{ jobs.finalize.outputs.operation_key_hash }}
+      appended_checkpoint_key:
+        description: 이번 PR이 append한 checkpoint key
+        value: ${{ jobs.finalize.outputs.appended_checkpoint_key }}
+      expected_checkpoint_key:
+        description: 기대한 checkpoint key
+        value: ${{ jobs.finalize.outputs.expected_checkpoint_key }}
+      checkpoint_key_match:
+        description: checkpoint key 일치 여부
+        value: ${{ jobs.finalize.outputs.checkpoint_key_match }}
   workflow_dispatch:
     inputs:
       pull_request_number:
@@ -93,6 +105,10 @@ jobs:
       report_period: ""
       artifact_path: ""
       operation_key: ""
+      operation_key_hash: ""
+      appended_checkpoint_key: ""
+      expected_checkpoint_key: ""
+      checkpoint_key_match: ""
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v7
@@ -235,6 +251,10 @@ jobs:
       report_period: ${{ steps.candidate_validation.outputs.report_period }}
       artifact_path: ${{ steps.candidate_validation.outputs.artifact_path }}
       operation_key: ${{ steps.candidate_validation.outputs.operation_key }}
+      operation_key_hash: ${{ steps.candidate_validation.outputs.operation_key_hash }}
+      appended_checkpoint_key: ${{ steps.candidate_validation.outputs.appended_checkpoint_key }}
+      expected_checkpoint_key: ${{ steps.candidate_validation.outputs.expected_checkpoint_key }}
+      checkpoint_key_match: ${{ steps.candidate_validation.outputs.checkpoint_key_match }}
       workflow_result: ${{ steps.workflow.outcome }}
       security_result: ${{ steps.security.outcome }}
     steps:
@@ -320,6 +340,10 @@ jobs:
       report_period: ${{ steps.result.outputs.report_period }}
       artifact_path: ${{ steps.result.outputs.artifact_path }}
       operation_key: ${{ steps.result.outputs.operation_key }}
+      operation_key_hash: ${{ steps.result.outputs.operation_key_hash }}
+      appended_checkpoint_key: ${{ steps.result.outputs.appended_checkpoint_key }}
+      expected_checkpoint_key: ${{ steps.result.outputs.expected_checkpoint_key }}
+      checkpoint_key_match: ${{ steps.result.outputs.checkpoint_key_match }}
     steps:
       - name: 신뢰된 제어 코드 가져오기
         uses: actions/checkout@v7
@@ -368,6 +392,10 @@ jobs:
           REPORT_PERIOD: ${{ needs.policy.outputs.report_period || needs.verify-head.outputs.report_period }}
           ARTIFACT_PATH: ${{ needs.policy.outputs.artifact_path || needs.verify-head.outputs.artifact_path }}
           OPERATION_KEY: ${{ needs.policy.outputs.operation_key || needs.verify-head.outputs.operation_key }}
+          OPERATION_KEY_HASH: ${{ needs.policy.outputs.operation_key_hash || needs.verify-head.outputs.operation_key_hash }}
+          APPENDED_CHECKPOINT_KEY: ${{ needs.policy.outputs.appended_checkpoint_key || needs.verify-head.outputs.appended_checkpoint_key }}
+          EXPECTED_CHECKPOINT_KEY: ${{ needs.policy.outputs.expected_checkpoint_key || needs.verify-head.outputs.expected_checkpoint_key }}
+          CHECKPOINT_KEY_MATCH: ${{ needs.policy.outputs.checkpoint_key_match || needs.verify-head.outputs.checkpoint_key_match }}
         run: >-
           python -m scripts.summarize_quality_checks
           --results-dir "$GITHUB_WORKSPACE/runtime/quality-results"
@@ -386,6 +414,10 @@ jobs:
           --report-period "$REPORT_PERIOD"
           --artifact-path "$ARTIFACT_PATH"
           --operation-key "$OPERATION_KEY"
+          --operation-key-hash "$OPERATION_KEY_HASH"
+          --appended-checkpoint-key "$APPENDED_CHECKPOINT_KEY"
+          --expected-checkpoint-key "$EXPECTED_CHECKPOINT_KEY"
+          --checkpoint-key-match "$CHECKPOINT_KEY_MATCH"
 
   manual-result:
     name: 수동 품질검사 결과 저장
@@ -424,6 +456,10 @@ jobs:
           REPORT_PERIOD: ${{ needs.finalize.outputs.report_period }}
           ARTIFACT_PATH: ${{ needs.finalize.outputs.artifact_path }}
           OPERATION_KEY: ${{ needs.finalize.outputs.operation_key }}
+          OPERATION_KEY_HASH: ${{ needs.finalize.outputs.operation_key_hash }}
+          APPENDED_CHECKPOINT_KEY: ${{ needs.finalize.outputs.appended_checkpoint_key }}
+          EXPECTED_CHECKPOINT_KEY: ${{ needs.finalize.outputs.expected_checkpoint_key }}
+          CHECKPOINT_KEY_MATCH: ${{ needs.finalize.outputs.checkpoint_key_match }}
           QUALITY_RESULT_PATH: ${{ github.workspace }}/runtime/quality-result.json
         run: python -m scripts.write_quality_result
       - name: 수동 실행 결과 요약
@@ -478,6 +514,10 @@ jobs:
           REPORT_PERIOD: ${{ needs.finalize.outputs.report_period }}
           ARTIFACT_PATH: ${{ needs.finalize.outputs.artifact_path }}
           OPERATION_KEY: ${{ needs.finalize.outputs.operation_key }}
+          OPERATION_KEY_HASH: ${{ needs.finalize.outputs.operation_key_hash }}
+          APPENDED_CHECKPOINT_KEY: ${{ needs.finalize.outputs.appended_checkpoint_key }}
+          EXPECTED_CHECKPOINT_KEY: ${{ needs.finalize.outputs.expected_checkpoint_key }}
+          CHECKPOINT_KEY_MATCH: ${{ needs.finalize.outputs.checkpoint_key_match }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"

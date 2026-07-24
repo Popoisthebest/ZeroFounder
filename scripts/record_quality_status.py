@@ -52,6 +52,10 @@ def main() -> int:
         report_period=os.getenv("REPORT_PERIOD", ""),
         artifact_path=os.getenv("ARTIFACT_PATH", ""),
         operation_key=os.getenv("OPERATION_KEY", ""),
+        operation_key_hash=os.getenv("OPERATION_KEY_HASH", ""),
+        appended_checkpoint_key=os.getenv("APPENDED_CHECKPOINT_KEY", ""),
+        expected_checkpoint_key=os.getenv("EXPECTED_CHECKPOINT_KEY", ""),
+        checkpoint_key_match=os.getenv("CHECKPOINT_KEY_MATCH", ""),
     )
     client.update_pull_request_body(args.pr, body)
     output = os.getenv("GITHUB_OUTPUT")

@@ -429,4 +429,8 @@ def test_quality_result_json_contains_only_safe_rejection_diagnostics(
             "report_period",
             "artifact_path",
             "operation_key",
+            "operation_key_hash",
+            "appended_checkpoint_key",
+            "expected_checkpoint_key",
+            "checkpoint_key_match",
         }

@@ -578,6 +578,100 @@ def _validate_action_allowed_evidence(
     )
 
 
+def _report_problem_failed_fragment(
+    action: ActionEnvelope,
+    *,
+    active_problem_id: str | None,
+    active_problem: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "action_type": action.action_type.value,
+        "active_problem_id": active_problem_id,
+        "active_problem": _short_value(active_problem, max_chars=1000),
+        "reason": reason,
+        "action": _short_value(action.model_dump(mode="json", by_alias=True), max_chars=1600),
+    }
+
+
+def _validate_write_report_problem_context(
+    action: ActionEnvelope,
+    variant: PromptVariant,
+) -> None:
+    if action.action_type != ActionType.WRITE_REPORT or action.report is None:
+        return
+    payload = _latest_user_json(variant.messages)
+    active_problem = payload.get("active_problem")
+    active_problem = active_problem if isinstance(active_problem, dict) else {}
+    active_problem_id = variant.active_problem_id or (
+        str(payload.get("active_problem_id")) if payload.get("active_problem_id") else None
+    )
+    reason = ""
+    if active_problem_id and action.report.problem_id != active_problem_id:
+        reason = "report.problem_id must exactly match active_problem_id"
+    else:
+        report_text = " ".join(
+            [
+                action.report.title,
+                action.report.summary,
+                action.report.period_summary,
+                *[
+                    f"{section.heading} {section.content}"
+                    for section in action.report.sections
+                ],
+            ]
+        ).lower()
+        problem_text = json.dumps(active_problem, ensure_ascii=False).lower()
+        unrelated_terms = (
+            "게임",
+            "game",
+            "커뮤니티 선택",
+            "community selection",
+            "드롭다운",
+            "dropdown",
+        )
+        leaked_terms = [
+            term
+            for term in unrelated_terms
+            if term in report_text and term not in problem_text
+        ]
+        if leaked_terms:
+            reason = (
+                "report descriptive text shifted to an unrelated problem domain: "
+                + ", ".join(leaked_terms)
+            )
+    if not reason:
+        return
+    errors = [
+        PydanticErrorDiagnostic(
+            path="report",
+            error_type=ActionRejectionCode.PROBLEM_CONTEXT_MISMATCH.value,
+            message=(
+                "write_report must preserve the active problem domain; evidence IDs alone "
+                "are not sufficient when the narrative shifts to another domain"
+            ),
+            validator_name="write_report_problem_context",
+            failure_field_path="report",
+        )
+    ]
+    raise ModelPipelineError(
+        FailureStage.SCHEMA_VALIDATION,
+        "problem_context_mismatch: write_report changed the active problem domain",
+        code=ActionRejectionCode.PROBLEM_CONTEXT_MISMATCH,
+        retryable=True,
+        fallback_eligible=True,
+        validation_paths=[item.path for item in errors],
+        validation_errors=errors,
+        failed_action_fragment=_report_problem_failed_fragment(
+            action,
+            active_problem_id=active_problem_id,
+            active_problem=active_problem,
+            reason=reason,
+        ),
+        original_action_type=action.action_type,
+    )
+
+
 def _validate_action_language(action: ActionEnvelope) -> None:
     expected = operating_language()
     payload = action.model_dump(mode="json", by_alias=True)
@@ -922,6 +1016,32 @@ class RequestBudgetManager:
                 action_type=action_type,
                 payload=correction_payload,
                 response_model=self.PROFILES[action_type].response_model,
+                allowed_evidence_ids=variant.allowed_evidence_ids,
+            )
+        if (
+            error.code == ActionRejectionCode.PROBLEM_CONTEXT_MISMATCH
+            and action_type == ActionType.WRITE_REPORT
+        ):
+            correction_payload = {
+                "action_type": ActionType.WRITE_REPORT.value,
+                "active_problem_id": variant.active_problem_id,
+                "allowed_evidence_ids": variant.allowed_evidence_ids,
+                "instruction": (
+                    "Rewrite the report so problem_id equals active_problem_id and all "
+                    "descriptive text stays in the active problem domain. Preserve evidence "
+                    "IDs exactly. Do not mention unrelated game, community selection, or "
+                    "dropdown domains unless they appear in active_problem."
+                ),
+                "active_problem": error.failed_action_fragment.get("active_problem", {}),
+                "action": error.failed_action_fragment.get("action", {}),
+                "validation_errors": safe_errors,
+                "schema_requirements": self._schema_requirements(ActionType.WRITE_REPORT),
+            }
+            return self._correction_variant(
+                variant,
+                action_type=ActionType.WRITE_REPORT,
+                payload=correction_payload,
+                response_model=self.PROFILES[ActionType.WRITE_REPORT].response_model,
                 allowed_evidence_ids=variant.allowed_evidence_ids,
             )
         if action_type == ActionType.CREATE_IDEA_CANDIDATES:
@@ -1323,6 +1443,11 @@ class RequestBudgetManager:
         return {
             "required_action": ActionType.WRITE_REPORT.value,
             "active_problem_id": variant.active_problem_id or payload.get("active_problem_id"),
+            "active_problem": _compact_problem(
+                payload.get("active_problem"),
+                variant,
+                level=level,
+            ),
             "report_target": _short_value(payload.get("report_target") or payload, max_chars=limit),
             "allowed_evidence_ids": variant.allowed_evidence_ids,
             "required_evidence": _compact_evidence_records(
@@ -1358,6 +1483,7 @@ class RequestBudgetManager:
                     "report",
                 ],
                 "report_fields": [
+                    "problem_id",
                     "report_type",
                     "title",
                     "summary",
@@ -2083,6 +2209,7 @@ class GitHubModelsClient:
                     response_model=active_variant.response_model,
                 )
                 _validate_action_allowed_evidence(action, active_variant, diagnostic)
+                _validate_write_report_problem_context(action, active_variant)
             except ModelPipelineError as exc:
                 if request_id is not None:
                     self.limiter.mark_response_validation_failed(request_id)

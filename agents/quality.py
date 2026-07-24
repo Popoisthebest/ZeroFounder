@@ -21,6 +21,8 @@ VerificationStatus = Literal[
     "invalid_state_change",
     "invalid_problem_path",
     "invalid_report_path",
+    "missing_operation_key",
+    "operation_key_mismatch",
 ]
 ValidationStatus = Literal[
     "passed",
@@ -37,6 +39,8 @@ ValidationStatus = Literal[
     "invalid_state_change",
     "invalid_problem_path",
     "invalid_report_path",
+    "missing_operation_key",
+    "operation_key_mismatch",
     "quality_check_not_started",
 ]
 ReviewStatus = Literal[
@@ -53,6 +57,8 @@ ReviewStatus = Literal[
     "invalid_state_change",
     "invalid_problem_path",
     "invalid_report_path",
+    "missing_operation_key",
+    "operation_key_mismatch",
     "quality_check_not_started",
 ]
 
@@ -129,6 +135,10 @@ class ChangeValidation:
     report_period: str | None = None
     artifact_path: str | None = None
     operation_key: str | None = None
+    operation_key_hash: str | None = None
+    appended_checkpoint_key: str | None = None
+    expected_checkpoint_key: str | None = None
+    checkpoint_key_match: bool | None = None
 
 
 def _change_result(
@@ -144,6 +154,10 @@ def _change_result(
     report_period: str | None = None,
     artifact_path: str | None = None,
     operation_key: str | None = None,
+    operation_key_hash: str | None = None,
+    appended_checkpoint_key: str | None = None,
+    expected_checkpoint_key: str | None = None,
+    checkpoint_key_match: bool | None = None,
 ) -> ChangeValidation:
     return ChangeValidation(
         status=status,
@@ -158,6 +172,10 @@ def _change_result(
         report_period=report_period,
         artifact_path=artifact_path,
         operation_key=operation_key,
+        operation_key_hash=operation_key_hash,
+        appended_checkpoint_key=appended_checkpoint_key,
+        expected_checkpoint_key=expected_checkpoint_key,
+        checkpoint_key_match=checkpoint_key_match,
     )
 
 
@@ -443,6 +461,8 @@ def finalize_validation_status(
         "invalid_state_change": "invalid_state_change",
         "invalid_problem_path": "invalid_problem_path",
         "invalid_report_path": "invalid_report_path",
+        "missing_operation_key": "missing_operation_key",
+        "operation_key_mismatch": "operation_key_mismatch",
     }
     if verification_status in verification_failures:
         return verification_status, verification_failures[verification_status]  # type: ignore[return-value]
@@ -481,5 +501,7 @@ def review_status(validation_status: str) -> ReviewStatus:
         "invalid_state_change": "invalid_state_change",
         "invalid_problem_path": "invalid_problem_path",
         "invalid_report_path": "invalid_report_path",
+        "missing_operation_key": "missing_operation_key",
+        "operation_key_mismatch": "operation_key_mismatch",
         "quality_check_not_started": "quality_check_not_started",
     }.get(validation_status, "quality_check_not_started")

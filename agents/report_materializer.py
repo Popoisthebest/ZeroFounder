@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -49,6 +50,10 @@ def stable_report_operation_key(
     return f"{lifecycle_stage}|write_report|{report_type}|{report_period_value}|{problem}"
 
 
+def stable_report_operation_key_hash(operation_key: str) -> str:
+    return hashlib.sha256(operation_key.encode()).hexdigest()
+
+
 def report_operation_metadata(
     root: Path,
     state: CompanyState,
@@ -72,7 +77,19 @@ def report_operation_metadata(
         "artifact_path": path,
         "active_problem_id": state.active_problem_id,
         "operation_key": key,
+        "operation_key_hash": stable_report_operation_key_hash(key),
     }
+
+
+def _problem_context(root: Path, problem_id: str | None) -> dict[str, object] | None:
+    if not problem_id:
+        return None
+    path = root / f"research/problems/{problem_id}.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def _pdf_escape(value: str) -> str:
@@ -118,18 +135,28 @@ def materialize_report(
     root: Path,
     *,
     now: datetime | None = None,
+    metadata: dict[str, str | None] | None = None,
 ) -> FileChange:
     if action.report is None:
         raise ValueError("write_report requires report")
     state = CompanyState.model_validate_json((root / "company/state.json").read_text())
-    metadata = report_operation_metadata(
+    if state.active_problem_id and action.report.problem_id != state.active_problem_id:
+        raise ValueError("problem_context_mismatch")
+    metadata = metadata or report_operation_metadata(
         root,
         state,
         report_type=action.report.report_type,
         now=now,
     )
+    problem = _problem_context(root, state.active_problem_id)
+    target_users = problem.get("target_users", []) if problem else []
+    target_user_text = ", ".join(str(item) for item in target_users) if target_users else "unknown"
     lines = [
-        action.report.title,
+        f"Problem ID: {action.report.problem_id}",
+        f"Problem title: {problem.get('title') if problem else action.report.title}",
+        f"Target users: {target_user_text}",
+        f"Problem description: {problem.get('description') if problem else action.report.summary}",
+        f"Report title: {action.report.title}",
         f"Report period: {metadata['report_period']}",
         action.report.summary,
         action.report.period_summary,

@@ -12,7 +12,12 @@ from agents.candidate_validator import (
     validate_write_report_content,
 )
 from agents.quality import ChangeValidation, validate_changed_file_contract
-from agents.report_materializer import report_artifact_path, report_period
+from agents.report_materializer import (
+    report_artifact_path,
+    report_period,
+    stable_report_operation_key,
+    stable_report_operation_key_hash,
+)
 from agents.schemas import (
     LifecycleStage,
     ProblemCandidate,
@@ -486,15 +491,22 @@ def _prepare_write_report_candidate(
         encoding="utf-8",
     )
     shutil.copytree(control, candidate)
+    period = report_period(control)
+    operation_key = stable_report_operation_key(
+        lifecycle_stage=LifecycleStage.DISTRIBUTION_CHECK.value,
+        report_type="weekly",
+        report_period_value=period,
+        active_problem_id=None,
+    )
+    operation_key_hash = stable_report_operation_key_hash(operation_key)
     checkpoint = RepositoryCheckpoint(
-        idempotency_keys=["a" * 64, "b" * 64],
+        idempotency_keys=["a" * 64, operation_key_hash],
         updated_at=RUN_AT,
     )
     (candidate / "company/checkpoints.json").write_text(
         checkpoint.model_dump_json(indent=2) + "\n",
         encoding="utf-8",
     )
-    period = report_period(control)
     path = report_artifact_path(period)
     report_path = candidate / path
     report_path.parent.mkdir(parents=True)
@@ -505,6 +517,13 @@ def _prepare_write_report_candidate(
             {"filename": "company/checkpoints.json", "status": "modified"},
             {"filename": path, "status": "added"},
         ],
+    )
+    contract = ChangeValidation(
+        **{
+            **contract.__dict__,
+            "operation_key": operation_key,
+            "operation_key_hash": operation_key_hash,
+        }
     )
     return control, candidate, contract
 
@@ -525,6 +544,9 @@ def test_write_report_candidate_requires_real_pdf_and_checkpoint_only(tmp_path: 
     assert result.report_type == "weekly"
     assert result.artifact_path == report_artifact_path(report_period(control))
     assert result.operation_key
+    assert result.operation_key_hash
+    assert result.appended_checkpoint_key == result.expected_checkpoint_key
+    assert result.checkpoint_key_match is True
 
     control, candidate, contract = _prepare_write_report_candidate(
         tmp_path / "fake",
@@ -536,6 +558,88 @@ def test_write_report_candidate_requires_real_pdf_and_checkpoint_only(tmp_path: 
         contract=contract,
     )
     assert result.status == "invalid_report_path"
+
+
+def test_write_report_requires_operation_metadata_and_exact_checkpoint_hash(
+    tmp_path: Path,
+):
+    control, candidate, contract = _prepare_write_report_candidate(
+        tmp_path / "missing-key",
+        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+    )
+    missing = ChangeValidation(
+        **{
+            **contract.__dict__,
+            "operation_key": None,
+            "operation_key_hash": None,
+        }
+    )
+
+    result = validate_write_report_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=missing,
+    )
+
+    assert result.status == "missing_operation_key"
+
+    control, candidate, contract = _prepare_write_report_candidate(
+        tmp_path / "wrong-hash",
+        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+    )
+    checkpoint_path = candidate / "company/checkpoints.json"
+    checkpoint = RepositoryCheckpoint.model_validate_json(
+        checkpoint_path.read_text(encoding="utf-8")
+    )
+    checkpoint_path.write_text(
+        checkpoint.model_copy(
+            update={"idempotency_keys": [*checkpoint.idempotency_keys[:-1], "f" * 64]}
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = validate_write_report_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+
+    assert result.status == "invalid_checkpoint_change"
+    assert result.appended_checkpoint_key == "f" * 64
+    assert result.expected_checkpoint_key == contract.operation_key_hash
+    assert result.checkpoint_key_match is False
+
+
+def test_write_report_checkpoint_preserves_existing_duplicate_keys(tmp_path: Path):
+    control, candidate, contract = _prepare_write_report_candidate(
+        tmp_path,
+        pdf_content=b"%PDF-1.4\nbody body body\n%%EOF\n",
+    )
+    old_checkpoint = RepositoryCheckpoint(idempotency_keys=["a" * 64, "a" * 64])
+    (control / "company/checkpoints.json").write_text(
+        old_checkpoint.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    new_checkpoint = old_checkpoint.model_copy(
+        update={
+            "idempotency_keys": [*old_checkpoint.idempotency_keys, contract.operation_key_hash],
+            "updated_at": RUN_AT,
+        }
+    )
+    (candidate / "company/checkpoints.json").write_text(
+        new_checkpoint.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    result = validate_write_report_content(
+        control_root=control,
+        candidate_root=candidate,
+        contract=contract,
+    )
+
+    assert result.status == "valid"
+    assert result.appended_checkpoint_key == contract.operation_key_hash
 
     control, candidate, contract = _prepare_create_idea_candidate(tmp_path / "metrics")
     checkpoint_path = candidate / "company/checkpoints.json"

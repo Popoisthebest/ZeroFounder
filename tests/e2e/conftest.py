@@ -13,11 +13,15 @@ from pathlib import Path
 import pytest
 
 from agents.bootstrap import initial_company_state
+from agents.operating_output import render_agent_pull_request
 from agents.preflight import build_preflight_decision
 from agents.quality import ChangeValidation
+from agents.report_materializer import report_operation_metadata
 from agents.schemas import (
     ActionEnvelope,
+    ActionType,
     CompanyState,
+    LifecycleStage,
     MaterializedActionEnvelope,
     PreflightDecision,
     RepositoryCheckpoint,
@@ -220,6 +224,22 @@ class E2EHarness:
         return self.write_model_action(ActionEnvelope.model_validate(payload), run_id)
 
     def write_preflight(self, decision: PreflightDecision, run_id: str) -> Path:
+        state = self.read_state()
+        if state.lifecycle_stage == LifecycleStage.DISTRIBUTION_CHECK:
+            metadata = report_operation_metadata(self.repo, state)
+            decision = decision.model_copy(
+                update={
+                    "idempotency_key": metadata["operation_key_hash"],
+                    "lifecycle_stage": state.lifecycle_stage,
+                    "active_problem_id": state.active_problem_id,
+                    "expected_action_type": ActionType.WRITE_REPORT,
+                    "report_type": metadata["report_type"],
+                    "report_period": metadata["report_period"],
+                    "artifact_path": metadata["artifact_path"],
+                    "operation_key": metadata["operation_key"],
+                    "operation_key_hash": metadata["operation_key_hash"],
+                }
+            )
         path = self.repo / f"runtime/preflight-{run_id}.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(decision.model_dump_json(indent=2) + "\n", encoding="utf-8")
@@ -329,11 +349,15 @@ class E2EHarness:
         expected.add("company/checkpoints.json")
         assert changed_files == sorted(expected)
 
+        pull_overrides = {}
+        if materialized.action_type == ActionType.WRITE_REPORT:
+            pull_overrides["body"] = render_agent_pull_request(materialized, sha)[1]
         client = FakePullRequestClient(
             repository="owner/repo",
             branch=branch,
             sha=sha,
             files=files,
+            pull_overrides=pull_overrides,
         )
         validation, verified_sha = validate_candidate(
             client=client,  # type: ignore[arg-type]
@@ -362,6 +386,14 @@ class E2EHarness:
             report_period=validation.report_period or "",
             artifact_path=validation.artifact_path or "",
             operation_key=validation.operation_key or "",
+            operation_key_hash=validation.operation_key_hash or "",
+            appended_checkpoint_key=validation.appended_checkpoint_key or "",
+            expected_checkpoint_key=validation.expected_checkpoint_key or "",
+            checkpoint_key_match=(
+                str(validation.checkpoint_key_match).lower()
+                if validation.checkpoint_key_match is not None
+                else ""
+            ),
         )
         assert quality_result["validation_status"] == "passed"
         self.monkeypatch.setenv("VALIDATION_STATUS", "passed")

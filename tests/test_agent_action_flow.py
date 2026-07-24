@@ -4,13 +4,18 @@ import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 import yaml
 
 from agents.approval import apply_command, decide_command
 from agents.bootstrap import initial_company_state
 from agents.candidate_validator import validate_create_idea_candidates_content
 from agents.quality import validate_changed_file_contract
-from agents.report_materializer import report_artifact_path, report_period
+from agents.report_materializer import (
+    report_artifact_path,
+    report_operation_metadata,
+    report_period,
+)
 from agents.schemas import (
     ActionEnvelope,
     CompanyState,
@@ -62,6 +67,9 @@ def _write_preflight(
     suffix: str = "a",
     signal_ids: list[str] | None = None,
     metrics_hash: str | None = None,
+    operation_key: str | None = None,
+    operation_key_hash: str | None = None,
+    idempotency_key: str | None = None,
 ) -> Path:
     ids = signal_ids if signal_ids is not None else ([signal_id] if signal_id else [])
     path = root / "runtime/preflight.json"
@@ -72,7 +80,9 @@ def _write_preflight(
                 "reasons": ["new_signals"] if ids else ["manual"],
                 "new_signal_ids": ids,
                 "metrics_hash": metrics_hash,
-                "idempotency_key": suffix * 64,
+                "idempotency_key": idempotency_key or suffix * 64,
+                "operation_key": operation_key,
+                "operation_key_hash": operation_key_hash,
             }
         )
     )
@@ -120,6 +130,7 @@ def _write_report_payload() -> dict:
         "requires_approval": False,
         "evidence_ids": [],
         "report": {
+            "problem_id": "problem-001",
             "report_type": "weekly",
             "title": "주간 운영 보고서",
             "summary": "이번 주 운영 판단과 근거를 요약한 보고서입니다.",
@@ -525,7 +536,17 @@ def test_write_report_materialize_commit_uses_trusted_weekly_pdf(tmp_path: Path)
     )
 
     action_path = _write_action(repo, _write_report_payload())
-    preflight_path = _write_preflight(repo, None, "e")
+    metadata = report_operation_metadata(
+        repo,
+        CompanyState.model_validate_json((repo / "company/state.json").read_text()),
+    )
+    preflight_path = _write_preflight(
+        repo,
+        None,
+        operation_key=str(metadata["operation_key"]),
+        operation_key_hash=str(metadata["operation_key_hash"]),
+        idempotency_key=str(metadata["operation_key_hash"]),
+    )
     materialized_path = repo / "runtime/materialized-action.json"
     branch = create_agent_branch(repo, action_path, "12346")
     action, changed = apply_validated_action(
@@ -557,6 +578,55 @@ def test_write_report_materialize_commit_uses_trusted_weekly_pdf(tmp_path: Path)
         text=True,
     ).stdout.splitlines()
     assert changed_files == ["company/checkpoints.json", expected_report]
+
+
+def test_write_report_commit_rejects_missing_operation_key(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _initialize_runtime(repo)
+    (repo / "company/strategy.json").write_text(
+        json.dumps({"review": {"timezone": "Asia/Seoul"}}) + "\n"
+    )
+    (repo / "company/state.json").write_text(
+        initial_company_state()
+        .model_copy(update={"lifecycle_stage": LifecycleStage.DISTRIBUTION_CHECK})
+        .model_dump_json(indent=2)
+        + "\n"
+    )
+    subprocess.run(["git", "init", "-b", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "company", "signals"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True)
+    subprocess.run(["git", "checkout", "-b", "agent/12347-write-report"], cwd=repo, check=True)
+    materialized = MaterializedActionEnvelope(
+        source="trusted_materializer",
+        role=ActionEnvelope.model_validate(_write_report_payload()).role,
+        action_type=ActionEnvelope.model_validate(_write_report_payload()).action_type,
+        title="보고서 작성",
+        summary="주간 운영 보고서를 작성합니다.",
+        rationale="운영 판단을 공유할 필요가 있습니다.",
+        risk_level=ActionEnvelope.model_validate(_write_report_payload()).risk_level,
+        requires_approval=False,
+        evidence_ids=[],
+        report=_write_report_payload()["report"],
+        files=[
+            FileChange(
+                path="reports/weekly_report_2026-W30.pdf",
+                content="%PDF-1.4\nbody body body\n%%EOF\n",
+            )
+        ],
+        operation_key="DISTRIBUTION_CHECK|write_report|weekly|2026-W30|null",
+        operation_key_hash="d" * 64,
+    )
+    materialized_path = repo / "runtime/materialized-action-missing-key.json"
+    materialized_path.parent.mkdir(exist_ok=True)
+    payload = materialized.model_dump(mode="json")
+    payload["operation_key"] = None
+    materialized_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="missing_operation_key"):
+        commit_agent_changes(repo, materialized_path, "12347")
 
 
 def test_commit_rejects_materialized_idea_path_not_matching_active_problem(tmp_path: Path):

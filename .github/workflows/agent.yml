@@ -457,6 +457,10 @@ jobs:
           REPORT_PERIOD: ${{ needs.quality-check.outputs.report_period }}
           ARTIFACT_PATH: ${{ needs.quality-check.outputs.artifact_path }}
           OPERATION_KEY: ${{ needs.quality-check.outputs.operation_key }}
+          OPERATION_KEY_HASH: ${{ needs.quality-check.outputs.operation_key_hash }}
+          APPENDED_CHECKPOINT_KEY: ${{ needs.quality-check.outputs.appended_checkpoint_key }}
+          EXPECTED_CHECKPOINT_KEY: ${{ needs.quality-check.outputs.expected_checkpoint_key }}
+          CHECKPOINT_KEY_MATCH: ${{ needs.quality-check.outputs.checkpoint_key_match }}
           PYTHONPATH: ${{ github.workspace }}/control
           PYTHONNOUSERSITE: "1"
           PYTHONSAFEPATH: "1"

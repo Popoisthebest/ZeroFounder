@@ -291,6 +291,8 @@ def test_write_report_open_operation_pr_blocks_duplicate_week(tmp_path, monkeypa
     assert decision["skip_reason"] == "open_agent_pr_exists"
     assert decision["open_agent_pr_numbers"] == [10]
     assert decision["operation_key"] == metadata["operation_key"]
+    assert decision["operation_key_hash"] == metadata["operation_key_hash"]
+    assert decision["idempotency_key"] == metadata["operation_key_hash"]
     _PreflightClient.open_pulls = []
 
 
@@ -308,6 +310,7 @@ def test_existing_weekly_report_blocks_regeneration_without_checkpoint(tmp_path,
     assert decision["should_call_model"] is False
     assert decision["skip_reason"] == "idempotency_key_already_processed"
     assert decision["artifact_path"] == metadata["artifact_path"]
+    assert decision["operation_key_hash"] == metadata["operation_key_hash"]
     assert str(metadata["artifact_path"]) in decision["skip_detail"]
 
 

@@ -127,6 +127,7 @@ class ActionRejectionCode(StrEnum):
     REQUEST_TOO_LARGE = "request_too_large"
     INPUT_BUDGET_EXCEEDED = "input_budget_exceeded"
     LANGUAGE_MISMATCH = "language_mismatch"
+    PROBLEM_CONTEXT_MISMATCH = "problem_context_mismatch"
     MISSING_ACTIVE_PROBLEM = "missing_active_problem"
     MISSING_PROBLEM_RECORD = "missing_problem_record"
     INSUFFICIENT_VALIDATED_EVIDENCE = "insufficient_validated_evidence"
@@ -229,6 +230,7 @@ class ReportSection(StrictModel):
 
 
 class ReportProposal(StrictModel):
+    problem_id: StrictId
     report_type: Literal["weekly"] = "weekly"
     title: str = Field(min_length=3, max_length=200)
     summary: str = Field(min_length=20, max_length=2000)
@@ -350,6 +352,8 @@ class MaterializedActionEnvelope(StrictModel):
     dependency_proposal: DependencyProposal | None = None
     problem_candidate: ProblemCandidateProposal | None = None
     report: ReportProposal | None = None
+    operation_key: str | None = Field(default=None, max_length=500)
+    operation_key_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @classmethod
     def from_model_action(
@@ -358,6 +362,8 @@ class MaterializedActionEnvelope(StrictModel):
         *,
         files: list[FileChange] | None = None,
         state_transition: StateTransition | None = None,
+        operation_key: str | None = None,
+        operation_key_hash: str | None = None,
     ) -> MaterializedActionEnvelope:
         return cls.model_validate(
             {
@@ -376,6 +382,8 @@ class MaterializedActionEnvelope(StrictModel):
                 "dependency_proposal": action.dependency_proposal,
                 "problem_candidate": action.problem_candidate,
                 "report": action.report,
+                "operation_key": operation_key,
+                "operation_key_hash": operation_key_hash,
             }
         )
 
@@ -394,6 +402,10 @@ class MaterializedActionEnvelope(StrictModel):
             ):
                 raise ValueError("create_idea_candidates materialized path is invalid")
         if self.action_type == ActionType.WRITE_REPORT:
+            if not self.operation_key or not self.operation_key_hash:
+                raise ValueError("missing_operation_key")
+            if self.report is None:
+                raise ValueError("write_report requires report")
             if self.state_transition is not None:
                 raise ValueError("write_report cannot provide state_transition")
             if len(self.files) != 1:
@@ -678,6 +690,7 @@ class PreflightDecision(StrictModel):
     report_period: str | None = None
     artifact_path: str | None = None
     operation_key: str | None = None
+    operation_key_hash: str | None = None
     completed_calls_today: int = Field(default=0, ge=0)
     active_reservations: int = Field(default=0, ge=0)
     required_calls: int = Field(default=0, ge=0, le=2)
